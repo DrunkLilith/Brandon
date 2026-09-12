@@ -155,7 +155,7 @@ Commit: `chore: bootstrap executable Rust and React workspace`
 - Produces: `PermissionContext::can(Capability, ResourceContext) -> bool`.
 - Produces: `DomainError::{NotFound,Forbidden,Conflict,Validation}`.
 
-- [ ] **Step 1: Write failing table-driven permission tests**
+- [x] **Step 1: Write failing table-driven permission tests**
 
 ```rust
 #[test_case(SpaceRole::Viewer, Capability::ReadPage, true)]
@@ -174,12 +174,12 @@ fn restricted_boundary_can_only_narrow_space_access() {
 }
 ```
 
-- [ ] **Step 2: Run RED permission tests**
+- [x] **Step 2: Run RED permission tests**
 
 Run: `cargo test -p knowledge-core permissions`  
 Expected: FAIL because role and permission types are missing.
 
-- [ ] **Step 3: Implement IDs, roles, capabilities and pure permission evaluation**
+- [x] **Step 3: Implement IDs, roles, capabilities and pure permission evaluation**
 
 ```rust
 pub fn can(&self, capability: Capability, resource: ResourceContext) -> bool {
@@ -188,12 +188,12 @@ pub fn can(&self, capability: Capability, resource: ResourceContext) -> bool {
 }
 ```
 
-- [ ] **Step 4: Add tests for suspended users, group/direct maximum and page non-escalation**
+- [x] **Step 4: Add tests for suspended users, group/direct maximum and page non-escalation**
 
 Run: `cargo test -p knowledge-core permissions`  
 Expected: new tests fail before their matching branches are implemented, then PASS after the minimal branches are added.
 
-- [ ] **Step 5: Run core checks and commit**
+- [x] **Step 5: Run core checks and commit**
 
 Run: `cargo test -p knowledge-core && cargo clippy -p knowledge-core --all-targets -- -D warnings`  
 Expected: PASS.  

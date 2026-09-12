@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use knowledge_core::permissions::AccountStatus;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -31,6 +32,115 @@ pub struct ActiveSession {
 pub struct UserRepository;
 
 impl UserRepository {
+    pub async fn set_account_status_and_revoke_sessions(
+        transaction: &mut Transaction<'_, Postgres>,
+        workspace_id: Uuid,
+        user_id: Uuid,
+        status: AccountStatus,
+    ) -> Result<bool, StoreError> {
+        let status = match status {
+            AccountStatus::Invited => "invited",
+            AccountStatus::Active => "active",
+            AccountStatus::Suspended => "suspended",
+            AccountStatus::Deleted => "deleted",
+        };
+        let changed = sqlx::query(
+            "UPDATE users SET status = $3, updated_at = now()
+              WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .bind(status)
+        .execute(&mut **transaction)
+        .await?
+        .rows_affected()
+            == 1;
+
+        if changed && status != "active" {
+            sqlx::query(
+                "UPDATE sessions SET revoked_at = COALESCE(revoked_at, now())
+                  WHERE workspace_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+            )
+            .bind(workspace_id)
+            .bind(user_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        Ok(changed)
+    }
+
+    pub async fn change_password_and_revoke_sessions(
+        transaction: &mut Transaction<'_, Postgres>,
+        workspace_id: Uuid,
+        user_id: Uuid,
+        password_hash: &str,
+    ) -> Result<bool, StoreError> {
+        let changed = sqlx::query(
+            "UPDATE users SET password_hash = $3, updated_at = now()
+              WHERE workspace_id = $1 AND id = $2
+                AND status = 'active' AND deleted_at IS NULL",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .bind(password_hash)
+        .execute(&mut **transaction)
+        .await?
+        .rows_affected()
+            == 1;
+        if changed {
+            sqlx::query(
+                "UPDATE sessions SET revoked_at = COALESCE(revoked_at, now())
+                  WHERE workspace_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+            )
+            .bind(workspace_id)
+            .bind(user_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        Ok(changed)
+    }
+
+    pub async fn consume_login_attempt(
+        pool: &PgPool,
+        bucket_keys: &[[u8; 32]],
+    ) -> Result<bool, StoreError> {
+        let mut transaction = pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM login_rate_limits
+              WHERE updated_at < now() - interval '1 day'",
+        )
+        .execute(&mut *transaction)
+        .await?;
+
+        let mut allowed = true;
+        for bucket_key in bucket_keys {
+            let bucket_allowed: bool = sqlx::query_scalar(
+                "INSERT INTO login_rate_limits (
+                    bucket_key, failure_count, window_started_at, updated_at
+                 ) VALUES ($1, 1, now(), now())
+                 ON CONFLICT (bucket_key) DO UPDATE SET
+                    failure_count = CASE
+                        WHEN login_rate_limits.window_started_at < now() - interval '15 minutes'
+                            THEN 1
+                        ELSE LEAST(login_rate_limits.failure_count + 1, 6)
+                    END,
+                    window_started_at = CASE
+                        WHEN login_rate_limits.window_started_at < now() - interval '15 minutes'
+                            THEN now()
+                        ELSE login_rate_limits.window_started_at
+                    END,
+                    updated_at = now()
+                 RETURNING failure_count <= 5",
+            )
+            .bind(bucket_key.as_slice())
+            .fetch_one(&mut *transaction)
+            .await?;
+            allowed &= bucket_allowed;
+        }
+        transaction.commit().await?;
+        Ok(allowed)
+    }
+
     pub async fn single_workspace_key(
         pool: &PgPool,
     ) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
@@ -40,6 +150,33 @@ impl UserRepository {
               ORDER BY created_at, id
               LIMIT 1",
         )
+        .fetch_optional(pool)
+        .await?;
+
+        row.map(|(workspace_id, ciphertext, nonce, key_version)| {
+            let nonce = nonce
+                .try_into()
+                .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
+            Ok(WorkspaceKeyRecord {
+                workspace_id,
+                ciphertext,
+                nonce,
+                key_version,
+            })
+        })
+        .transpose()
+    }
+
+    pub async fn workspace_key(
+        pool: &PgPool,
+        workspace_id: Uuid,
+    ) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
+        let row: Option<(Uuid, Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
+            "SELECT id, wrapped_key_ciphertext, wrapped_key_nonce, wrapped_key_version
+               FROM workspaces
+              WHERE id = $1",
+        )
+        .bind(workspace_id)
         .fetch_optional(pool)
         .await?;
 

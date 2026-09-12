@@ -50,6 +50,17 @@ impl ApiProblem {
     }
 
     #[must_use]
+    pub fn cross_origin() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/cross-origin-rejected",
+            title: "Cross-origin request rejected",
+            status: StatusCode::FORBIDDEN.as_u16(),
+            detail: "State-changing browser requests must be same-origin".to_owned(),
+            code: "cross_origin_rejected",
+        }
+    }
+
+    #[must_use]
     pub fn login_rate_limited() -> Self {
         Self {
             problem_type: "https://knowledge.local/problems/login-rate-limited",

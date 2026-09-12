@@ -2,15 +2,13 @@ use knowledge_core::ids::{UserId, WorkspaceId};
 use knowledge_crypto::{
     CryptoError, EnvelopeCipher, KeyPurpose, KeyVersion, Keyring, MasterKey, PasswordService,
 };
-use knowledge_store::{
-    Store, StoreError,
-    audit::{AuditWriter, NewAuditEvent, SafeAuditMetadata},
-};
+use knowledge_store::{Store, StoreError};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 use zeroize::Zeroize;
+
+use crate::audit::{AuditEvent, append_audit_event};
 
 const BOOTSTRAP_LOCK_ID: i64 = 0x4b_4e_4f_57_4c_45_44;
 const KEY_VERSION: KeyVersion = KeyVersion(1);
@@ -61,6 +59,8 @@ pub enum BootstrapError {
     Database(#[from] sqlx::Error),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error("bootstrap audit event could not be recorded")]
+    Audit,
 }
 
 pub struct BootstrapService;
@@ -150,42 +150,23 @@ impl BootstrapService {
         .execute(&mut *transaction)
         .await?;
 
-        let audit_id = Uuid::now_v7();
         let request_id = Uuid::now_v7();
-        let metadata =
-            SafeAuditMetadata::new(json!({})).expect("empty bootstrap metadata is always safe");
-        let serialized_metadata = serde_json::to_vec(metadata.as_value())
-            .expect("JSON values always have a serializable representation");
-        let metadata_aad = format!("workspace:{workspace_id}:audit:{audit_id}:metadata");
-        let encrypted_metadata =
-            content_cipher.encrypt(metadata_aad.as_bytes(), &serialized_metadata)?;
-        let event_hash = audit_hash(
-            workspace_id,
-            user_id,
-            audit_id,
-            request_id,
-            &encrypted_metadata.ciphertext,
-        );
-
-        AuditWriter::append(
+        append_audit_event(
             &mut transaction,
-            NewAuditEvent {
-                id: audit_id,
+            &workspace_key,
+            AuditEvent {
                 workspace_id: workspace_id.as_uuid(),
                 actor_user_id: Some(user_id.as_uuid()),
                 session_id: None,
-                event_type: "system.bootstrap".to_owned(),
-                target_type: "workspace".to_owned(),
+                event_type: "system.bootstrap",
+                target_type: "workspace",
                 target_id: Some(workspace_id.as_uuid()),
                 request_id,
-                metadata_ciphertext: encrypted_metadata.ciphertext,
-                metadata_nonce: encrypted_metadata.nonce,
-                metadata_key_version: KEY_VERSION.0 as i32,
-                previous_hash: None,
-                event_hash,
+                metadata: json!({}),
             },
         )
-        .await?;
+        .await
+        .map_err(|_| BootstrapError::Audit)?;
 
         transaction.commit().await?;
         Ok(BootstrapResult {
@@ -209,21 +190,4 @@ fn validate_input(input: &BootstrapInput) -> Result<(), BootstrapError> {
         return Err(BootstrapError::WeakPassword);
     }
     Ok(())
-}
-
-fn audit_hash(
-    workspace_id: WorkspaceId,
-    user_id: UserId,
-    audit_id: Uuid,
-    request_id: Uuid,
-    metadata_ciphertext: &[u8],
-) -> [u8; 32] {
-    let mut digest = Sha256::new();
-    digest.update(workspace_id.as_uuid().as_bytes());
-    digest.update(user_id.as_uuid().as_bytes());
-    digest.update(audit_id.as_bytes());
-    digest.update(request_id.as_bytes());
-    digest.update(b"system.bootstrap\0workspace");
-    digest.update(metadata_ciphertext);
-    digest.finalize().into()
 }

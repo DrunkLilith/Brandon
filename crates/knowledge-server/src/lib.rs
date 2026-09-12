@@ -1,5 +1,6 @@
 //! HTTP server library for Knowledge Platform.
 
+mod audit;
 pub mod bootstrap;
 pub mod config;
 pub mod middleware;
@@ -17,7 +18,11 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
         .merge(routes::auth::router())
-        .with_state(state)
+        .with_state(state.clone())
+        .layer(axum_middleware::from_fn_with_state(
+            state,
+            middleware::request_security,
+        ))
         .layer(axum_middleware::from_fn(middleware::request_id))
 }
 

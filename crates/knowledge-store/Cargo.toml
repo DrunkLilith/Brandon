@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 chrono.workspace = true
+knowledge-core = { path = "../knowledge-core" }
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

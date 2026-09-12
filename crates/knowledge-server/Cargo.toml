@@ -1,5 +1,6 @@
 [package]
 name = "knowledge-server"
+default-run = "knowledge-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +11,7 @@ axum.workspace = true
 chrono.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
+ipnet.workspace = true
 knowledge-core = { path = "../knowledge-core" }
 knowledge-crypto = { path = "../knowledge-crypto" }
 knowledge-store = { path = "../knowledge-store" }

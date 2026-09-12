@@ -3,6 +3,7 @@ use std::env;
 use knowledge_crypto::MasterKey;
 use knowledge_server::bootstrap::{BootstrapInput, BootstrapService};
 use knowledge_store::{DatabaseSettings, Store};
+use zeroize::Zeroizing;
 
 #[derive(Debug)]
 struct Arguments {
@@ -15,8 +16,9 @@ struct Arguments {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments(env::args().skip(1))?;
     let database_url = env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-    let encoded_master_key =
-        env::var("KNOWLEDGE_MASTER_KEY").map_err(|_| "KNOWLEDGE_MASTER_KEY must be set")?;
+    let encoded_master_key = Zeroizing::new(
+        env::var("KNOWLEDGE_MASTER_KEY").map_err(|_| "KNOWLEDGE_MASTER_KEY must be set")?,
+    );
     let master_key = MasterKey::from_base64(&encoded_master_key)?;
     let password = rpassword::prompt_password("Initial admin password: ")?;
 
@@ -48,14 +50,17 @@ fn parse_arguments(arguments: impl IntoIterator<Item = String>) -> Result<Argume
     let mut arguments = arguments.into_iter();
 
     while let Some(argument) = arguments.next() {
-        if argument == "--password" || argument.starts_with("--password=") {
+        let option_name = argument
+            .split_once('=')
+            .map_or(argument.as_str(), |(name, _)| name);
+        if option_name == "--password" {
             return Err("password arguments are not accepted; use the secure prompt".to_owned());
         }
         if !matches!(
             argument.as_str(),
             "--email" | "--workspace-name" | "--display-name"
         ) {
-            return Err(format!("unknown argument: {argument}"));
+            return Err(format!("unknown argument: {option_name}"));
         }
         let value = arguments
             .next()

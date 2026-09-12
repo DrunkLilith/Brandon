@@ -895,7 +895,7 @@ async fn revoke_user_sessions(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn load_workspace_key(
+pub(crate) async fn load_workspace_key(
     state: &AppState,
     workspace_id: Uuid,
 ) -> Result<WorkspaceKey, ApiProblem> {
@@ -907,7 +907,7 @@ async fn load_workspace_key(
     unwrap_workspace_key(&runtime.master_key, &record).map_err(|_| ApiProblem::internal())
 }
 
-async fn lock_and_revalidate_admin(
+pub(crate) async fn lock_and_revalidate_admin(
     transaction: &mut Transaction<'_, Postgres>,
     current: CurrentUser,
 ) -> Result<(), ApiProblem> {
@@ -972,7 +972,7 @@ fn source_identity(source: Option<std::net::SocketAddr>) -> String {
         .unwrap_or_else(|| "in-process-client".to_owned())
 }
 
-fn decrypt_text(
+pub(crate) fn decrypt_text(
     workspace_key: &WorkspaceKey,
     aad: &str,
     ciphertext: Vec<u8>,
@@ -1036,7 +1036,7 @@ fn prevent_caching(response: &mut Response) {
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
-fn require_admin(current: CurrentUser) -> Result<(), ApiProblem> {
+pub(crate) fn require_admin(current: CurrentUser) -> Result<(), ApiProblem> {
     if current.workspace_admin {
         Ok(())
     } else {

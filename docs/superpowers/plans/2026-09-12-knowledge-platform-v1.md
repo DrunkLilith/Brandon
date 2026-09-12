@@ -450,22 +450,22 @@ Commit: `feat(users): add invitations and account administration`
 - Produces: `PUT/DELETE /groups/{group_id}/members/{user_id}`.
 - Produces: `GroupRepository::subject_groups(UserId) -> Vec<GroupId>`.
 
-- [ ] **Step 1: Write RED group CRUD and membership tests**
+- [x] **Step 1: Write RED group CRUD and membership tests**
 
 Tests cover create/list/rename/archive, duplicate membership idempotency and suspended-user rejection.
 
-- [ ] **Step 2: Implement encrypted group names/descriptions and membership transactions**
+- [x] **Step 2: Implement encrypted group names/descriptions and membership transactions**
 
-- [ ] **Step 3: Write RED audit and authorization tests**
+- [x] **Step 3: Write RED audit and authorization tests**
 
 Member receives 404/403 as contract requires; admin mutation creates one redacted audit event.
 
-- [ ] **Step 4: Implement authorization/audit and run tests**
+- [x] **Step 4: Implement authorization/audit and run tests**
 
 Run: `cargo test -p knowledge-server --test api_groups`  
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `feat(groups): manage encrypted groups and memberships`
 

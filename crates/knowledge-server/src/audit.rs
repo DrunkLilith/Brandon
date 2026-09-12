@@ -42,10 +42,7 @@ pub(crate) async fn append_audit_event(
     workspace_key: &WorkspaceKey,
     event: AuditEvent<'_>,
 ) -> Result<(), ServerAuditError> {
-    sqlx::query("SELECT id FROM workspaces WHERE id = $1 FOR UPDATE")
-        .bind(event.workspace_id)
-        .fetch_one(&mut **transaction)
-        .await?;
+    lock_workspace_for_audit(transaction, event.workspace_id).await?;
     let previous_hash = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT candidate.event_hash
            FROM audit_events candidate
@@ -96,6 +93,17 @@ pub(crate) async fn append_audit_event(
         },
     )
     .await?;
+    Ok(())
+}
+
+pub(crate) async fn lock_workspace_for_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    workspace_id: Uuid,
+) -> Result<(), ServerAuditError> {
+    sqlx::query("SELECT id FROM workspaces WHERE id = $1 FOR UPDATE")
+        .bind(workspace_id)
+        .fetch_one(&mut **transaction)
+        .await?;
     Ok(())
 }
 

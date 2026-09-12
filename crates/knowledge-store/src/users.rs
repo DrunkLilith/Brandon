@@ -100,6 +100,34 @@ impl UserRepository {
         Ok(changed)
     }
 
+    pub async fn revoke_all_sessions(
+        transaction: &mut Transaction<'_, Postgres>,
+        workspace_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool, StoreError> {
+        let user_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM users
+                 WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
+             )",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if user_exists {
+            sqlx::query(
+                "UPDATE sessions SET revoked_at = COALESCE(revoked_at, now())
+                  WHERE workspace_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+            )
+            .bind(workspace_id)
+            .bind(user_id)
+            .execute(&mut **transaction)
+            .await?;
+        }
+        Ok(user_exists)
+    }
+
     pub async fn consume_login_attempt(
         pool: &PgPool,
         bucket_keys: &[[u8; 32]],

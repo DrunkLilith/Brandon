@@ -72,6 +72,17 @@ impl ApiProblem {
     }
 
     #[must_use]
+    pub fn invitation_rate_limited() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/invitation-rate-limited",
+            title: "Too many invitation attempts",
+            status: StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            detail: "Try the invitation request again later".to_owned(),
+            code: "invitation_rate_limited",
+        }
+    }
+
+    #[must_use]
     pub fn unavailable() -> Self {
         Self {
             problem_type: "https://knowledge.local/problems/service-unavailable",
@@ -90,6 +101,39 @@ impl ApiProblem {
             status: StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
             detail: "The request could not be completed".to_owned(),
             code: "internal_error",
+        }
+    }
+
+    #[must_use]
+    pub fn forbidden() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/forbidden",
+            title: "Forbidden",
+            status: StatusCode::FORBIDDEN.as_u16(),
+            detail: "The current user cannot perform this action".to_owned(),
+            code: "forbidden",
+        }
+    }
+
+    #[must_use]
+    pub fn not_found() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/not-found",
+            title: "Not found",
+            status: StatusCode::NOT_FOUND.as_u16(),
+            detail: "The requested resource does not exist".to_owned(),
+            code: "not_found",
+        }
+    }
+
+    #[must_use]
+    pub fn conflict(message: &str) -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/conflict",
+            title: "Conflict",
+            status: StatusCode::CONFLICT.as_u16(),
+            detail: message.to_owned(),
+            code: "conflict",
         }
     }
 }

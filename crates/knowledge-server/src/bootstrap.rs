@@ -101,10 +101,13 @@ impl BootstrapService {
 
         let workspace_name_aad = format!("workspace:{workspace_id}:name");
         let display_name_aad = format!("workspace:{workspace_id}:user:{user_id}:display-name");
+        let email_aad = format!("workspace:{workspace_id}:user:{user_id}:email");
         let encrypted_workspace_name =
             content_cipher.encrypt(workspace_name_aad.as_bytes(), workspace_name.as_bytes())?;
         let encrypted_display_name =
             content_cipher.encrypt(display_name_aad.as_bytes(), display_name.as_bytes())?;
+        let encrypted_email =
+            content_cipher.encrypt(email_aad.as_bytes(), normalized_email.as_bytes())?;
         let email_hmac = search_key.authenticate(normalized_email.as_bytes());
         let password_hash = PasswordService::recommended().hash(&input.password)?;
 
@@ -126,14 +129,17 @@ impl BootstrapService {
 
         sqlx::query(
             "INSERT INTO users (
-                id, workspace_id, email_hmac,
+                id, workspace_id, email_hmac, email_ciphertext, email_nonce, email_key_version,
                 display_name_ciphertext, display_name_nonce, display_name_key_version,
                 password_hash, status
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')",
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active')",
         )
         .bind(user_id.as_uuid())
         .bind(workspace_id.as_uuid())
         .bind(email_hmac.as_slice())
+        .bind(encrypted_email.ciphertext)
+        .bind(encrypted_email.nonce.as_slice())
+        .bind(KEY_VERSION.0 as i32)
         .bind(encrypted_display_name.ciphertext)
         .bind(encrypted_display_name.nonce.as_slice())
         .bind(KEY_VERSION.0 as i32)

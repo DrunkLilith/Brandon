@@ -418,19 +418,19 @@ Commit: `feat(auth): add secure bootstrap and session authentication`
 - Produces: `POST/GET /api/v1/invitations`, `POST /invitations/{token}/accept`, `DELETE /invitations/{id}`.
 - Produces: `GET /users`, `PATCH /users/{id}`, `POST /users/{id}/revoke-sessions`.
 
-- [ ] **Step 1: Write RED invitation lifecycle test**
+- [x] **Step 1: Write RED invitation lifecycle test**
 
 Admin creates invite, token is returned once, accepting activates user, reusing token returns 404/expired without changing state.
 
-- [ ] **Step 2: Implement invitation repository/service/routes with hashed tokens and email HMAC**
+- [x] **Step 2: Implement invitation repository/service/routes with hashed tokens and email HMAC**
 
-- [ ] **Step 3: Write RED tests for duplicate email, expiry, revocation and non-admin denial**
+- [x] **Step 3: Write RED tests for duplicate email, expiry, revocation and non-admin denial**
 
 Expected denial is enumeration-safe and every accepted/revoked/suspended action has an audit event.
 
-- [ ] **Step 4: Implement user list/suspend/reactivate/session-revoke operations**
+- [x] **Step 4: Implement user list/suspend/reactivate/session-revoke operations**
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `cargo test -p knowledge-server --test api_users`  
 Expected: PASS.  

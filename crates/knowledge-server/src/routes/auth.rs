@@ -21,7 +21,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    audit::{AuditEvent, append_audit_event},
+    audit::{AuditEvent, append_audit_event, lock_workspace_for_audit},
     middleware::RequestId,
     problem::ApiProblem,
     state::AppState,
@@ -45,7 +45,7 @@ struct LoginRequest {
     password: String,
 }
 
-struct ClientAddress(Option<SocketAddr>);
+pub(crate) struct ClientAddress(pub(crate) Option<SocketAddr>);
 
 impl FromRequestParts<AppState> for ClientAddress {
     type Rejection = Infallible;
@@ -173,8 +173,8 @@ async fn login(
     let source_identity = source
         .map(|address| address.ip().to_string())
         .unwrap_or_else(|| "in-process-client".to_owned());
-    let source_bucket = login_bucket(b"source", source_identity.as_bytes());
-    let account_bucket = login_bucket(b"account", &email_hmac);
+    let source_bucket = rate_limit_bucket(b"login-source", source_identity.as_bytes());
+    let account_bucket = rate_limit_bucket(b"login-account", &email_hmac);
     let buckets = [source_bucket, account_bucket];
     let allowed = UserRepository::consume_login_attempt(runtime.store.pool(), &buckets)
         .await
@@ -204,6 +204,9 @@ async fn login(
         .store
         .pool()
         .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_workspace_for_audit(&mut transaction, user.workspace_id)
         .await
         .map_err(|_| ApiProblem::internal())?;
     if let Some(previous_hash) = token_hash_from_headers(&headers) {
@@ -310,6 +313,9 @@ async fn logout(
         .begin()
         .await
         .map_err(|_| ApiProblem::internal())?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(|_| ApiProblem::internal())?;
     UserRepository::revoke_by_token_hash(&mut transaction, &current.token_hash)
         .await
         .map_err(|_| ApiProblem::internal())?;
@@ -360,16 +366,16 @@ fn verify_login_password(
     Ok(candidate.is_some() && verified)
 }
 
-fn login_bucket(domain: &[u8], identity: &[u8]) -> [u8; 32] {
+pub(crate) fn rate_limit_bucket(domain: &[u8], identity: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"knowledge-platform/login-rate-limit/v1\0");
+    digest.update(b"knowledge-platform/rate-limit/v1\0");
     digest.update(domain);
     digest.update(b"\0");
     digest.update(identity);
     digest.finalize().into()
 }
 
-fn unwrap_workspace_key(
+pub(crate) fn unwrap_workspace_key(
     master_key: &knowledge_crypto::MasterKey,
     record: &WorkspaceKeyRecord,
 ) -> Result<WorkspaceKey, knowledge_crypto::CryptoError> {

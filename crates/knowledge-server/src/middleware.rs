@@ -46,11 +46,16 @@ pub async fn request_security(
 ) -> Result<Response, ApiProblem> {
     if is_unsafe_method(request.method()) {
         validate_same_origin(&state, &request)?;
-        if request.uri().path() != "/api/v1/auth/login" {
+        if !csrf_exempt(request.uri().path()) {
             verify_request_csrf(request.headers())?;
         }
     }
     Ok(next.run(request).await)
+}
+
+fn csrf_exempt(path: &str) -> bool {
+    path == "/api/v1/auth/login"
+        || (path.starts_with("/api/v1/invitations/") && path.ends_with("/accept"))
 }
 
 fn is_unsafe_method(method: &Method) -> bool {

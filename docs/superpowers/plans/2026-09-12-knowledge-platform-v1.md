@@ -215,7 +215,7 @@ Commit: `feat(core): define identities and permission rules`
 - Produces: `EnvelopeCipher::decrypt(aad: &[u8], envelope: &EncryptedEnvelope) -> SecretVec<u8>`.
 - Produces: `PasswordHasher::{hash,verify}` with Argon2id.
 
-- [ ] **Step 1: Write failing envelope round-trip and AAD-binding tests**
+- [x] **Step 1: Write failing envelope round-trip and AAD-binding tests**
 
 ```rust
 #[test]
@@ -228,31 +228,31 @@ fn ciphertext_round_trips_only_with_matching_aad() {
 }
 ```
 
-- [ ] **Step 2: Run RED crypto test**
+- [x] **Step 2: Run RED crypto test**
 
 Run: `cargo test -p knowledge-crypto envelope`  
 Expected: FAIL because crypto types are absent.
 
-- [ ] **Step 3: Implement versioned AES-256-GCM envelope with random nonce and zeroizing keys**
+- [x] **Step 3: Implement versioned AES-256-GCM envelope with random nonce and zeroizing keys**
 
 Envelope serialized fields: `algorithm`, `key_version`, `nonce`, `ciphertext`; AAD includes workspace ID, entity type and entity ID.
 
-- [ ] **Step 4: Add RED tests for malformed keys, nonce uniqueness, tampering and master-key rotation**
+- [x] **Step 4: Add RED tests for malformed keys, nonce uniqueness, tampering and master-key rotation**
 
 Run each named test before implementation; expected failures must identify the missing validation/rotation behavior.
 
-- [ ] **Step 5: Implement HKDF-derived purpose keys and wrapped workspace DEK**
+- [x] **Step 5: Implement HKDF-derived purpose keys and wrapped workspace DEK**
 
 ```rust
 pub enum KeyPurpose { Content, Search, Attachment }
 pub fn derive_key(dek: &WorkspaceKey, purpose: KeyPurpose) -> PurposeKey;
 ```
 
-- [ ] **Step 6: Add RED password hashing tests and implement Argon2id**
+- [x] **Step 6: Add RED password hashing tests and implement Argon2id**
 
 Tests assert valid password verifies, wrong password fails, and stored string begins with `$argon2id$`.
 
-- [ ] **Step 7: Run crypto suite and commit**
+- [x] **Step 7: Run crypto suite and commit**
 
 Run: `cargo test -p knowledge-crypto && cargo clippy -p knowledge-crypto --all-targets -- -D warnings`  
 Expected: PASS.  

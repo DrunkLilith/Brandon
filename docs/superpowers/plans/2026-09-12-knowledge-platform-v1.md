@@ -520,39 +520,39 @@ Commit: `feat(spaces): add spaces grants and effective access`
 - Produces: `GET /pages/{id}/backlinks` and an ID-only derived link graph.
 - Produces: `SavePage { expected_version, title, markdown, properties }`.
 
-- [ ] **Step 1: Write RED page-create test asserting ciphertext at rest**
+- [x] **Step 1: Write RED page-create test asserting ciphertext at rest**
 
 Create page through service, inspect raw `bytea`, assert neither title marker nor Markdown marker occurs, then fetch through authorized API and assert exact plaintext.
 
-- [ ] **Step 2: Implement create/get with AEAD AAD bound to workspace/entity IDs**
+- [x] **Step 2: Implement create/get with AEAD AAD bound to workspace/entity IDs**
 
 Create page, revision 1 and audit event in one transaction.
 
-- [ ] **Step 3: Write RED optimistic concurrency test**
+- [x] **Step 3: Write RED optimistic concurrency test**
 
 Two requests use version 1; first produces version 2, second receives 409 containing `currentVersion: 2` and echoes no confidential current body.
 
-- [ ] **Step 4: Implement save transaction and immutable revision snapshots**
+- [x] **Step 4: Implement save transaction and immutable revision snapshots**
 
-- [ ] **Step 5: Write RED tests for move cycle, cross-space rights, ordering and archived subtree**
+- [x] **Step 5: Write RED tests for move cycle, cross-space rights, ordering and archived subtree**
 
 Cycle `A → B → A` is rejected; moving across spaces requires edit rights in source and destination.
 
-- [ ] **Step 6: Implement tree validation, LexoRank-style sortable keys and soft archive/restore**
+- [x] **Step 6: Implement tree validation, LexoRank-style sortable keys and soft archive/restore**
 
-- [ ] **Step 7: Write RED revision restore test and implement restore-as-new-version**
+- [x] **Step 7: Write RED revision restore test and implement restore-as-new-version**
 
 Restore revision 1 from current version 3 creates version 4 and preserves revisions 1–3.
 
-- [ ] **Step 8: Write RED backlink extraction and authorization tests**
+- [x] **Step 8: Write RED backlink extraction and authorization tests**
 
 Markdown links using stable page URL keys create `page_links(source_page_id, target_page_id)` rows in the save transaction. Renaming does not break links; removing a link deletes the derived row; backlinks reveal only source pages readable by the caller. Raw link labels and surrounding Markdown never enter the derived table.
 
-- [ ] **Step 9: Implement link extraction, derived graph updates and backlinks route**
+- [x] **Step 9: Implement link extraction, derived graph updates and backlinks route**
 
 The parser consumes the Markdown AST rather than regex, ignores code blocks, resolves only same-workspace stable page keys and treats unresolved links as ordinary Markdown.
 
-- [ ] **Step 10: Run tests and commit**
+- [x] **Step 10: Run tests and commit**
 
 Run: `cargo test -p knowledge-server --test api_pages`  
 Expected: PASS.  

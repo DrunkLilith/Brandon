@@ -2,4 +2,5 @@
 
 pub mod errors;
 pub mod ids;
+pub mod pages;
 pub mod permissions;

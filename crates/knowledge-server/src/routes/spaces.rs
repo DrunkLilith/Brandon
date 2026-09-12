@@ -728,7 +728,7 @@ async fn load_space(
     }))
 }
 
-async fn resolve_access(
+pub(crate) async fn resolve_access(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
     space_id: Uuid,
@@ -742,7 +742,10 @@ async fn resolve_access(
     .map_err(internal)
 }
 
-fn authorize(access: &EffectiveAccess, capability: Capability) -> Result<(), ApiProblem> {
+pub(crate) fn authorize(
+    access: &EffectiveAccess,
+    capability: Capability,
+) -> Result<(), ApiProblem> {
     if access.can(capability, ResourceContext::UnrestrictedPage) {
         Ok(())
     } else if access.effective_space_role().is_none() {
@@ -835,7 +838,7 @@ async fn revalidate_admin(
     }
 }
 
-async fn revalidate_session(
+pub(crate) async fn revalidate_session(
     transaction: &mut Transaction<'_, Postgres>,
     current: CurrentUser,
 ) -> Result<(), ApiProblem> {

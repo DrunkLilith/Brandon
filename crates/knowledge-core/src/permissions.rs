@@ -90,6 +90,11 @@ impl PermissionContext {
     }
 
     #[must_use]
+    pub fn is_workspace_admin(&self) -> bool {
+        self.account_status == AccountStatus::Active && self.workspace_role == WorkspaceRole::Admin
+    }
+
+    #[must_use]
     pub fn can(&self, capability: Capability, resource: ResourceContext) -> bool {
         if self.account_status != AccountStatus::Active {
             return false;

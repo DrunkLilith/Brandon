@@ -15,6 +15,7 @@ ipnet.workspace = true
 knowledge-core = { path = "../knowledge-core" }
 knowledge-crypto = { path = "../knowledge-crypto" }
 knowledge-store = { path = "../knowledge-store" }
+pulldown-cmark.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

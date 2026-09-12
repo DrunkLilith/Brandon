@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod groups;
+pub mod pages;
 pub mod spaces;
 pub mod users;
 

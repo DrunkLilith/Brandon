@@ -20,6 +20,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::auth::router())
         .merge(routes::users::router())
         .merge(routes::groups::router())
+        .merge(routes::spaces::router())
         .with_state(state.clone())
         .layer(axum_middleware::from_fn_with_state(
             state,

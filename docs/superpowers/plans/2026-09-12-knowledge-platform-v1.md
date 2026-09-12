@@ -484,21 +484,21 @@ Commit: `feat(groups): manage encrypted groups and memberships`
 - Produces: CRUD `/spaces/{id}/grants` for user/group subjects.
 - Produces: `AccessResolver::for_space(UserId, SpaceId, &mut Transaction) -> EffectiveAccess`.
 
-- [ ] **Step 1: Write RED maximum-role resolution test**
+- [x] **Step 1: Write RED maximum-role resolution test**
 
 User has direct Viewer and group Editor; result must be Editor. Removing group membership invalidates access immediately.
 
-- [ ] **Step 2: Implement space repository, encrypted metadata and grant validation**
+- [x] **Step 2: Implement space repository, encrypted metadata and grant validation**
 
-- [ ] **Step 3: Write RED API matrix for admin/owner/editor/viewer/no-access**
+- [x] **Step 3: Write RED API matrix for admin/owner/editor/viewer/no-access**
 
 Matrix covers read, edit settings, manage grants and archive.
 
-- [ ] **Step 4: Implement AccessResolver without long-lived ACL cache**
+- [x] **Step 4: Implement AccessResolver without long-lived ACL cache**
 
 Initial implementation queries direct and group grants transactionally; caching is postponed until metrics justify it.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `cargo test -p knowledge-server --test api_spaces && cargo test -p knowledge-core permissions`  
 Expected: PASS.  

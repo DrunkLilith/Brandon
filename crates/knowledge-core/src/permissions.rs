@@ -57,6 +57,9 @@ pub struct PermissionContext {
     page_role: Option<PageRole>,
 }
 
+/// The effective access snapshot returned by a storage-backed resolver.
+pub type EffectiveAccess = PermissionContext;
+
 impl PermissionContext {
     #[must_use]
     pub fn new<I>(

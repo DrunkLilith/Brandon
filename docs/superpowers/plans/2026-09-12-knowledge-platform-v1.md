@@ -572,21 +572,21 @@ Commit: `feat(pages): add encrypted Markdown trees and revisions`
 - Produces: `PUT/DELETE /api/v1/pages/{id}/permissions/{subject}`.
 - Produces: nearest restricted ancestor query and `PageAccessContext`.
 
-- [ ] **Step 1: Write RED subtree permission matrix**
+- [x] **Step 1: Write RED subtree permission matrix**
 
 Fixtures include unrestricted parent, restricted child and grandchild; tests assert an allowlisted subject sees child/grandchild while an ordinary space owner does not unless workspace admin.
 
-- [ ] **Step 2: Implement nearest-boundary resolution and page grants**
+- [x] **Step 2: Implement nearest-boundary resolution and page grants**
 
 Page grants never create space access and cannot grant Owner.
 
-- [ ] **Step 3: Write RED non-enumeration tests across page, revision and tree-list endpoints**
+- [x] **Step 3: Write RED non-enumeration tests across page, revision and tree-list endpoints**
 
 Unauthorized IDs return the same status/body class as absent IDs.
 
-- [ ] **Step 4: Apply one shared page authorization guard to all existing routes**
+- [x] **Step 4: Apply one shared page authorization guard to all existing routes**
 
-- [ ] **Step 5: Run matrix and commit**
+- [x] **Step 5: Run matrix and commit**
 
 Run: `cargo test -p knowledge-server --test api_page_permissions`  
 Expected: PASS.  

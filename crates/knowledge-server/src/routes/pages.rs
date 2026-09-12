@@ -3,11 +3,11 @@ use axum::{
     extract::{Extension, Path, Query, State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use knowledge_core::{
     pages::SavePage,
-    permissions::{Capability, EffectiveAccess, ResourceContext},
+    permissions::{Capability, EffectiveAccess, ResourceContext, SpaceRole},
 };
 use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
 use knowledge_store::pages::PageRepository;
@@ -42,6 +42,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/pages/{id}/revisions", get(list_revisions))
         .route("/api/v1/pages/{id}/restore", post(restore_revision))
         .route("/api/v1/pages/{id}/backlinks", get(backlinks))
+        .route(
+            "/api/v1/pages/{id}/permissions/{subject}",
+            put(upsert_page_permission).delete(delete_page_permission),
+        )
 }
 
 #[derive(Deserialize)]
@@ -78,6 +82,65 @@ struct CreatePageRequest {
     properties: Value,
     #[serde(default)]
     restricted: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PermissionSubject {
+    User(Uuid),
+    Group(Uuid),
+}
+
+impl PermissionSubject {
+    fn parse(value: &str) -> Result<Self, ApiProblem> {
+        let (kind, id) = value
+            .split_once(':')
+            .ok_or_else(|| ApiProblem::validation("subject", "expected user:<id> or group:<id>"))?;
+        let id = id
+            .parse()
+            .map_err(|_| ApiProblem::validation("subject", "contains an invalid id"))?;
+        match kind {
+            "user" => Ok(Self::User(id)),
+            "group" => Ok(Self::Group(id)),
+            _ => Err(ApiProblem::validation(
+                "subject",
+                "expected user:<id> or group:<id>",
+            )),
+        }
+    }
+
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::User(_) => "user",
+            Self::Group(_) => "group",
+        }
+    }
+
+    const fn id(self) -> Uuid {
+        match self {
+            Self::User(id) | Self::Group(id) => id,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PageRoleInput {
+    Viewer,
+    Editor,
+}
+
+impl PageRoleInput {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Editor => "editor",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct UpsertPagePermissionRequest {
+    role: PageRoleInput,
 }
 
 #[derive(Serialize)]
@@ -128,10 +191,10 @@ async fn create_page(
         return Err(ApiProblem::forbidden());
     }
     if let Some(parent_id) = input.parent_id {
-        enforce_page_boundary(&mut transaction, current.workspace_id, &access, parent_id).await?;
+        authorize_page(&mut transaction, current, parent_id, Capability::CreatePage).await?;
     }
     if let Some(before_id) = input.before_id {
-        enforce_page_boundary(&mut transaction, current.workspace_id, &access, before_id).await?;
+        authorize_page(&mut transaction, current, before_id, Capability::CreatePage).await?;
     }
 
     let page_id = Uuid::now_v7();
@@ -148,7 +211,7 @@ async fn create_page(
     )?;
     let sort_key = next_sort_key(
         &mut transaction,
-        current.workspace_id,
+        current,
         &access,
         input.space_id,
         input.parent_id,
@@ -267,9 +330,7 @@ async fn get_page(
     let Some(row) = row else {
         return Err(ApiProblem::not_found());
     };
-    let access = resolve_access(&mut transaction, current.user_id, row.0).await?;
-    authorize(&access, Capability::ReadPage)?;
-    enforce_page_boundary(&mut transaction, current.workspace_id, &access, page_id).await?;
+    authorize_page(&mut transaction, current, page_id, Capability::ReadPage).await?;
     let title = decrypt_text(
         &workspace_key,
         &page_aad(current.workspace_id, page_id, None, "title"),
@@ -292,11 +353,12 @@ async fn get_page(
         row.11,
     )?;
     let properties = serde_json::from_str(&properties).map_err(internal)?;
+    let parent_id = visible_parent_id(&mut transaction, current, row.1).await?;
     transaction.commit().await.map_err(internal)?;
     let mut response = Json(PageResponse {
         id: page_id,
         space_id: row.0,
-        parent_id: row.1,
+        parent_id,
         stable_key: row.2,
         title,
         markdown,
@@ -337,12 +399,10 @@ async fn save_page(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(internal)?;
-    let Some((space_id, current_version)) = row else {
+    let Some((_space_id, current_version)) = row else {
         return Err(ApiProblem::not_found());
     };
-    let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
-    authorize(&access, Capability::EditPage)?;
-    enforce_page_boundary(&mut transaction, current.workspace_id, &access, page_id).await?;
+    authorize_page(&mut transaction, current, page_id, Capability::EditPage).await?;
     if input.expected_version != current_version {
         let mut response = (
             StatusCode::CONFLICT,
@@ -456,9 +516,8 @@ async fn list_pages(
     .map_err(internal)?;
     let mut visible = Vec::new();
     for (id, parent_id, sort_key, version, restricted) in rows {
-        if access.is_workspace_admin()
-            || !has_restricted_boundary(&mut transaction, current.workspace_id, id).await?
-        {
+        if can_access_page(&mut transaction, current, id, Capability::ReadPage).await? {
+            let parent_id = visible_parent_id(&mut transaction, current, parent_id).await?;
             visible.push(json!({"id": id, "parentId": parent_id, "sortKey": sort_key, "version": version, "restricted": restricted}));
         }
     }
@@ -482,29 +541,18 @@ async fn move_page(
         .await
         .map_err(internal)?;
     revalidate_session(&mut transaction, current).await?;
-    let source_space: Option<Uuid> = sqlx::query_scalar(
-        "SELECT space_id FROM pages WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL FOR UPDATE"
+    let source: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT space_id, restricted FROM pages WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL FOR UPDATE"
     ).bind(current.workspace_id).bind(page_id).fetch_optional(&mut *transaction).await.map_err(internal)?;
-    let source_space = source_space.ok_or_else(ApiProblem::not_found)?;
+    let (source_space, source_restricted) = source.ok_or_else(ApiProblem::not_found)?;
+    let source_context =
+        authorize_page(&mut transaction, current, page_id, Capability::EditPage).await?;
+    authorize_subtree(&mut transaction, current, page_id, Capability::EditPage).await?;
     let source_access = resolve_access(&mut transaction, current.user_id, source_space).await?;
-    authorize(&source_access, Capability::EditPage)?;
-    enforce_page_boundary(
-        &mut transaction,
-        current.workspace_id,
-        &source_access,
-        page_id,
-    )
-    .await?;
-    enforce_unrestricted_subtree(
-        &mut transaction,
-        current.workspace_id,
-        &source_access,
-        page_id,
-    )
-    .await?;
     let destination_access =
         resolve_access(&mut transaction, current.user_id, input.space_id).await?;
     authorize(&destination_access, Capability::EditPage)?;
+    let mut destination_boundary = None;
     if let Some(parent_id) = input.parent_id {
         if !PageRepository::active_parent_exists(
             &mut transaction,
@@ -533,26 +581,30 @@ async fn move_page(
         if creates_cycle {
             return Err(ApiProblem::conflict("A page cannot be moved below itself"));
         }
-        enforce_page_boundary(
-            &mut transaction,
-            current.workspace_id,
-            &destination_access,
-            parent_id,
-        )
-        .await?;
+        destination_boundary =
+            authorize_page(&mut transaction, current, parent_id, Capability::EditPage)
+                .await?
+                .boundary_page_id();
     }
     if let Some(before_id) = input.before_id {
-        enforce_page_boundary(
-            &mut transaction,
-            current.workspace_id,
-            &destination_access,
-            before_id,
-        )
-        .await?;
+        authorize_page(&mut transaction, current, before_id, Capability::EditPage).await?;
+    }
+    let resulting_boundary = if source_restricted {
+        Some(page_id)
+    } else {
+        destination_boundary
+    };
+    let restricted_audience_changes = source_space != input.space_id
+        && subtree_contains_restricted_boundary(&mut transaction, current.workspace_id, page_id)
+            .await?;
+    if (source_context.boundary_page_id() != resulting_boundary || restricted_audience_changes)
+        && !can_change_restricted_boundary(&source_access, &destination_access)
+    {
+        return Err(ApiProblem::forbidden());
     }
     let sort_key = next_sort_key(
         &mut transaction,
-        current.workspace_id,
+        current,
         &destination_access,
         input.space_id,
         input.parent_id,
@@ -587,7 +639,11 @@ async fn move_page(
         request_id,
         "page.moved",
         page_id,
-        json!({"space_id": input.space_id}),
+        json!({
+            "space_id": input.space_id,
+            "source_boundary_id": source_context.boundary_page_id(),
+            "destination_boundary_id": resulting_boundary
+        }),
     )
     .await?;
     transaction.commit().await.map_err(internal)?;
@@ -634,18 +690,18 @@ async fn set_subtree_archive(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(internal)?;
-    let space_id = space_id.ok_or_else(ApiProblem::not_found)?;
-    let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
-    authorize(
-        &access,
+    let _space_id = space_id.ok_or_else(ApiProblem::not_found)?;
+    authorize_subtree(
+        &mut transaction,
+        current,
+        page_id,
         if archive {
             Capability::EditPage
         } else {
             Capability::ManageSpace
         },
-    )?;
-    enforce_page_boundary(&mut transaction, current.workspace_id, &access, page_id).await?;
-    enforce_unrestricted_subtree(&mut transaction, current.workspace_id, &access, page_id).await?;
+    )
+    .await?;
     if !archive {
         sqlx::query(
             "UPDATE pages child SET parent_id = NULL
@@ -702,10 +758,8 @@ async fn list_revisions(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(internal)?;
-    let space_id = space_id.ok_or_else(ApiProblem::not_found)?;
-    let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
-    authorize(&access, Capability::ViewHistory)?;
-    enforce_page_boundary(&mut transaction, current.workspace_id, &access, page_id).await?;
+    let _space_id = space_id.ok_or_else(ApiProblem::not_found)?;
+    authorize_page(&mut transaction, current, page_id, Capability::ViewHistory).await?;
     let rows: Vec<(i64, Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT version, author_id, created_at FROM page_revisions WHERE workspace_id = $1 AND page_id = $2 ORDER BY version"
     ).bind(current.workspace_id).bind(page_id).fetch_all(&mut *transaction).await.map_err(internal)?;
@@ -731,10 +785,8 @@ async fn restore_revision(
     revalidate_session(&mut transaction, current).await?;
     let current_row: Option<(Uuid, i64)> = sqlx::query_as("SELECT space_id, version FROM pages WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL FOR UPDATE")
         .bind(current.workspace_id).bind(page_id).fetch_optional(&mut *transaction).await.map_err(internal)?;
-    let (space_id, current_version) = current_row.ok_or_else(ApiProblem::not_found)?;
-    let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
-    authorize(&access, Capability::EditPage)?;
-    enforce_page_boundary(&mut transaction, current.workspace_id, &access, page_id).await?;
+    let (_space_id, current_version) = current_row.ok_or_else(ApiProblem::not_found)?;
+    authorize_page(&mut transaction, current, page_id, Capability::EditPage).await?;
     if current_version != input.expected_version {
         return Ok(version_conflict(current_version));
     }
@@ -832,30 +884,171 @@ async fn backlinks(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(internal)?;
-    let target_space = target_space.ok_or_else(ApiProblem::not_found)?;
-    let target_access = resolve_access(&mut transaction, current.user_id, target_space).await?;
-    authorize(&target_access, Capability::ReadPage)?;
-    enforce_page_boundary(
-        &mut transaction,
-        current.workspace_id,
-        &target_access,
-        page_id,
-    )
-    .await?;
+    let _target_space = target_space.ok_or_else(ApiProblem::not_found)?;
+    authorize_page(&mut transaction, current, page_id, Capability::ReadPage).await?;
     let candidates: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT p.id,p.space_id FROM page_links l JOIN pages p ON p.id=l.source_page_id AND p.workspace_id=l.workspace_id WHERE l.workspace_id=$1 AND l.target_page_id=$2 AND p.archived_at IS NULL")
         .bind(current.workspace_id).bind(page_id).fetch_all(&mut *transaction).await.map_err(internal)?;
     let mut visible = Vec::new();
     for (id, space_id) in candidates {
         let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
         if access.can(Capability::ReadPage, ResourceContext::UnrestrictedPage)
-            && (access.is_workspace_admin()
-                || !has_restricted_boundary(&mut transaction, current.workspace_id, id).await?)
+            && can_access_page(&mut transaction, current, id, Capability::ReadPage).await?
         {
             visible.push(json!({"id": id}));
         }
     }
     transaction.commit().await.map_err(internal)?;
     Ok(Json(visible).into_response())
+}
+
+async fn upsert_page_permission(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    current: CurrentUser,
+    Path((page_id, subject)): Path<(Uuid, String)>,
+    payload: Result<Json<UpsertPagePermissionRequest>, JsonRejection>,
+) -> Result<Response, ApiProblem> {
+    let subject = PermissionSubject::parse(&subject)?;
+    let Json(input) =
+        payload.map_err(|_| ApiProblem::validation("body", "expected a valid page role"))?;
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
+    authorize_page_permission_management(&mut transaction, current, page_id).await?;
+    let restricted: Option<bool> = sqlx::query_scalar(
+        "SELECT restricted FROM pages
+          WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL FOR UPDATE",
+    )
+    .bind(current.workspace_id)
+    .bind(page_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal)?;
+    if restricted != Some(true) {
+        return Err(if restricted.is_some() {
+            ApiProblem::conflict("Permissions can be assigned only to a restricted page")
+        } else {
+            ApiProblem::not_found()
+        });
+    }
+    validate_permission_subject(&mut transaction, current.workspace_id, subject).await?;
+    let permission_id = Uuid::now_v7();
+    match subject {
+        PermissionSubject::User(user_id) => {
+            sqlx::query(
+                "INSERT INTO page_permissions (
+                    id, workspace_id, page_id, user_id, role, granted_by
+                 ) VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (page_id, user_id) WHERE user_id IS NOT NULL
+                 DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by,
+                               updated_at = now()",
+            )
+            .bind(permission_id)
+            .bind(current.workspace_id)
+            .bind(page_id)
+            .bind(user_id)
+            .bind(input.role.as_str())
+            .bind(current.user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
+        PermissionSubject::Group(group_id) => {
+            sqlx::query(
+                "INSERT INTO page_permissions (
+                    id, workspace_id, page_id, group_id, role, granted_by
+                 ) VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (page_id, group_id) WHERE group_id IS NOT NULL
+                 DO UPDATE SET role = EXCLUDED.role, granted_by = EXCLUDED.granted_by,
+                               updated_at = now()",
+            )
+            .bind(permission_id)
+            .bind(current.workspace_id)
+            .bind(page_id)
+            .bind(group_id)
+            .bind(input.role.as_str())
+            .bind(current.user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        }
+    }
+    append_page_audit(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "page.permission_upserted",
+        page_id,
+        json!({"subject_type": subject.kind(), "subject_id": subject.id(), "role": input.role.as_str()}),
+    )
+    .await?;
+    transaction.commit().await.map_err(internal)?;
+    Ok(Json(json!({
+        "subjectType": subject.kind(),
+        "subjectId": subject.id(),
+        "role": input.role.as_str()
+    }))
+    .into_response())
+}
+
+async fn delete_page_permission(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    current: CurrentUser,
+    Path((page_id, subject)): Path<(Uuid, String)>,
+) -> Result<Response, ApiProblem> {
+    let subject = PermissionSubject::parse(&subject)?;
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
+    authorize_page_permission_management(&mut transaction, current, page_id).await?;
+    let removed = match subject {
+        PermissionSubject::User(user_id) => sqlx::query(
+            "DELETE FROM page_permissions
+              WHERE workspace_id = $1 AND page_id = $2 AND user_id = $3",
+        )
+        .bind(current.workspace_id)
+        .bind(page_id)
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?
+        .rows_affected(),
+        PermissionSubject::Group(group_id) => sqlx::query(
+            "DELETE FROM page_permissions
+              WHERE workspace_id = $1 AND page_id = $2 AND group_id = $3",
+        )
+        .bind(current.workspace_id)
+        .bind(page_id)
+        .bind(group_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?
+        .rows_affected(),
+    };
+    if removed == 1 {
+        append_page_audit(
+            &mut transaction,
+            &workspace_key,
+            current,
+            request_id,
+            "page.permission_deleted",
+            page_id,
+            json!({"subject_type": subject.kind(), "subject_id": subject.id()}),
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(internal)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 struct PageEnvelopes {
@@ -1105,34 +1298,38 @@ fn validate_page(title: &str, markdown: &str, properties: &Value) -> Result<(), 
     Ok(())
 }
 
-async fn has_restricted_boundary(
+async fn authorize_page(
     transaction: &mut Transaction<'_, Postgres>,
-    workspace_id: Uuid,
+    current: CurrentUser,
     page_id: Uuid,
-) -> Result<bool, ApiProblem> {
-    sqlx::query_scalar(
-        "WITH RECURSIVE ancestors(id, parent_id, restricted) AS (
-            SELECT id, parent_id, restricted FROM pages WHERE workspace_id = $1 AND id = $2
-            UNION ALL
-            SELECT p.id, p.parent_id, p.restricted FROM pages p
-            JOIN ancestors a ON a.parent_id = p.id WHERE p.workspace_id = $1
-         ) SELECT COALESCE(bool_or(restricted), false) FROM ancestors",
-    )
-    .bind(workspace_id)
-    .bind(page_id)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(internal)
+    capability: Capability,
+) -> Result<knowledge_core::permissions::PageAccessContext, ApiProblem> {
+    let context =
+        PageRepository::access_context(transaction, current.workspace_id, current.user_id, page_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(ApiProblem::not_found)?;
+    if context.can(capability) {
+        Ok(context)
+    } else if context.can(Capability::ReadPage) {
+        Err(ApiProblem::forbidden())
+    } else {
+        Err(ApiProblem::not_found())
+    }
 }
 
-async fn enforce_page_boundary(
+async fn authorize_page_permission_management(
     transaction: &mut Transaction<'_, Postgres>,
-    workspace_id: Uuid,
-    access: &EffectiveAccess,
+    current: CurrentUser,
     page_id: Uuid,
 ) -> Result<(), ApiProblem> {
-    if access.is_workspace_admin()
-        || !has_restricted_boundary(transaction, workspace_id, page_id).await?
+    let context =
+        PageRepository::access_context(transaction, current.workspace_id, current.user_id, page_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(ApiProblem::not_found)?;
+    if context.access().is_workspace_admin()
+        || context.access().effective_space_role() == Some(SpaceRole::Owner)
     {
         Ok(())
     } else {
@@ -1140,7 +1337,70 @@ async fn enforce_page_boundary(
     }
 }
 
-async fn subtree_has_restricted_boundary(
+async fn visible_parent_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    current: CurrentUser,
+    parent_id: Option<Uuid>,
+) -> Result<Option<Uuid>, ApiProblem> {
+    let Some(parent_id) = parent_id else {
+        return Ok(None);
+    };
+    if can_access_page(transaction, current, parent_id, Capability::ReadPage).await? {
+        Ok(Some(parent_id))
+    } else {
+        Ok(None)
+    }
+}
+
+fn can_change_restricted_boundary(
+    source_access: &EffectiveAccess,
+    destination_access: &EffectiveAccess,
+) -> bool {
+    source_access.is_workspace_admin()
+        || (source_access.effective_space_role() == Some(SpaceRole::Owner)
+            && destination_access.effective_space_role() == Some(SpaceRole::Owner))
+}
+
+async fn can_access_page(
+    transaction: &mut Transaction<'_, Postgres>,
+    current: CurrentUser,
+    page_id: Uuid,
+    capability: Capability,
+) -> Result<bool, ApiProblem> {
+    Ok(
+        PageRepository::access_context(transaction, current.workspace_id, current.user_id, page_id)
+            .await
+            .map_err(internal)?
+            .is_some_and(|context| context.can(capability)),
+    )
+}
+
+async fn authorize_subtree(
+    transaction: &mut Transaction<'_, Postgres>,
+    current: CurrentUser,
+    page_id: Uuid,
+    capability: Capability,
+) -> Result<(), ApiProblem> {
+    let page_ids: Vec<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM pages WHERE workspace_id = $1 AND id = $2
+            UNION ALL
+            SELECT p.id FROM pages p JOIN subtree s ON p.parent_id = s.id
+             WHERE p.workspace_id = $1
+         ) SELECT id FROM subtree",
+    )
+    .bind(current.workspace_id)
+    .bind(page_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(internal)?;
+    for descendant_id in page_ids {
+        authorize_page(transaction, current, descendant_id, capability).await?;
+    }
+    Ok(())
+}
+
+async fn subtree_contains_restricted_boundary(
     transaction: &mut Transaction<'_, Postgres>,
     workspace_id: Uuid,
     page_id: Uuid,
@@ -1149,8 +1409,8 @@ async fn subtree_has_restricted_boundary(
         "WITH RECURSIVE subtree(id, restricted) AS (
             SELECT id, restricted FROM pages WHERE workspace_id = $1 AND id = $2
             UNION ALL
-            SELECT p.id, p.restricted FROM pages p
-            JOIN subtree s ON p.parent_id = s.id WHERE p.workspace_id = $1
+            SELECT p.id, p.restricted FROM pages p JOIN subtree s ON p.parent_id = s.id
+             WHERE p.workspace_id = $1
          ) SELECT COALESCE(bool_or(restricted), false) FROM subtree",
     )
     .bind(workspace_id)
@@ -1160,15 +1420,39 @@ async fn subtree_has_restricted_boundary(
     .map_err(internal)
 }
 
-async fn enforce_unrestricted_subtree(
+async fn validate_permission_subject(
     transaction: &mut Transaction<'_, Postgres>,
     workspace_id: Uuid,
-    access: &EffectiveAccess,
-    page_id: Uuid,
+    subject: PermissionSubject,
 ) -> Result<(), ApiProblem> {
-    if access.is_workspace_admin()
-        || !subtree_has_restricted_boundary(transaction, workspace_id, page_id).await?
-    {
+    let valid = match subject {
+        PermissionSubject::User(user_id) => sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM users u
+                JOIN workspace_members wm
+                  ON wm.workspace_id = u.workspace_id AND wm.user_id = u.id
+               WHERE u.workspace_id = $1 AND u.id = $2 AND u.status = 'active'
+                 AND u.deleted_at IS NULL AND wm.status = 'active'
+            )",
+        )
+        .bind(workspace_id)
+        .bind(user_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(internal)?,
+        PermissionSubject::Group(group_id) => sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM groups
+                 WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL
+            )",
+        )
+        .bind(workspace_id)
+        .bind(group_id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(internal)?,
+    };
+    if valid {
         Ok(())
     } else {
         Err(ApiProblem::not_found())
@@ -1177,7 +1461,7 @@ async fn enforce_unrestricted_subtree(
 
 async fn next_sort_key(
     transaction: &mut Transaction<'_, Postgres>,
-    workspace_id: Uuid,
+    current: CurrentUser,
     access: &EffectiveAccess,
     space_id: Uuid,
     parent_id: Option<Uuid>,
@@ -1191,7 +1475,7 @@ async fn next_sort_key(
             AND parent_id IS NOT DISTINCT FROM $3 AND archived_at IS NULL
           ORDER BY sort_key, id FOR UPDATE",
     )
-    .bind(workspace_id)
+    .bind(current.workspace_id)
     .bind(space_id)
     .bind(parent_id)
     .fetch_all(&mut **transaction)
@@ -1237,7 +1521,7 @@ async fn next_sort_key(
 
     if !access.is_workspace_admin() {
         for (id, _) in &siblings {
-            if has_restricted_boundary(transaction, workspace_id, *id).await? {
+            if !can_access_page(transaction, current, *id, Capability::EditPage).await? {
                 return Err(ApiProblem::conflict("Sibling order needs compaction"));
             }
         }

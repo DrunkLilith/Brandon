@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AccountStatus {
@@ -60,6 +61,46 @@ pub struct PermissionContext {
 /// The effective access snapshot returned by a storage-backed resolver.
 pub type EffectiveAccess = PermissionContext;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageAccessContext {
+    boundary_page_id: Option<Uuid>,
+    access: EffectiveAccess,
+}
+
+impl PageAccessContext {
+    #[must_use]
+    pub fn new(boundary_page_id: Option<Uuid>, access: EffectiveAccess) -> Self {
+        Self {
+            boundary_page_id,
+            access,
+        }
+    }
+
+    #[must_use]
+    pub fn boundary_page_id(&self) -> Option<Uuid> {
+        self.boundary_page_id
+    }
+
+    #[must_use]
+    pub fn access(&self) -> &EffectiveAccess {
+        &self.access
+    }
+
+    #[must_use]
+    pub fn resource_context(&self) -> ResourceContext {
+        if self.boundary_page_id.is_some() {
+            ResourceContext::RestrictedPage
+        } else {
+            ResourceContext::UnrestrictedPage
+        }
+    }
+
+    #[must_use]
+    pub fn can(&self, capability: Capability) -> bool {
+        self.access.can(capability, self.resource_context())
+    }
+}
+
 impl PermissionContext {
     #[must_use]
     pub fn new<I>(
@@ -92,6 +133,12 @@ impl PermissionContext {
     #[must_use]
     pub fn is_workspace_admin(&self) -> bool {
         self.account_status == AccountStatus::Active && self.workspace_role == WorkspaceRole::Admin
+    }
+
+    #[must_use]
+    pub fn with_page_role(mut self, page_role: Option<PageRole>) -> Self {
+        self.page_role = page_role;
+        self
     }
 
     #[must_use]

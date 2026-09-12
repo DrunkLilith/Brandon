@@ -274,7 +274,7 @@ Commit: `feat(crypto): add versioned encryption and password hashing`
 - Produces: `Store::migrate() -> Result<(), StoreError>`.
 - Produces tables and constraints defined in spec section 6.
 
-- [ ] **Step 1: Write failing migration integration test**
+- [x] **Step 1: Write failing migration integration test**
 
 ```rust
 #[sqlx::test(migrations = "./migrations")]
@@ -285,29 +285,29 @@ async fn initial_schema_enforces_one_grant_subject(pool: PgPool) {
 }
 ```
 
-- [ ] **Step 2: Start test PostgreSQL and run RED**
+- [x] **Step 2: Start test PostgreSQL and run RED**
 
 Run: `docker compose -f deploy/compose.test.yaml up -d postgres && cargo test -p knowledge-store --test migrations`  
 Expected: FAIL because migration/table is absent.
 
-- [ ] **Step 3: Add normalized schema, foreign keys, unique constraints and soft-delete fields**
+- [x] **Step 3: Add normalized schema, foreign keys, unique constraints and soft-delete fields**
 
 The migration creates all spec entities, `version > 0` checks, XOR subject constraints and sibling ordering indexes. Encrypted columns use `bytea`; no plaintext title/body/name columns are created.
 
-- [ ] **Step 4: Add RED tests for workspace isolation, revision immutability and page-parent consistency**
+- [x] **Step 4: Add RED tests for workspace isolation, revision immutability and page-parent consistency**
 
 Expected: constraint tests fail before triggers/checks are added.
 
-- [ ] **Step 5: Implement database constraints and migration checksum policy**
+- [x] **Step 5: Implement database constraints and migration checksum policy**
 
 Revision `UPDATE/DELETE` is rejected by trigger except through documented retention maintenance role; cross-workspace foreign-key combinations are impossible.
 
-- [ ] **Step 6: Run migrations twice and full store tests**
+- [x] **Step 6: Run migrations twice and full store tests**
 
 Run: `cargo test -p knowledge-store --test migrations`  
 Expected: PASS on a clean database and after applying migrations once.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Commit: `feat(store): add encrypted multi-workspace schema`
 

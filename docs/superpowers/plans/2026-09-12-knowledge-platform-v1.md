@@ -326,7 +326,7 @@ Commit: `feat(store): add encrypted multi-workspace schema`
 - Produces: `RequestIdLayer` and response header `x-request-id`.
 - Produces: `AuditWriter::append(&mut Transaction, NewAuditEvent)`; no standalone commit method.
 
-- [ ] **Step 1: Write RED API error test**
+- [x] **Step 1: Write RED API error test**
 
 ```rust
 #[tokio::test]
@@ -339,20 +339,20 @@ async fn validation_error_is_problem_json_with_request_id() {
 }
 ```
 
-- [ ] **Step 2: Run RED and implement `ApiProblem` plus request middleware**
+- [x] **Step 2: Run RED and implement `ApiProblem` plus request middleware**
 
 Run: `cargo test -p knowledge-server --test api_errors` before and after implementation.  
 Expected: first FAIL, then PASS.
 
-- [ ] **Step 3: Write RED transaction rollback test**
+- [x] **Step 3: Write RED transaction rollback test**
 
 Create a test mutation that writes an entity, forces audit insertion failure, and asserts neither row exists.
 
-- [ ] **Step 4: Implement append-only audit writer requiring caller transaction**
+- [x] **Step 4: Implement append-only audit writer requiring caller transaction**
 
 Metadata serializer rejects fields named `password`, `token`, `key`, `body`, `content` and links events with a workspace hash chain.
 
-- [ ] **Step 5: Run server/store tests and commit**
+- [x] **Step 5: Run server/store tests and commit**
 
 Commit: `feat(api): standardize errors request IDs and audit transactions`
 

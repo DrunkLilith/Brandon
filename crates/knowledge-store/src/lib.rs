@@ -1,5 +1,7 @@
 //! PostgreSQL and object-storage adapters for Knowledge Platform.
 
+pub mod audit;
+
 mod models;
 mod pool;
 

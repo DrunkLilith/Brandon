@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use hkdf::Hkdf;
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -82,6 +83,14 @@ impl PurposeKey {
     #[must_use]
     pub fn expose(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    #[must_use]
+    pub fn authenticate(&self, value: &[u8]) -> [u8; 32] {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC-SHA-256 accepts a 32-byte key");
+        mac.update(value);
+        mac.finalize().into_bytes().into()
     }
 
     const fn from_bytes(bytes: [u8; 32]) -> Self {

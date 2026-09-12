@@ -372,15 +372,15 @@ Commit: `feat(api): standardize errors request IDs and audit transactions`
 - Produces: `CurrentUser` Axum extractor.
 - Produces: `bootstrap --email <email>` reading password/master key from stdin/secrets.
 
-- [ ] **Step 1: Write RED bootstrap idempotency test**
+- [x] **Step 1: Write RED bootstrap idempotency test**
 
 Test invokes bootstrap service twice; first creates workspace/admin, second returns `BootstrapAlreadyCompleted`, with exactly one active admin and an audit event.
 
-- [ ] **Step 2: Implement minimal bootstrap transaction and CLI wrapper**
+- [x] **Step 2: Implement minimal bootstrap transaction and CLI wrapper**
 
 The CLI rejects password arguments and prints no password, token, DEK or master key.
 
-- [ ] **Step 3: Write RED login/session tests**
+- [x] **Step 3: Write RED login/session tests**
 
 ```rust
 assert!(set_cookie.contains("HttpOnly"));
@@ -388,20 +388,20 @@ assert!(set_cookie.contains("Secure"));
 assert!(!database_session_row.token_hash.contains(&raw_cookie_token));
 ```
 
-- [ ] **Step 4: Implement session creation, constant-time verification and cookie policy**
+- [x] **Step 4: Implement session creation, constant-time verification and cookie policy**
 
 Session token is 256 random bits; database stores SHA-256 hash; login rotates any pre-auth session.
 
-- [ ] **Step 5: Write RED tests for CSRF, expiry, logout, suspension and rate limiting**
+- [x] **Step 5: Write RED tests for CSRF, expiry, logout, suspension and rate limiting**
 
 Each state-changing request without CSRF returns 403 Problem Details; suspension and password change revoke all sessions.
 
-- [ ] **Step 6: Implement CSRF and auth middleware; run tests**
+- [x] **Step 6: Implement CSRF and auth middleware; run tests**
 
 Run: `cargo test -p knowledge-server --test api_auth`  
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Commit: `feat(auth): add secure bootstrap and session authentication`
 

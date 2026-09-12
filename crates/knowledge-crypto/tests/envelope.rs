@@ -102,3 +102,18 @@ fn malformed_master_key_is_rejected() {
     assert!(MasterKey::from_base64("not-base64").is_err());
     assert!(MasterKey::from_base64(&STANDARD.encode([0_u8; 31])).is_err());
 }
+
+#[test]
+fn purpose_key_authentication_matches_hmac_sha256_vector() {
+    let workspace_key = WorkspaceKey::from_bytes([42; 32]);
+    let search_key = workspace_key
+        .derive(KeyPurpose::Search)
+        .expect("derive search key");
+
+    let digest = search_key.authenticate(b"user@example.com");
+
+    assert_eq!(
+        hex::encode(digest),
+        "f0d36ff906725c6413e578a12afbca2b08b1ceff95e2079614edd8ebd9db0d14"
+    );
+}

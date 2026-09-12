@@ -54,4 +54,6 @@ pub enum StoreError {
     Database(#[from] sqlx::Error),
     #[error("database migration failed: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
+    #[error("stored data is malformed: {0}")]
+    CorruptData(&'static str),
 }

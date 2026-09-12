@@ -79,7 +79,7 @@
 - Produces: `GET /api/v1/health/live -> 200 {"status":"ok"}`
 - Produces: React `App` rendering product shell placeholder and health status.
 
-- [ ] **Step 1: Write failing backend health test**
+- [x] **Step 1: Write failing backend health test**
 
 ```rust
 #[tokio::test]
@@ -92,12 +92,12 @@ async fn live_health_returns_ok() {
 }
 ```
 
-- [ ] **Step 2: Run RED backend test**
+- [x] **Step 2: Run RED backend test**
 
 Run: `cargo test -p knowledge-server --test health live_health_returns_ok`  
 Expected: FAIL because `knowledge_server` and `build_test_router` do not exist.
 
-- [ ] **Step 3: Add workspace manifests and minimal health router**
+- [x] **Step 3: Add workspace manifests and minimal health router**
 
 ```rust
 pub fn build_test_router() -> Router {
@@ -108,12 +108,12 @@ pub fn build_test_router() -> Router {
 }
 ```
 
-- [ ] **Step 4: Run GREEN backend test and workspace checks**
+- [x] **Step 4: Run GREEN backend test and workspace checks**
 
 Run: `cargo test --workspace && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings`  
 Expected: PASS, zero warnings.
 
-- [ ] **Step 5: Write failing frontend shell test**
+- [x] **Step 5: Write failing frontend shell test**
 
 ```tsx
 it('renders the knowledge workspace landmark', () => {
@@ -122,12 +122,12 @@ it('renders the knowledge workspace landmark', () => {
 })
 ```
 
-- [ ] **Step 6: Run RED frontend test**
+- [x] **Step 6: Run RED frontend test**
 
 Run: `pnpm --filter @knowledge/web test --run src/app.test.tsx`  
 Expected: FAIL because the app shell is absent.
 
-- [ ] **Step 7: Implement minimal React shell and tool configuration**
+- [x] **Step 7: Implement minimal React shell and tool configuration**
 
 ```tsx
 export function App() {
@@ -135,7 +135,7 @@ export function App() {
 }
 ```
 
-- [ ] **Step 8: Run GREEN frontend test and commit**
+- [x] **Step 8: Run GREEN frontend test and commit**
 
 Run: `pnpm --filter @knowledge/web test --run && pnpm --filter @knowledge/web build`  
 Expected: PASS.  

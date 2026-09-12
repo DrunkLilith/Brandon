@@ -1,0 +1,9 @@
+/target/
+node_modules/
+/apps/web/dist/
+*.tsbuildinfo
+/.env
+/.env.*
+!/.env.example
+/.worktrees/
+*.log

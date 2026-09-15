@@ -1,9 +1,11 @@
 //! Cryptographic primitives for encrypted knowledge storage.
 
+mod blind_index;
 mod envelope;
 mod keys;
 mod passwords;
 
+pub use blind_index::{BlindIndexer, BlindToken};
 pub use envelope::{DecryptedBytes, EncryptedEnvelope, EnvelopeCipher, KeyVersion};
 pub use keys::{KeyPurpose, Keyring, MasterKey, PurposeKey, WorkspaceKey, WrappedWorkspaceKey};
 pub use passwords::PasswordService;

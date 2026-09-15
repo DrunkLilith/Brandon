@@ -9,8 +9,10 @@ use knowledge_core::{
     pages::SavePage,
     permissions::{Capability, EffectiveAccess, ResourceContext, SpaceRole},
 };
-use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
-use knowledge_store::pages::PageRepository;
+use knowledge_crypto::{
+    BlindIndexer, EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey,
+};
+use knowledge_store::{pages::PageRepository, search::BlindSearchRepository};
 use pulldown_cmark::{Event, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -271,6 +273,15 @@ async fn create_page(
         &input.markdown,
     )
     .await?;
+    reindex_search(
+        &mut transaction,
+        &workspace_key,
+        current.workspace_id,
+        page_id,
+        &input.title,
+        &input.markdown,
+    )
+    .await?;
     append_audit_event(
         &mut transaction,
         &workspace_key,
@@ -472,6 +483,15 @@ async fn save_page(
         &mut transaction,
         current.workspace_id,
         page_id,
+        &input.markdown,
+    )
+    .await?;
+    reindex_search(
+        &mut transaction,
+        &workspace_key,
+        current.workspace_id,
+        page_id,
+        &input.title,
         &input.markdown,
     )
     .await?;
@@ -716,6 +736,19 @@ async fn set_subtree_archive(
         .await
         .map_err(internal)?;
     }
+    let subtree_ids: Vec<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM pages WHERE workspace_id = $1 AND id = $2
+            UNION ALL
+            SELECT p.id FROM pages p JOIN subtree s ON p.parent_id = s.id
+             WHERE p.workspace_id = $1
+         ) SELECT id FROM subtree",
+    )
+    .bind(current.workspace_id)
+    .bind(page_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(internal)?;
     sqlx::query(
         "WITH RECURSIVE subtree(id) AS (
             SELECT id FROM pages WHERE workspace_id = $1 AND id = $2
@@ -725,6 +758,60 @@ async fn set_subtree_archive(
            WHERE id IN (SELECT id FROM subtree)"
     ).bind(current.workspace_id).bind(page_id).bind(archive).bind(current.user_id)
     .execute(&mut *transaction).await.map_err(internal)?;
+    if archive {
+        BlindSearchRepository::remove_page_tokens(
+            &mut transaction,
+            current.workspace_id,
+            &subtree_ids,
+        )
+        .await
+        .map_err(internal)?;
+    } else {
+        let rows: Vec<SearchIndexPageRow> = sqlx::query_as(
+            "SELECT id, title_ciphertext, title_nonce, title_key_version,
+                    body_ciphertext, body_nonce, body_key_version
+               FROM pages WHERE workspace_id = $1 AND id = ANY($2) AND archived_at IS NULL",
+        )
+        .bind(current.workspace_id)
+        .bind(&subtree_ids)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        for (
+            indexed_page_id,
+            title_ciphertext,
+            title_nonce,
+            title_key_version,
+            body_ciphertext,
+            body_nonce,
+            body_key_version,
+        ) in rows
+        {
+            let title = decrypt_text(
+                &workspace_key,
+                &page_aad(current.workspace_id, indexed_page_id, None, "title"),
+                title_ciphertext,
+                title_nonce,
+                title_key_version,
+            )?;
+            let markdown = decrypt_text(
+                &workspace_key,
+                &page_aad(current.workspace_id, indexed_page_id, None, "body"),
+                body_ciphertext,
+                body_nonce,
+                body_key_version,
+            )?;
+            reindex_search(
+                &mut transaction,
+                &workspace_key,
+                current.workspace_id,
+                indexed_page_id,
+                &title,
+                &markdown,
+            )
+            .await?;
+        }
+    }
     append_page_audit(
         &mut transaction,
         &workspace_key,
@@ -855,6 +942,15 @@ async fn restore_revision(
     )
     .await?;
     reindex_links(&mut transaction, current.workspace_id, page_id, &markdown).await?;
+    reindex_search(
+        &mut transaction,
+        &workspace_key,
+        current.workspace_id,
+        page_id,
+        &title,
+        &markdown,
+    )
+    .await?;
     append_page_audit(
         &mut transaction,
         &workspace_key,
@@ -1099,6 +1195,7 @@ type RevisionRow = (
     Vec<u8>,
     i32,
 );
+type SearchIndexPageRow = (Uuid, Vec<u8>, Vec<u8>, i32, Vec<u8>, Vec<u8>, i32);
 
 fn version_conflict(current_version: i64) -> Response {
     let mut response = (
@@ -1182,6 +1279,28 @@ async fn reindex_links(
     Ok(())
 }
 
+async fn reindex_search(
+    transaction: &mut Transaction<'_, Postgres>,
+    workspace_key: &WorkspaceKey,
+    workspace_id: Uuid,
+    page_id: Uuid,
+    title: &str,
+    markdown: &str,
+) -> Result<(), ApiProblem> {
+    let indexer = BlindIndexer::new(workspace_key.derive(KeyPurpose::Search).map_err(internal)?);
+    let title_tokens = indexer.tokens("und", title);
+    let body_tokens = indexer.tokens("und", markdown);
+    BlindSearchRepository::replace_page_tokens(
+        transaction,
+        workspace_id,
+        page_id,
+        &title_tokens,
+        &body_tokens,
+    )
+    .await
+    .map_err(internal)
+}
+
 fn encrypt_page_fields(
     workspace_key: &WorkspaceKey,
     workspace_id: Uuid,
@@ -1262,7 +1381,12 @@ async fn insert_revision(
     Ok(())
 }
 
-fn page_aad(workspace_id: Uuid, page_id: Uuid, revision: Option<i64>, field: &str) -> String {
+pub(crate) fn page_aad(
+    workspace_id: Uuid,
+    page_id: Uuid,
+    revision: Option<i64>,
+    field: &str,
+) -> String {
     match revision {
         Some(version) => {
             format!("workspace:{workspace_id}:page:{page_id}:revision:{version}:{field}")

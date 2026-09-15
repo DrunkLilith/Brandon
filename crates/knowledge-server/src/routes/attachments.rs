@@ -1,6 +1,8 @@
 //! Streaming multipart uploads with optional UUID Idempotency-Key.
 //! Keys are scoped to actor/workspace/upload operation. Replays validate the
-//! body fingerprint without storage writes and recheck current ACLs. Pending
+//! body fingerprint without storage writes and recheck current ACLs. Every
+//! streamed attempt, including replay, consumes the actor body-processing cap.
+//! Administrative disclosures commit a separate access audit first. Pending
 //! attempts return 409; failure/crash reservations are reclaimed only by expired
 //! orphan cleanup after the upload's session lock has gone away. Retry with a
 //! new key immediately, or the same key after cleanup. No plaintext fingerprint.
@@ -204,7 +206,7 @@ async fn authorize(
     page: Uuid,
     capability: Capability,
     owner: bool,
-) -> Result<(), ApiProblem> {
+) -> Result<bool, ApiProblem> {
     let active:bool=sqlx::query_scalar("WITH RECURSIVE ancestors AS (SELECT id,parent_id,space_id,archived_at FROM pages WHERE workspace_id=$1 AND id=$2 UNION ALL SELECT p.id,p.parent_id,p.space_id,p.archived_at FROM pages p JOIN ancestors a ON p.id=a.parent_id WHERE p.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM ancestors) AND NOT EXISTS(SELECT 1 FROM ancestors a JOIN spaces s ON s.id=a.space_id WHERE a.archived_at IS NOT NULL OR s.archived_at IS NOT NULL)").bind(current.workspace_id).bind(page).fetch_one(&mut **transaction).await.map_err(internal)?;
     if !active {
         return Err(ApiProblem::not_found());
@@ -227,7 +229,7 @@ async fn authorize(
     {
         return Err(ApiProblem::forbidden());
     }
-    Ok(())
+    Ok(access.access().is_workspace_admin())
 }
 fn response(
     key: &WorkspaceKey,
@@ -354,6 +356,7 @@ async fn upload(
                     )
                 })?;
                 let fingerprint = reservation.fingerprint.ok_or_else(ApiProblem::internal)?;
+                charge_body_attempt(&state, current).await?;
                 let stream = AttachmentStream::new(
                     key.derive(KeyPurpose::Attachment).map_err(internal)?,
                     KeyVersion(1),
@@ -389,11 +392,24 @@ async fn upload(
                     .await
                     .map_err(internal)?;
                 revalidate_session(&mut tx, current).await?;
-                authorize(&mut tx, current, page, Capability::UploadAttachment, false).await?;
+                let administrative =
+                    authorize(&mut tx, current, page, Capability::UploadAttachment, false).await?;
                 let stored = load(&mut tx, current.workspace_id, attachment, false).await?;
                 if stored.page_id != page {
                     return Err(ApiProblem::internal());
                 }
+                if administrative {
+                    audit_access(
+                        &mut tx,
+                        &key,
+                        current,
+                        request,
+                        ("attachment", attachment),
+                        "upload_replay",
+                    )
+                    .await?;
+                }
+                tx.commit().await.map_err(internal)?;
                 return Ok((
                     StatusCode::CREATED,
                     [(header::CACHE_CONTROL, "no-store")],
@@ -404,18 +420,7 @@ async fn upload(
         }
         tx.commit().await.map_err(internal)?;
     }
-    let bucket =
-        super::auth::rate_limit_bucket(b"attachment-upload/v1", current.user_id.as_bytes());
-    if !knowledge_store::users::UserRepository::consume_rate_limit_attempt(
-        runtime.store.pool(),
-        &[bucket],
-        60,
-    )
-    .await
-    .map_err(internal)?
-    {
-        return Err(ApiProblem::upload_rate_limited());
-    }
+    charge_body_attempt(&state, current).await?;
     let id = Uuid::now_v7();
     let object = Uuid::now_v7();
     let _guard = tokio::time::timeout(OP_TIMEOUT, lock_object(runtime.store.pool(), object))
@@ -702,6 +707,7 @@ fn verify_mime(bytes: &[u8], mime: &str) -> Result<(), ApiProblem> {
 }
 async fn list(
     State(state): State<AppState>,
+    Extension(request): Extension<RequestId>,
     current: CurrentUser,
     Path(page): Path<Uuid>,
     query: Result<Query<ListQuery>, QueryRejection>,
@@ -712,7 +718,11 @@ async fn list(
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
-    authorize(
+    lock_workspace_for_audit(&mut tx, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut tx, current).await?;
+    let administrative = authorize(
         &mut tx,
         current,
         page,
@@ -721,6 +731,10 @@ async fn list(
     )
     .await?;
     let rows:Vec<StoredAttachment>=sqlx::query_as(select_attachment!("WHERE workspace_id=$1 AND page_id=$2 AND (archived_at IS NOT NULL)=$3 AND ($4::uuid IS NULL OR id>$4) ORDER BY id LIMIT 100")).bind(current.workspace_id).bind(page).bind(query.archived).bind(query.after).fetch_all(&mut *tx).await.map_err(internal)?;
+    if administrative {
+        audit_access(&mut tx, &key, current, request, ("page", page), "list").await?;
+    }
+    tx.commit().await.map_err(internal)?;
     let items = rows
         .into_iter()
         .map(|row| response(&key, current.workspace_id, row))
@@ -746,6 +760,7 @@ async fn load(
 }
 async fn download(
     State(state): State<AppState>,
+    Extension(request): Extension<RequestId>,
     current: CurrentUser,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
@@ -757,8 +772,12 @@ async fn download(
         .ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut tx, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut tx, current).await?;
     let row = load(&mut tx, current.workspace_id, id, false).await?;
-    authorize(
+    let administrative = authorize(
         &mut tx,
         current,
         row.page_id,
@@ -766,6 +785,17 @@ async fn download(
         false,
     )
     .await?;
+    if administrative {
+        audit_access(
+            &mut tx,
+            &key,
+            current,
+            request,
+            ("attachment", id),
+            "download",
+        )
+        .await?;
+    }
     tx.commit().await.map_err(internal)?;
     let version = u32::try_from(row.key_version).map_err(internal)?;
     let size = u64::try_from(row.plaintext_size).map_err(internal)?;
@@ -1012,6 +1042,50 @@ async fn audit(
             target_id: Some(id),
             request_id: request.as_uuid(),
             metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(internal)
+}
+
+async fn charge_body_attempt(state: &AppState, current: CurrentUser) -> Result<(), ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let bucket =
+        super::auth::rate_limit_bucket(b"attachment-upload/v1", current.user_id.as_bytes());
+    if knowledge_store::users::UserRepository::consume_rate_limit_attempt(
+        runtime.store.pool(),
+        &[bucket],
+        60,
+    )
+    .await
+    .map_err(internal)?
+    {
+        Ok(())
+    } else {
+        Err(ApiProblem::upload_rate_limited())
+    }
+}
+
+async fn audit_access(
+    tx: &mut Transaction<'_, Postgres>,
+    key: &WorkspaceKey,
+    current: CurrentUser,
+    request: RequestId,
+    target: (&str, Uuid),
+    operation: &str,
+) -> Result<(), ApiProblem> {
+    append_audit_event(
+        tx,
+        key,
+        AuditEvent {
+            workspace_id: current.workspace_id,
+            actor_user_id: Some(current.user_id),
+            session_id: Some(current.session_id),
+            event_type: "attachment.admin_access",
+            target_type: target.0,
+            target_id: Some(target.1),
+            request_id: request.as_uuid(),
+            metadata: json!({"operation": operation}),
         },
     )
     .await

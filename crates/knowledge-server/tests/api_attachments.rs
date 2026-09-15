@@ -4,7 +4,9 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use knowledge_crypto::MasterKey;
+use knowledge_crypto::{
+    EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, Keyring, MasterKey,
+};
 use knowledge_server::{
     bootstrap::{BootstrapInput, BootstrapService},
     build_router,
@@ -1239,14 +1241,31 @@ async fn keyed_upload(
     name: &str,
     key: Uuid,
 ) -> axum::response::Response {
+    keyed_upload_body(
+        app,
+        cookie,
+        csrf,
+        page,
+        bytes.len(),
+        Body::from(multipart(bytes, name, "text/plain")),
+        key,
+    )
+    .await
+}
+async fn keyed_upload_body(
+    app: &Router,
+    cookie: &str,
+    csrf: &str,
+    page: Uuid,
+    size: usize,
+    body: Body,
+    key: Uuid,
+) -> axum::response::Response {
     app.clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!(
-                    "/api/v1/pages/{page}/attachments?size={}",
-                    bytes.len()
-                ))
+                .uri(format!("/api/v1/pages/{page}/attachments?size={}", size))
                 .header(header::HOST, "knowledge.local")
                 .header(header::ORIGIN, ORIGIN)
                 .header("sec-fetch-site", "same-origin")
@@ -1254,7 +1273,7 @@ async fn keyed_upload(
                 .header("x-csrf-token", csrf)
                 .header("idempotency-key", key.to_string())
                 .header(header::CONTENT_TYPE, "multipart/form-data; boundary=files")
-                .body(Body::from(multipart(bytes, name, "text/plain")))
+                .body(body)
                 .unwrap(),
         )
         .await
@@ -1298,6 +1317,313 @@ async fn idempotent_replay_has_one_object_metadata_and_audit_and_rejects_mismatc
             StatusCode::CONFLICT
         );
     }
+}
+// Missing committed admin-access events must fail these disclosure regressions.
+#[sqlx::test]
+async fn administrative_disclosures_commit_correlated_redacted_audit(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf, page) = setup(&app).await;
+    let request_key = Uuid::now_v7();
+    let first = json_body(
+        keyed_upload(
+            &app,
+            &cookie,
+            &csrf,
+            page,
+            b"private body",
+            "private-name.txt",
+            request_key,
+        )
+        .await,
+    )
+    .await;
+    let id = first["id"].as_str().unwrap();
+    let key_record = knowledge_store::users::UserRepository::workspace_key(
+        &pool,
+        sqlx::query_scalar("SELECT id FROM workspaces")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let master = MasterKey::from_base64(&STANDARD.encode([51; 32])).unwrap();
+    let key = Keyring::unwrap(
+        &master,
+        &EncryptedEnvelope {
+            algorithm: "AES-256-GCM".into(),
+            key_version: KeyVersion(key_record.key_version as u32),
+            nonce: key_record.nonce,
+            ciphertext: key_record.ciphertext,
+        },
+    )
+    .unwrap();
+    let cipher = EnvelopeCipher::new(KeyVersion(1), key.derive(KeyPurpose::Content).unwrap());
+    for (operation, target_type, target, response) in [
+        (
+            "list",
+            "page",
+            page,
+            send(
+                &app,
+                "GET",
+                &format!("/api/v1/pages/{page}/attachments"),
+                vec![],
+                Some(&cookie),
+                None,
+                "application/json",
+            )
+            .await,
+        ),
+        (
+            "download",
+            "attachment",
+            id.parse().unwrap(),
+            send(
+                &app,
+                "GET",
+                &format!("/api/v1/attachments/{id}"),
+                vec![],
+                Some(&cookie),
+                None,
+                "application/json",
+            )
+            .await,
+        ),
+        (
+            "upload_replay",
+            "attachment",
+            id.parse().unwrap(),
+            keyed_upload(
+                &app,
+                &cookie,
+                &csrf,
+                page,
+                b"private body",
+                "private-name.txt",
+                request_key,
+            )
+            .await,
+        ),
+    ] {
+        assert!(response.status().is_success());
+        let request: Uuid = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let (event_id, workspace, stored_type, stored_target, actor, session, ciphertext, nonce):(Uuid,Uuid,String,Uuid,Uuid,Uuid,Vec<u8>,Vec<u8>) = sqlx::query_as("SELECT id,workspace_id,target_type,target_id,actor_user_id,session_id,metadata_ciphertext,metadata_nonce FROM audit_events WHERE event_type='attachment.admin_access' AND request_id=$1").bind(request).fetch_one(&pool).await.expect("admin use must be committed before disclosure");
+        assert_eq!(stored_type, target_type);
+        assert_eq!(stored_target, target);
+        assert_ne!(actor, Uuid::nil());
+        assert_ne!(session, Uuid::nil());
+        let metadata = cipher
+            .decrypt(
+                format!("workspace:{workspace}:audit:{event_id}:metadata").as_bytes(),
+                &EncryptedEnvelope {
+                    algorithm: "AES-256-GCM".into(),
+                    key_version: KeyVersion(1),
+                    nonce: nonce.try_into().unwrap(),
+                    ciphertext,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(metadata.expose()).unwrap(),
+            json!({"operation":operation})
+        );
+        let _ = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE event_type='attachment.uploaded'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+#[sqlx::test]
+async fn administrative_audit_failure_blocks_list_download_and_replay_disclosure(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf, page) = setup(&app).await;
+    let key = Uuid::now_v7();
+    let first = json_body(
+        keyed_upload(
+            &app,
+            &cookie,
+            &csrf,
+            page,
+            b"private body",
+            "private-name.txt",
+            key,
+        )
+        .await,
+    )
+    .await;
+    let id = first["id"].as_str().unwrap();
+    sqlx::query("CREATE FUNCTION reject_admin_access() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='attachment.admin_access' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$").execute(&pool).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_admin_access BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_admin_access()").execute(&pool).await.unwrap();
+    for response in [
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/pages/{page}/attachments"),
+            vec![],
+            Some(&cookie),
+            None,
+            "application/json",
+        )
+        .await,
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/attachments/{id}"),
+            vec![],
+            Some(&cookie),
+            None,
+            "application/json",
+        )
+        .await,
+        keyed_upload(
+            &app,
+            &cookie,
+            &csrf,
+            page,
+            b"private body",
+            "private-name.txt",
+            key,
+        )
+        .await,
+    ] {
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            !body.contains("private body")
+                && !body.contains("private-name.txt")
+                && !body.contains("audit unavailable")
+        );
+    }
+}
+
+#[sqlx::test]
+async fn ordinary_member_disclosures_do_not_record_administrative_access(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (admin_cookie, admin_csrf, page) = setup(&app).await;
+    let (cookie, csrf, _, _) = member(&app, &pool, &admin_cookie, &admin_csrf, page).await;
+    let key = Uuid::now_v7();
+    let first =
+        json_body(keyed_upload(&app, &cookie, &csrf, page, b"hello", "file.txt", key).await).await;
+    let id = first["id"].as_str().unwrap();
+    for response in [
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/pages/{page}/attachments"),
+            vec![],
+            Some(&cookie),
+            None,
+            "application/json",
+        )
+        .await,
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/attachments/{id}"),
+            vec![],
+            Some(&cookie),
+            None,
+            "application/json",
+        )
+        .await,
+        keyed_upload(&app, &cookie, &csrf, page, b"hello", "file.txt", key).await,
+    ] {
+        assert!(response.status().is_success());
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE event_type='attachment.admin_access'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0
+    );
+}
+
+// Bypassing or double-charging the body bucket breaks the hand-derived 60/61 boundary.
+#[sqlx::test]
+async fn successful_replay_body_attempts_saturate_once_without_duplicate_mutations(pool: PgPool) {
+    let objects = Arc::new(MemoryObjectStore::default());
+    let app = app_with_objects(pool.clone(), objects.clone()).await;
+    let (admin_cookie, admin_csrf, page) = setup(&app).await;
+    let (cookie, csrf, _, _) = member(&app, &pool, &admin_cookie, &admin_csrf, page).await;
+    let key = Uuid::now_v7();
+    for attempt in 1..=60 {
+        let response = keyed_upload(&app, &cookie, &csrf, page, b"hello", "file.txt", key).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "streamed attempt {attempt}"
+        );
+    }
+    let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = polled.clone();
+    let body = Body::from_stream(futures_util::stream::once(async move {
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok::<_, std::io::Error>(bytes::Bytes::from(multipart(
+            b"hello",
+            "file.txt",
+            "text/plain",
+        )))
+    }));
+    assert_eq!(
+        keyed_upload_body(&app, &cookie, &csrf, page, 5, body, key)
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(
+        !polled.load(std::sync::atomic::Ordering::SeqCst),
+        "saturated replay must not process body"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachment_staging")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE event_type LIKE 'attachment.%'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+    let object: Uuid = sqlx::query_scalar("SELECT object_key FROM attachments")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(objects.size(object).await.is_ok());
 }
 #[sqlx::test]
 async fn concurrent_idempotency_reservation_conflicts_then_replays_without_object_writes(

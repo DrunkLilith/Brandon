@@ -649,21 +649,21 @@ Commit: `feat(search): add permission-aware blind search`
 - Produces: `GET/DELETE /attachments/{id}`.
 - Produces: `ObjectStore` trait with MinIO implementation and in-memory test implementation.
 
-- [ ] **Step 1: Write RED streaming round-trip test**
+- [x] **Step 1: Write RED streaming round-trip test**
 
 Upload multi-chunk bytes, assert object store contains no plaintext marker/name, download through API and assert byte equality.
 
-- [ ] **Step 2: Implement staging-object upload and chunked AEAD stream format**
+- [x] **Step 2: Implement staging-object upload and chunked AEAD stream format**
 
 Each chunk authenticates workspace ID, attachment ID, chunk index and total declared size. Metadata becomes visible only after object finalize and SQL commit.
 
-- [ ] **Step 3: Write RED tests for interrupted upload, MIME/size rejection and orphan cleanup**
+- [x] **Step 3: Write RED tests for interrupted upload, MIME/size rejection and orphan cleanup**
 
-- [ ] **Step 4: Implement validation, cleanup job and authorized download**
+- [x] **Step 4: Implement validation, cleanup job and authorized download**
 
 Download verifies page permission. HTTP range is initially supported only on chunk boundaries and returns documented 416 otherwise.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `cargo test -p knowledge-server --test api_attachments`  
 Expected: PASS.  

@@ -132,6 +132,19 @@ impl UserRepository {
         pool: &PgPool,
         bucket_keys: &[[u8; 32]],
     ) -> Result<bool, StoreError> {
+        Self::consume_rate_limit_attempt(pool, bucket_keys, 5).await
+    }
+
+    /// Configurable attempts per the existing 15 minute SQL window. Domain
+    /// separation is the caller's responsibility; auth still uses five.
+    pub async fn consume_rate_limit_attempt(
+        pool: &PgPool,
+        bucket_keys: &[[u8; 32]],
+        limit: i32,
+    ) -> Result<bool, StoreError> {
+        if !(1..=10000).contains(&limit) {
+            return Err(StoreError::CorruptData("invalid rate limit"));
+        }
         let mut transaction = pool.begin().await?;
         sqlx::query(
             "DELETE FROM login_rate_limits
@@ -150,7 +163,7 @@ impl UserRepository {
                     failure_count = CASE
                         WHEN login_rate_limits.window_started_at < now() - interval '15 minutes'
                             THEN 1
-                        ELSE LEAST(login_rate_limits.failure_count + 1, 6)
+                        ELSE LEAST(login_rate_limits.failure_count + 1, $2 + 1)
                     END,
                     window_started_at = CASE
                         WHEN login_rate_limits.window_started_at < now() - interval '15 minutes'
@@ -158,9 +171,10 @@ impl UserRepository {
                         ELSE login_rate_limits.window_started_at
                     END,
                     updated_at = now()
-                 RETURNING failure_count <= 5",
+                 RETURNING failure_count <= $2",
             )
             .bind(bucket_key.as_slice())
+            .bind(limit)
             .fetch_one(&mut *transaction)
             .await?;
             allowed &= bucket_allowed;

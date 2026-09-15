@@ -4,6 +4,7 @@ mod blind_index;
 mod envelope;
 mod keys;
 mod passwords;
+pub mod stream;
 
 pub use blind_index::{BlindIndexer, BlindToken};
 pub use envelope::{DecryptedBytes, EncryptedEnvelope, EnvelopeCipher, KeyVersion};

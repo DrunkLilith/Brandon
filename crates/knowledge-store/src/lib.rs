@@ -1,5 +1,6 @@
 //! PostgreSQL and object-storage adapters for Knowledge Platform.
 
+pub mod attachments;
 pub mod audit;
 pub mod groups;
 pub mod pages;

@@ -16,6 +16,15 @@ pub struct ApiProblem {
 }
 
 impl ApiProblem {
+    pub fn upload_rate_limited() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/upload-rate-limited",
+            title: "Too many upload attempts",
+            status: 429,
+            detail: "Try uploading again later".into(),
+            code: "upload_rate_limited",
+        }
+    }
     #[must_use]
     pub fn validation(field: &str, message: &str) -> Self {
         Self {

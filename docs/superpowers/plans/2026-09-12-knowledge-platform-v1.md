@@ -607,29 +607,29 @@ Commit: `feat(permissions): enforce restricted page subtrees`
 - Produces: `GET /api/v1/search?q=&space=&author=&from=&to=`.
 - Produces: ACL-filtered `SearchHit { page_id, title, snippet, updated_at }`.
 
-- [ ] **Step 1: Write RED deterministic tokenization tests**
+- [x] **Step 1: Write RED deterministic tokenization tests**
 
 Cases cover Russian/English case folding, Unicode normalization, punctuation, repeated terms, phrase candidates and prefix lengths 3–12.
 
-- [ ] **Step 2: Implement normalization and HMAC-SHA-256 token generation**
+- [x] **Step 2: Implement normalization and HMAC-SHA-256 token generation**
 
 No raw word or reversible encoding is exposed by `BlindToken` debug/serialization.
 
-- [ ] **Step 3: Write RED persistence test proving plaintext terms are absent**
+- [x] **Step 3: Write RED persistence test proving plaintext terms are absent**
 
 After indexing marker `СЕКРЕТНЫЙ_МАРКЕР`, query raw DB dumps for UTF-8 marker and assert no match.
 
-- [ ] **Step 4: Implement transactional reindex on page save/archive/restore**
+- [x] **Step 4: Implement transactional reindex on page save/archive/restore**
 
-- [ ] **Step 5: Write RED ACL search tests**
+- [x] **Step 5: Write RED ACL search tests**
 
 Search returns accessible candidates only, checks restricted boundary before decryption, generates snippets in memory and caps candidate count.
 
-- [ ] **Step 6: Implement query route, ranking and filters**
+- [x] **Step 6: Implement query route, ranking and filters**
 
 Rank exact title phrase, title tokens, body phrase, body tokens, then recency; stable tie-breaker is page ID.
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run: `cargo test -p knowledge-crypto blind_index && cargo test -p knowledge-server --test api_search`  
 Expected: PASS.  

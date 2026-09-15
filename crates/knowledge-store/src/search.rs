@@ -127,6 +127,8 @@ impl BlindSearchRepository {
                     matched.title_frequency, matched.body_frequency
                FROM matched
                JOIN pages p ON p.workspace_id = $1 AND p.id = matched.page_id
+               JOIN spaces s ON s.workspace_id = p.workspace_id AND s.id = p.space_id
+                            AND s.archived_at IS NULL
                JOIN users u ON u.workspace_id = $1 AND u.id = $2
                JOIN workspace_members wm ON wm.workspace_id = u.workspace_id AND wm.user_id = u.id
                CROSS JOIN LATERAL (

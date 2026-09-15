@@ -399,6 +399,63 @@ async fn search_applies_acl_before_the_candidate_cap_and_rechecks_restricted_pag
 }
 
 #[sqlx::test]
+async fn search_excludes_archived_spaces_before_the_candidate_cap(pool: PgPool) {
+    let app = app(pool).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let active_space = create_space(&app, &cookie, &csrf, "Active search").await;
+    let visible_page = create_page(
+        &app,
+        &cookie,
+        &csrf,
+        active_space,
+        false,
+        "Visible archived-space marker",
+        "Active result",
+    )
+    .await;
+    let archived_space = create_space(&app, &cookie, &csrf, "Archived search").await;
+    for number in 0..101 {
+        create_page(
+            &app,
+            &cookie,
+            &csrf,
+            archived_space,
+            false,
+            &format!("Archived-space marker {number}"),
+            "This page belongs to an archived space",
+        )
+        .await;
+    }
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("/api/v1/spaces/{archived_space}"),
+            json!({}),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+
+    let response = send(
+        &app,
+        "GET",
+        "/api/v1/search?q=marker",
+        json!({}),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let hits = body(response).await;
+    assert_eq!(hits.as_array().unwrap().len(), 1);
+    assert_eq!(hits[0]["pageId"], visible_page.to_string());
+}
+
+#[sqlx::test]
 async fn search_ranks_phrase_and_field_matches_then_honors_filters(pool: PgPool) {
     let app = app(pool.clone()).await;
     let (cookie, csrf) = login_as(&app, "admin@example.com").await;
@@ -443,6 +500,26 @@ async fn search_ranks_phrase_and_field_matches_then_honors_filters(pool: PgPool)
         "This has a plan for a revised guide",
     )
     .await;
+    let split_fields = create_page(
+        &app,
+        &cookie,
+        &csrf,
+        space_id,
+        false,
+        "Plan",
+        "Guide spread across title and body",
+    )
+    .await;
+    let false_match = create_page(
+        &app,
+        &cookie,
+        &csrf,
+        space_id,
+        false,
+        "Plan without the other query word",
+        "Unrelated body content",
+    )
+    .await;
 
     let response = send(
         &app,
@@ -461,7 +538,17 @@ async fn search_ranks_phrase_and_field_matches_then_honors_filters(pool: PgPool)
         .iter()
         .map(|hit| hit["pageId"].as_str().unwrap().parse().unwrap())
         .collect();
-    assert_eq!(ids, [title_phrase, title_tokens, body_phrase, body_tokens]);
+    assert_eq!(
+        ids,
+        [
+            title_phrase,
+            title_tokens,
+            body_phrase,
+            body_tokens,
+            split_fields
+        ]
+    );
+    assert!(!ids.contains(&false_match));
 
     let author_id: Uuid = sqlx::query_scalar("SELECT updated_by FROM pages WHERE id = $1")
         .bind(title_phrase)
@@ -478,7 +565,7 @@ async fn search_ranks_phrase_and_field_matches_then_honors_filters(pool: PgPool)
     )
     .await;
     assert_eq!(author.status(), StatusCode::OK);
-    assert_eq!(body(author).await.as_array().unwrap().len(), 4);
+    assert_eq!(body(author).await.as_array().unwrap().len(), 6);
 
     let after = send(
         &app,
@@ -500,4 +587,42 @@ async fn search_ranks_phrase_and_field_matches_then_honors_filters(pool: PgPool)
     )
     .await;
     assert_eq!(body(before).await, json!([]));
+}
+
+#[sqlx::test]
+async fn search_snippet_preserves_a_late_nfkc_normalized_match(pool: PgPool) {
+    let app = app(pool).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let space_id = create_space(&app, &cookie, &csrf, "Snippet").await;
+    let content = format!(
+        "{} \u{ff2f}\u{ff26}\u{ff26}\u{ff29}\u{ff23}\u{ff25} remains original",
+        "filler ".repeat(30)
+    );
+    create_page(
+        &app,
+        &cookie,
+        &csrf,
+        space_id,
+        false,
+        "Normalized snippet",
+        &content,
+    )
+    .await;
+
+    let response = send(
+        &app,
+        "GET",
+        &format!("/api/v1/search?q=office&space={space_id}"),
+        json!({}),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body(response).await[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("\u{ff2f}\u{ff26}\u{ff26}\u{ff29}\u{ff23}\u{ff25}")
+    );
 }

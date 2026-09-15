@@ -161,6 +161,14 @@ async fn search(
         let body_phrase = has_exact_phrase(&body_words, &words);
         let title_tokens = has_prefix_matches(&title_words, &words);
         let body_tokens = has_prefix_matches(&body_words, &words);
+        let page_tokens = has_prefix_matches(
+            &title_words
+                .iter()
+                .chain(&body_words)
+                .cloned()
+                .collect::<Vec<_>>(),
+            &words,
+        );
         let rank = if title_phrase {
             4
         } else if title_tokens {
@@ -169,13 +177,17 @@ async fn search(
             2
         } else if body_tokens {
             1
+        } else if page_tokens {
+            0
         } else {
             continue;
         };
         let snippet_source = if title_phrase || title_tokens {
             &title
-        } else {
+        } else if body_phrase || body_tokens || has_any_prefix_match(&body_words, &words) {
             &body
+        } else {
+            &title
         };
         let snippet = snippet(snippet_source, &words);
         hits.push(RankedHit {
@@ -227,14 +239,26 @@ fn query_tokens(indexer: &BlindIndexer, words: &[String]) -> Vec<BlindToken> {
 
 fn has_prefix_matches(content_words: &[String], query_words: &[String]) -> bool {
     query_words.iter().all(|query_word| {
-        content_words.iter().any(|content_word| {
-            if (3..=12).contains(&query_word.chars().count()) {
-                content_word.starts_with(query_word)
-            } else {
-                content_word == query_word
-            }
-        })
+        content_words
+            .iter()
+            .any(|content_word| matches_query_word(content_word, query_word))
     })
+}
+
+fn has_any_prefix_match(content_words: &[String], query_words: &[String]) -> bool {
+    content_words.iter().any(|content_word| {
+        query_words
+            .iter()
+            .any(|query_word| matches_query_word(content_word, query_word))
+    })
+}
+
+fn matches_query_word(content_word: &str, query_word: &str) -> bool {
+    if (3..=12).contains(&query_word.chars().count()) {
+        content_word.starts_with(query_word)
+    } else {
+        content_word == query_word
+    }
 }
 
 fn has_exact_phrase(content_words: &[String], query_words: &[String]) -> bool {
@@ -245,22 +269,10 @@ fn has_exact_phrase(content_words: &[String], query_words: &[String]) -> bool {
 }
 
 fn snippet(text: &str, query_words: &[String]) -> String {
-    let lower_words = BlindIndexer::words("und", text);
-    let match_word = lower_words.iter().find(|word| {
-        query_words.iter().any(|query_word| {
-            if (3..=12).contains(&query_word.chars().count()) {
-                word.starts_with(query_word)
-            } else {
-                word.as_str() == query_word
-            }
-        })
-    });
-    let Some(match_word) = match_word else {
+    let Some(match_byte_offset) = matching_original_word_offset(text, query_words) else {
         return text.chars().take(MAX_SNIPPET_CHARACTERS).collect();
     };
-    let lower = text.to_lowercase();
-    let start = lower.find(match_word).unwrap_or(0);
-    let prefix_characters = lower[..start].chars().count();
+    let prefix_characters = text[..match_byte_offset].chars().count();
     let start = prefix_characters.saturating_sub(MAX_SNIPPET_CHARACTERS / 3);
     let mut value: String = text
         .chars()
@@ -274,6 +286,34 @@ fn snippet(text: &str, query_words: &[String]) -> String {
         value.push('…');
     }
     value
+}
+
+fn matching_original_word_offset(text: &str, query_words: &[String]) -> Option<usize> {
+    let mut word_start = None;
+    for (byte_offset, character) in text.char_indices() {
+        if character.is_alphanumeric() {
+            word_start.get_or_insert(byte_offset);
+        } else if let Some(start) = word_start.take()
+            && BlindIndexer::words("und", &text[start..byte_offset])
+                .iter()
+                .any(|word| {
+                    query_words
+                        .iter()
+                        .any(|query_word| matches_query_word(word, query_word))
+                })
+        {
+            return Some(start);
+        }
+    }
+    word_start.filter(|start| {
+        BlindIndexer::words("und", &text[*start..])
+            .iter()
+            .any(|word| {
+                query_words
+                    .iter()
+                    .any(|query_word| matches_query_word(word, query_word))
+            })
+    })
 }
 
 fn internal<E>(_error: E) -> ApiProblem {

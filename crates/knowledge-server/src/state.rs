@@ -18,7 +18,7 @@ pub(crate) struct RuntimeState {
     pub public_origin: String,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub objects: Option<Arc<dyn ObjectStore>>,
-    pub uploads: Arc<tokio::sync::Semaphore>,
+    pub object_streams: Arc<tokio::sync::Semaphore>,
     pub attachment_retention_days: u32,
 }
 
@@ -43,7 +43,7 @@ impl AppState {
         let dummy_password_hash = PasswordService::recommended()
             .hash("an intentionally invalid password")
             .expect("the operating system must provide randomness at startup");
-        let upload_slots = store
+        let object_stream_slots = store
             .pool()
             .options()
             .get_max_connections()
@@ -57,7 +57,7 @@ impl AppState {
                 public_origin,
                 trusted_proxy_cidrs,
                 objects: None,
-                uploads: Arc::new(tokio::sync::Semaphore::new(upload_slots)),
+                object_streams: Arc::new(tokio::sync::Semaphore::new(object_stream_slots)),
                 attachment_retention_days: 30,
             })),
         })

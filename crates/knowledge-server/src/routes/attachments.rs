@@ -257,7 +257,7 @@ fn response(
         archived: row.archived,
     })
 }
-fn decrypt_text(
+pub(crate) fn decrypt_text(
     key: &WorkspaceKey,
     aad: &[u8],
     ciphertext: Vec<u8>,
@@ -321,7 +321,7 @@ async fn upload(
         .as_ref()
         .ok_or_else(ApiProblem::unavailable)?;
     let _permit = runtime
-        .uploads
+        .object_streams
         .clone()
         .try_acquire_owned()
         .map_err(|_| ApiProblem::unavailable())?;

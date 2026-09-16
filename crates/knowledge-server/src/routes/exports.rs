@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Extension, Path, State},
+    extract::{Extension, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -16,6 +16,8 @@ use knowledge_store::{AccessResolver, attachments::lock_object, users::UserRepos
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
+
+const OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 use crate::{
     CurrentUser,
@@ -45,6 +47,11 @@ struct ExportResponse {
     status: String,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+#[derive(Deserialize)]
+struct ListQuery {
+    after: Option<Uuid>,
+    limit: Option<usize>,
 }
 
 async fn create(
@@ -135,7 +142,13 @@ async fn list(
     State(state): State<AppState>,
     current: CurrentUser,
     Extension(request): Extension<RequestId>,
+    query: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Response, ApiProblem> {
+    let Query(query) = query.map_err(|_| ApiProblem::validation("query", "is invalid"))?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiProblem::validation("limit", "must be between 1 and 100"));
+    }
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
@@ -157,6 +170,7 @@ async fn list(
            FROM exports e
            JOIN spaces s ON s.workspace_id=e.workspace_id AND s.id=e.space_id
           WHERE e.workspace_id=$1 AND s.archived_at IS NULL
+            AND ($4::uuid IS NULL OR e.id<$4)
             AND ($3 OR EXISTS (
                 SELECT 1 FROM space_grants sg
                 LEFT JOIN groups g
@@ -171,16 +185,20 @@ async fn list(
                       AND gm.user_id IS NOT NULL
                   ))
             ))
-          ORDER BY e.id DESC LIMIT 100",
+          ORDER BY e.id DESC LIMIT $5",
     )
     .bind(current.workspace_id)
     .bind(current.user_id)
     .bind(current.workspace_admin)
+    .bind(query.after)
+    .bind(i64::try_from(limit + 1).map_err(internal)?)
     .fetch_all(&mut *tx)
     .await
     .map_err(internal)?;
+    let has_more = rows.len() > limit;
     let output: Vec<_> = rows
         .into_iter()
+        .take(limit)
         .map(|row| ExportResponse {
             id: row.0,
             space_id: row.1,
@@ -189,6 +207,9 @@ async fn list(
             created_at: row.4,
         })
         .collect();
+    let next_cursor = has_more
+        .then(|| output.last().map(|item| item.id))
+        .flatten();
     if current.workspace_admin {
         append_audit_event(
             &mut tx,
@@ -208,7 +229,7 @@ async fn list(
         .map_err(internal)?;
     }
     tx.commit().await.map_err(internal)?;
-    let mut response = Json(json!({"exports":output})).into_response();
+    let mut response = Json(json!({"exports":output,"nextCursor":next_cursor})).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -226,13 +247,32 @@ async fn download(
         .objects
         .clone()
         .ok_or_else(ApiProblem::unavailable)?;
+    let stream_permit = runtime
+        .object_streams
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiProblem::unavailable())?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
+    let object: Uuid = sqlx::query_scalar(
+        "SELECT object_key FROM exports
+          WHERE workspace_id=$1 AND id=$2 AND status='ready' AND expires_at>now()",
+    )
+    .bind(current.workspace_id)
+    .bind(id)
+    .fetch_optional(runtime.store.pool())
+    .await
+    .map_err(internal)?
+    .ok_or_else(ApiProblem::not_found)?;
+    let object_guard = tokio::time::timeout(OP_TIMEOUT, lock_object(runtime.store.pool(), object))
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_workspace_for_audit(&mut tx, current.workspace_id)
         .await
         .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
-    let row=sqlx::query_as::<_,(Uuid,Uuid,i64,i64,i32)>("SELECT object_key,space_id,plaintext_size,ciphertext_size,key_version FROM exports WHERE workspace_id=$1 AND id=$2 AND status='ready' AND expires_at>now()").bind(current.workspace_id).bind(id).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or_else(ApiProblem::not_found)?;
+    let row=sqlx::query_as::<_,(Uuid,Uuid,i64,i64,i32)>("SELECT object_key,space_id,plaintext_size,ciphertext_size,key_version FROM exports WHERE workspace_id=$1 AND id=$2 AND object_key=$3 AND status='ready' AND expires_at>now()").bind(current.workspace_id).bind(id).bind(object).fetch_optional(&mut *tx).await.map_err(internal)?.ok_or_else(ApiProblem::not_found)?;
     authorize_export_snapshot(&mut tx, &key, current, id, row.1).await?;
     append_audit_event(
         &mut tx,
@@ -251,16 +291,12 @@ async fn download(
     .await
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    let mut object_guard = lock_object(runtime.store.pool(), row.0)
-        .await
-        .map_err(internal)?;
-    let still_ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM exports WHERE workspace_id=$1 AND id=$2 AND object_key=$3 AND status='ready' AND expires_at>now())").bind(current.workspace_id).bind(id).bind(row.0).fetch_one(&mut *object_guard).await.map_err(internal)?;
-    if !still_ready {
-        return Err(ApiProblem::not_found());
-    }
     let plaintext = u64::try_from(row.2).map_err(internal)?;
     let expected = u64::try_from(row.3).map_err(internal)?;
-    let actual = objects.size(row.0).await.map_err(internal)?;
+    let actual = tokio::time::timeout(OP_TIMEOUT, objects.size(row.0))
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
     if actual != expected {
         return Err(ApiProblem::internal());
     }
@@ -271,27 +307,39 @@ async fn download(
         id.as_bytes(),
         plaintext,
     );
-    let footer = objects
-        .read_range(row.0, stream_cipher.footer_range())
-        .await
-        .map_err(internal)?;
+    let footer = tokio::time::timeout(
+        OP_TIMEOUT,
+        objects.read_range(row.0, stream_cipher.footer_range()),
+    )
+    .await
+    .map_err(internal)?
+    .map_err(internal)?;
     stream_cipher.verify_footer(&footer).map_err(internal)?;
     let body_stream = stream::try_unfold(
-        (objects, stream_cipher, row.0, 0_u64, object_guard),
-        |(objects, cipher, object, index, guard)| async move {
+        (
+            objects,
+            stream_cipher,
+            row.0,
+            0_u64,
+            object_guard,
+            stream_permit,
+        ),
+        |(objects, cipher, object, index, guard, permit)| async move {
             if index >= cipher.chunk_count() {
                 return Ok::<_, knowledge_store::attachments::StorageError>(None);
             }
             let range = cipher
                 .frame_range(index)
                 .map_err(|_| knowledge_store::attachments::StorageError)?;
-            let frame = objects.read_range(object, range).await?;
+            let frame = tokio::time::timeout(OP_TIMEOUT, objects.read_range(object, range))
+                .await
+                .map_err(|_| knowledge_store::attachments::StorageError)??;
             let clear = cipher
                 .decrypt_chunk(index, &frame)
                 .map_err(|_| knowledge_store::attachments::StorageError)?;
             Ok(Some((
                 bytes::Bytes::from(clear),
-                (objects, cipher, object, index + 1, guard),
+                (objects, cipher, object, index + 1, guard, permit),
             )))
         },
     );

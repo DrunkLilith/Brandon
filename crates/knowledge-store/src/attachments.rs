@@ -266,15 +266,26 @@ pub async fn lock_object(
     pool: &PgPool,
     key: Uuid,
 ) -> Result<PoolConnection<Postgres>, sqlx::Error> {
+    loop {
+        if let Some(connection) = try_lock_object(pool, key).await? {
+            return Ok(connection);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+pub async fn try_lock_object(
+    pool: &PgPool,
+    key: Uuid,
+) -> Result<Option<PoolConnection<Postgres>>, sqlx::Error> {
     let mut connection = pool.acquire().await?;
-    // Set before the first lock await. Cancellation must CLOSE, not return a
-    // session holding pg_advisory_lock to the pool.
+    // Set before the try-lock await. Cancellation after the server grants the
+    // session lock must CLOSE, not return a locked session to the pool.
     connection.close_on_drop();
-    sqlx::query("SELECT pg_advisory_lock($1)")
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
         .bind(object_lock_key(key))
-        .execute(&mut *connection)
+        .fetch_one(&mut *connection)
         .await?;
-    Ok(connection)
+    Ok(locked.then_some(connection))
 }
 /// Idempotent orphan cleanup. Does not purge soft-deleted live attachments.
 pub async fn cleanup_orphans(

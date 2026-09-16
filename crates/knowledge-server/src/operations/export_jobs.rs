@@ -10,7 +10,7 @@ use knowledge_crypto::{
 };
 use knowledge_store::{
     AccessResolver,
-    attachments::{ObjectStore, ObjectUpload, lock_object},
+    attachments::{ObjectStore, ObjectUpload, lock_object, try_lock_object},
     jobs::{JobLease, JobRepository},
     pages::PageRepository,
 };
@@ -30,7 +30,7 @@ use crate::{
     },
     problem::ApiProblem,
     routes::{
-        attachments::attachment_aad,
+        attachments::{attachment_aad, decrypt_text as decrypt_attachment_text},
         pages::page_aad,
         users::{decrypt_text, load_workspace_key},
     },
@@ -123,9 +123,13 @@ impl JobRunner {
         else {
             return Ok(false);
         };
-        let key = load_workspace_key(state, lease.workspace_id)
-            .await
-            .map_err(|_| OperationError)?;
+        let key = match load_workspace_key(state, lease.workspace_id).await {
+            Ok(key) => key,
+            Err(_) => {
+                self.fail_key_lease(state, &lease).await?;
+                return Ok(true);
+            }
+        };
         let payload = match decrypt_job_payload(&key, &lease) {
             Ok(payload) => payload,
             Err(_) => {
@@ -148,11 +152,57 @@ impl JobRunner {
     pub async fn run_maintenance_once(&self, state: &AppState) -> Result<u64, OperationError> {
         let runtime = state.runtime().ok_or(OperationError)?;
         let objects = runtime.objects.clone().ok_or(OperationError)?;
-        knowledge_store::attachments::cleanup_orphans(runtime.store.pool(), objects.as_ref())
+        let attachment_failed =
+            knowledge_store::attachments::cleanup_orphans(runtime.store.pool(), objects.as_ref())
+                .await
+                .is_err();
+        let export_orphan_failed = cleanup_export_orphans(state, objects.as_ref())
+            .await
+            .is_err();
+        let expiry = expire_exports(state, objects.as_ref()).await;
+        if attachment_failed || export_orphan_failed || expiry.is_err() {
+            Err(OperationError)
+        } else {
+            expiry
+        }
+    }
+    async fn fail_key_lease(
+        &self,
+        state: &AppState,
+        lease: &JobLease,
+    ) -> Result<(), OperationError> {
+        let runtime = state.runtime().ok_or(OperationError)?;
+        let mut tx = runtime
+            .store
+            .pool()
+            .begin()
             .await
             .map_err(|_| OperationError)?;
-        cleanup_export_orphans(state, objects.as_ref()).await?;
-        expire_exports(state, objects.as_ref()).await
+        lock_workspace_for_audit(&mut tx, lease.workspace_id)
+            .await
+            .map_err(|_| OperationError)?;
+        if !JobRepository::retry(&mut tx, lease, backoff(lease.attempts))
+            .await
+            .map_err(|_| OperationError)?
+        {
+            return Ok(());
+        }
+        sqlx::query(
+            "UPDATE exports
+                SET status=$3,updated_at=now()
+              WHERE workspace_id=$1 AND job_id=$2 AND status<>'ready'",
+        )
+        .bind(lease.workspace_id)
+        .bind(lease.id)
+        .bind(if lease.attempts >= 5 {
+            "failed"
+        } else {
+            "queued"
+        })
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| OperationError)?;
+        tx.commit().await.map_err(|_| OperationError)
     }
     async fn fail_opaque_lease(
         &self,
@@ -299,9 +349,13 @@ impl JobRunner {
         .await
         .map_err(|_| OperationError)?;
         tx.commit().await.map_err(|_| OperationError)?;
-        let mut object_connection = lock_object(runtime.store.pool(), object)
-            .await
-            .map_err(|_| OperationError)?;
+        let mut object_connection = tokio::time::timeout(
+            Duration::from_secs(30),
+            lock_object(runtime.store.pool(), object),
+        )
+        .await
+        .map_err(|_| OperationError)?
+        .map_err(|_| OperationError)?;
         let mut upload = tokio::time::timeout(Duration::from_secs(30), objects.start(object))
             .await
             .map_err(|_| OperationError)?
@@ -350,14 +404,7 @@ impl JobRunner {
                 TarPiece::Source { id, size } => match id {
                     SourceId::PageMarkdown(id) => {
                         let source = pages.get(&id).ok_or(OperationError)?;
-                        let body = decrypt_text(
-                            key,
-                            &page_aad(lease.workspace_id, id, Some(source.version), "body"),
-                            source.body_ciphertext.clone(),
-                            source.body_nonce.clone(),
-                            source.body_key_version,
-                        )
-                        .map_err(|_| OperationError)?;
+                        let body = load_page_body(&stream_context, source).await?;
                         if body.len() as u64 != size {
                             return Err(OperationError);
                         }
@@ -464,9 +511,12 @@ async fn cleanup_export_orphans(
     let runtime = state.runtime().ok_or(OperationError)?;
     let keys:Vec<Uuid>=sqlx::query_scalar("SELECT object_key FROM export_staging WHERE expires_at<now() ORDER BY expires_at LIMIT 100").fetch_all(runtime.store.pool()).await.map_err(|_|OperationError)?;
     for object in keys {
-        let mut connection = lock_object(runtime.store.pool(), object)
+        let Some(mut connection) = try_lock_object(runtime.store.pool(), object)
             .await
-            .map_err(|_| OperationError)?;
+            .map_err(|_| OperationError)?
+        else {
+            continue;
+        };
         let row:Option<(Option<String>,bool)>=sqlx::query_as("SELECT s.remote_upload_id,EXISTS(SELECT 1 FROM exports e WHERE e.object_key=s.object_key AND e.status='ready') FROM export_staging s WHERE s.object_key=$1 AND s.expires_at<now()").bind(object).fetch_optional(&mut *connection).await.map_err(|_|OperationError)?;
         let Some((remote, live)) = row else { continue };
         if live {
@@ -504,9 +554,12 @@ async fn expire_exports(
     let rows:Vec<(Uuid,Uuid,Uuid,Uuid)>=sqlx::query_as("SELECT id,workspace_id,requested_by,object_key FROM exports WHERE status='ready' AND expires_at<=now() ORDER BY expires_at LIMIT 100").fetch_all(runtime.store.pool()).await.map_err(|_|OperationError)?;
     let mut count = 0;
     for (export, workspace, actor, object) in rows {
-        let mut connection = lock_object(runtime.store.pool(), object)
+        let Some(mut connection) = try_lock_object(runtime.store.pool(), object)
             .await
-            .map_err(|_| OperationError)?;
+            .map_err(|_| OperationError)?
+        else {
+            continue;
+        };
         let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM exports WHERE id=$1 AND workspace_id=$2 AND object_key=$3 AND status='ready' AND expires_at<=now())").bind(export).bind(workspace).bind(object).fetch_one(&mut *connection).await.map_err(|_|OperationError)?;
         if !eligible {
             continue;
@@ -555,6 +608,12 @@ async fn expire_exports(
 }
 
 #[derive(FromRow)]
+struct PageCandidate {
+    id: Uuid,
+    markdown_size: i64,
+    metadata_size: i64,
+}
+#[derive(FromRow)]
 struct PageSource {
     id: Uuid,
     stable_key: Uuid,
@@ -564,12 +623,10 @@ struct PageSource {
     title_ciphertext: Vec<u8>,
     title_nonce: Vec<u8>,
     title_key_version: i32,
-    body_ciphertext: Vec<u8>,
-    body_nonce: Vec<u8>,
-    body_key_version: i32,
     properties_ciphertext: Vec<u8>,
     properties_nonce: Vec<u8>,
     properties_key_version: i32,
+    markdown_size: i64,
 }
 #[derive(FromRow)]
 struct AttachmentSource {
@@ -585,6 +642,28 @@ struct AttachmentSource {
     mime_nonce: Vec<u8>,
     mime_key_version: i32,
     key_version: i32,
+}
+
+fn preflight_page_sizes(
+    sizes: &[(u64, usize)],
+    limits: ArchiveLimits,
+) -> Result<(), OperationError> {
+    if sizes.len() > limits.max_pages
+        || sizes
+            .iter()
+            .any(|(_, metadata)| *metadata > limits.max_page_metadata_bytes)
+    {
+        return Err(OperationError);
+    }
+    let total = sizes.iter().try_fold(0_u64, |total, (body, metadata)| {
+        total
+            .checked_add(*body)
+            .and_then(|value| value.checked_add(*metadata as u64))
+    });
+    if total.is_none_or(|total| total > limits.max_archive_bytes) {
+        return Err(OperationError);
+    }
+    Ok(())
 }
 
 async fn snapshot(
@@ -624,12 +703,24 @@ async fn snapshot(
         space.2,
     )
     .map_err(|_| OperationError)?;
-    let candidates:Vec<PageSource>=sqlx::query_as("SELECT p.id,p.stable_key,p.parent_id,p.version,r.id revision_id,r.title_ciphertext,r.title_nonce,r.title_key_version,r.body_ciphertext,r.body_nonce,r.body_key_version,r.properties_ciphertext,r.properties_nonce,r.properties_key_version FROM pages p JOIN page_revisions r ON r.workspace_id=p.workspace_id AND r.page_id=p.id AND r.version=p.version WHERE p.workspace_id=$1 AND p.space_id=$2 AND p.archived_at IS NULL ORDER BY p.id LIMIT 1001").bind(lease.workspace_id).bind(payload.space_id).fetch_all(&mut *tx).await.map_err(|_|OperationError)?;
+    let candidates: Vec<PageCandidate> = sqlx::query_as(
+        "SELECT p.id,(octet_length(r.body_ciphertext)-16)::bigint markdown_size,
+                (octet_length(r.title_ciphertext)+octet_length(r.properties_ciphertext)-32)::bigint metadata_size
+           FROM pages p
+           JOIN page_revisions r
+             ON r.workspace_id=p.workspace_id AND r.page_id=p.id AND r.version=p.version
+          WHERE p.workspace_id=$1 AND p.space_id=$2 AND p.archived_at IS NULL
+          ORDER BY p.id LIMIT 1001",
+    )
+    .bind(lease.workspace_id)
+    .bind(payload.space_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| OperationError)?;
     if candidates.len() > 1000 {
         return Err(OperationError);
     }
-    let mut pages = HashMap::new();
-    let mut page_inputs = Vec::new();
+    let mut accessible = Vec::new();
     for page in candidates {
         let access = PageRepository::access_context(
             &mut tx,
@@ -646,6 +737,43 @@ async fn snapshot(
         if !active {
             continue;
         }
+        accessible.push(page);
+    }
+    let sizes = accessible
+        .iter()
+        .map(|page| {
+            Ok((
+                u64::try_from(page.markdown_size).map_err(|_| OperationError)?,
+                usize::try_from(page.metadata_size).map_err(|_| OperationError)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, OperationError>>()?;
+    preflight_page_sizes(&sizes, ArchiveLimits::default())?;
+    let accessible_ids: Vec<_> = accessible.iter().map(|page| page.id).collect();
+    let metadata: Vec<PageSource> = if accessible_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
+            "SELECT p.id,p.stable_key,p.parent_id,p.version,r.id revision_id,
+                    r.title_ciphertext,r.title_nonce,r.title_key_version,
+                    r.properties_ciphertext,r.properties_nonce,r.properties_key_version,
+                    (octet_length(r.body_ciphertext)-16)::bigint markdown_size
+               FROM pages p
+               JOIN page_revisions r
+                 ON r.workspace_id=p.workspace_id AND r.page_id=p.id AND r.version=p.version
+              WHERE p.workspace_id=$1 AND p.space_id=$2 AND p.id=ANY($3)
+              ORDER BY p.id",
+        )
+        .bind(lease.workspace_id)
+        .bind(payload.space_id)
+        .bind(&accessible_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| OperationError)?
+    };
+    let mut pages = HashMap::new();
+    let mut page_inputs = Vec::new();
+    for page in metadata {
         let title = decrypt_text(
             key,
             &page_aad(lease.workspace_id, page.id, Some(page.version), "title"),
@@ -676,21 +804,13 @@ async fn snapshot(
             revision: page.version,
             title,
             properties,
-            markdown_size: page.body_ciphertext.len() as u64,
+            markdown_size: u64::try_from(page.markdown_size).map_err(|_| OperationError)?,
         });
         pages.insert(page.id, page);
     }
-    // AEAD adds 16 bytes; exact UTF-8 plaintext length is ciphertext length minus tag.
     for input in &mut page_inputs {
         let page = pages.get(&input.page_id).ok_or(OperationError)?;
         input.parent_page_id = page.parent_id.filter(|parent| pages.contains_key(parent));
-        input.markdown_size = u64::try_from(
-            page.body_ciphertext
-                .len()
-                .checked_sub(16)
-                .ok_or(OperationError)?,
-        )
-        .map_err(|_| OperationError)?;
     }
     let ids: Vec<Uuid> = pages.keys().copied().collect();
     let rows: Vec<AttachmentSource> = if ids.is_empty() {
@@ -704,19 +824,17 @@ async fn snapshot(
     let mut attachment_inputs = Vec::new();
     let mut attachments = HashMap::new();
     for row in rows {
-        let name = decrypt_text(
+        let name = decrypt_attachment_text(
             key,
-            &String::from_utf8(attachment_aad(lease.workspace_id, row.id, "name"))
-                .map_err(|_| OperationError)?,
+            &attachment_aad(lease.workspace_id, row.id, "name"),
             row.original_name_ciphertext.clone(),
             row.original_name_nonce.clone(),
             row.original_name_key_version,
         )
         .map_err(|_| OperationError)?;
-        let mime = decrypt_text(
+        let mime = decrypt_attachment_text(
             key,
-            &String::from_utf8(attachment_aad(lease.workspace_id, row.id, "mime"))
-                .map_err(|_| OperationError)?,
+            &attachment_aad(lease.workspace_id, row.id, "mime"),
             row.mime_ciphertext.clone(),
             row.mime_nonce.clone(),
             row.mime_key_version,
@@ -909,6 +1027,72 @@ struct ExportStreamContext<'a> {
     payload: &'a ExportJobPayload,
     lease_seconds: i32,
 }
+async fn load_page_body(
+    context: &ExportStreamContext<'_>,
+    source: &PageSource,
+) -> Result<String, OperationError> {
+    let runtime = context.state.runtime().ok_or(OperationError)?;
+    let mut tx = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| OperationError)?;
+    authorize_payload(&mut tx, context.payload).await?;
+    let access = PageRepository::access_context(
+        &mut tx,
+        context.lease.workspace_id,
+        context.payload.requester_id,
+        source.id,
+    )
+    .await
+    .map_err(|_| OperationError)?;
+    let active: bool = sqlx::query_scalar(
+        "WITH RECURSIVE a(id,parent_id,archived_at) AS (
+             SELECT id,parent_id,archived_at FROM pages WHERE workspace_id=$1 AND id=$2
+             UNION ALL
+             SELECT p.id,p.parent_id,p.archived_at FROM pages p JOIN a ON a.parent_id=p.id
+              WHERE p.workspace_id=$1
+         )
+         SELECT EXISTS(SELECT 1 FROM a)
+            AND NOT EXISTS(SELECT 1 FROM a WHERE archived_at IS NOT NULL)",
+    )
+    .bind(context.lease.workspace_id)
+    .bind(source.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| OperationError)?;
+    if !active || !access.is_some_and(|value| value.can(Capability::ReadPage)) {
+        return Err(OperationError);
+    }
+    let row: (Vec<u8>, Vec<u8>, i32) = sqlx::query_as(
+        "SELECT body_ciphertext,body_nonce,body_key_version
+           FROM page_revisions
+          WHERE workspace_id=$1 AND page_id=$2 AND id=$3 AND version=$4",
+    )
+    .bind(context.lease.workspace_id)
+    .bind(source.id)
+    .bind(source.revision_id)
+    .bind(source.version)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| OperationError)?;
+    let body = decrypt_text(
+        context.key,
+        &page_aad(
+            context.lease.workspace_id,
+            source.id,
+            Some(source.version),
+            "body",
+        ),
+        row.0,
+        row.1,
+        row.2,
+    )
+    .map_err(|_| OperationError)?;
+    tx.commit().await.map_err(|_| OperationError)?;
+    Ok(body)
+}
 async fn stream_attachment(
     context: &ExportStreamContext<'_>,
     id: Uuid,
@@ -952,27 +1136,33 @@ async fn stream_attachment(
         id.as_bytes(),
         size,
     );
-    if objects
-        .size(row.object_key)
+    if tokio::time::timeout(Duration::from_secs(30), objects.size(row.object_key))
         .await
+        .map_err(|_| OperationError)?
         .map_err(|_| OperationError)?
         != u64::try_from(row.ciphertext_size).map_err(|_| OperationError)?
     {
         return Err(OperationError);
     }
-    let footer = objects
-        .read_range(row.object_key, stream.footer_range())
-        .await
-        .map_err(|_| OperationError)?;
+    let footer = tokio::time::timeout(
+        Duration::from_secs(30),
+        objects.read_range(row.object_key, stream.footer_range()),
+    )
+    .await
+    .map_err(|_| OperationError)?
+    .map_err(|_| OperationError)?;
     stream.verify_footer(&footer).map_err(|_| OperationError)?;
     for index in 0..stream.chunk_count() {
-        let frame = objects
-            .read_range(
+        let frame = tokio::time::timeout(
+            Duration::from_secs(30),
+            objects.read_range(
                 row.object_key,
                 stream.frame_range(index).map_err(|_| OperationError)?,
-            )
-            .await
-            .map_err(|_| OperationError)?;
+            ),
+        )
+        .await
+        .map_err(|_| OperationError)?
+        .map_err(|_| OperationError)?;
         let clear = stream
             .decrypt_chunk(index, &frame)
             .map_err(|_| OperationError)?;
@@ -994,5 +1184,23 @@ const fn backoff(attempt: i32) -> i32 {
         2 => 5,
         3 => 30,
         _ => 60,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_size_preflight_rejects_oversized_sources_without_allocating_them() {
+        let limits = ArchiveLimits::default();
+        assert!(
+            preflight_page_sizes(&[(limits.max_archive_bytes + 1, 1)], limits).is_err(),
+            "oversized bodies must be rejected from lengths alone"
+        );
+        assert!(
+            preflight_page_sizes(&[(1, limits.max_page_metadata_bytes + 1)], limits).is_err(),
+            "oversized metadata must be rejected before ciphertext retention or decryption"
+        );
     }
 }

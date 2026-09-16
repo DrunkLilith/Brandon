@@ -1,14 +1,17 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createContext, useContext, type ReactNode } from 'react'
 
-import { ApiError, apiClient } from '../api/client'
-import type { Session } from '../api/generated'
+import { ApiError, apiClient, unwrap } from '../api/client'
+import type { components } from '../api/generated'
+
+type Session = components['schemas']['Session']
 
 const sessionKey = ['session'] as const
 
 interface SessionContextValue {
   session: Session | null
   loading: boolean
+  error: boolean
   login(email: string, password: string): Promise<void>
   logout(): Promise<void>
 }
@@ -21,7 +24,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     queryKey: sessionKey,
     retry: false,
     queryFn: async () => {
-      try { return await apiClient.request<Session>('/api/v1/auth/session') }
+      try { return unwrap(await apiClient.GET('/api/v1/auth/session')) }
       catch (error) {
         if (error instanceof ApiError && error.status === 401) return null
         throw error
@@ -30,19 +33,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   })
 
   const login = async (email: string, password: string) => {
-    const session = await apiClient.request<Session>('/api/v1/auth/login', {
-      method: 'POST', json: { email, password }, csrf: false,
-    })
+    const session = unwrap(await apiClient.POST('/api/v1/auth/login', { body: { email, password } }))
     apiClient.invalidateCsrf()
     queryClient.setQueryData(sessionKey, session)
   }
   const logout = async () => {
-    await apiClient.request('/api/v1/auth/logout', { method: 'POST', response: 'empty' })
+    unwrap(await apiClient.POST('/api/v1/auth/logout'))
     apiClient.invalidateCsrf()
     queryClient.setQueryData(sessionKey, null)
   }
 
-  return <SessionContext.Provider value={{ session: query.data ?? null, loading: query.isPending, login, logout }}>{children}</SessionContext.Provider>
+  return <SessionContext.Provider value={{ session: query.data ?? null, loading: query.isPending, error: query.isError, login, logout }}>{children}</SessionContext.Provider>
 }
 
 export function useSession() {

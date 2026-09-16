@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import { useSession } from './session'
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { login } = useSession()
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
@@ -16,7 +17,8 @@ export function LoginPage() {
     setError(false)
     try {
       await login(String(data.get('email') ?? ''), String(data.get('password') ?? ''))
-      navigate('/app', { replace: true })
+      const requested = (location.state as { from?: unknown } | null)?.from
+      navigate(typeof requested === 'string' && requested.startsWith('/') && !requested.startsWith('//') ? requested : '/app', { replace: true })
     } catch {
       setError(true)
     } finally {

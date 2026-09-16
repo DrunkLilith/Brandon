@@ -44,6 +44,25 @@ describe('authentication and route guards', () => {
     expect(await screen.findByRole('navigation', { name: 'Основная навигация' })).toBeVisible()
   })
 
+  it.each([
+    ['server failure', () => response({ code: 'unavailable', type: 'x', title: 'Unavailable', status: 503, detail: 'down' }, 503)],
+    ['network failure', () => Promise.reject(new TypeError('network unavailable'))],
+  ])('distinguishes a login %s from invalid credentials', async (_label, loginResult) => {
+    window.history.replaceState({}, '', '/login')
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(response({ code: 'authentication_required', type: 'x', title: 'Authentication required', status: 401, detail: 'invalid' }, 401))
+      .mockImplementationOnce(loginResult)
+    vi.stubGlobal('fetch', fetcher)
+    const user = userEvent.setup()
+    render(<App />)
+    await user.type(await screen.findByLabelText('Электронная почта'), 'admin@example.com')
+    await user.type(screen.getByLabelText('Пароль'), 'correct password')
+    await user.click(screen.getByRole('button', { name: 'Войти' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Сервис временно недоступен. Попробуйте ещё раз.')
+    expect(screen.queryByText('Неверная почта или пароль')).not.toBeInTheDocument()
+  })
+
   it('redirects a signed-in non-admin away from /admin', async () => {
     window.history.replaceState({}, '', '/admin')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ sessionId: 's', userId: 'u', workspaceId: 'w', workspaceAdmin: false })))

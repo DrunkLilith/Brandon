@@ -4,6 +4,23 @@ import type { components, paths } from './generated'
 
 type Problem = components['schemas']['Problem']
 type Csrf = components['schemas']['Csrf']
+type Attachment = components['schemas']['Attachment']
+
+interface UploadAttachmentInput {
+  pageId: paths['/api/v1/pages/{id}/attachments']['post']['parameters']['path']['id']
+  file: Blob | File | FormData
+  filename?: string
+  idempotencyKey?: string
+}
+
+interface DownloadAttachmentInput {
+  attachmentId: paths['/api/v1/attachments/{id}']['get']['parameters']['path']['id']
+  range?: string
+}
+
+interface DownloadExportInput {
+  exportId: paths['/api/v1/exports/{id}/download']['get']['parameters']['path']['id']
+}
 
 export class ApiError extends Error {
   readonly status: number
@@ -67,7 +84,55 @@ export function createApiClient() {
     },
   })
 
-  return Object.assign(client, { invalidateCsrf: () => { csrf = undefined } })
+  const uploadAttachment = async ({ pageId, file, filename, idempotencyKey }: UploadAttachmentInput): Promise<Attachment> => {
+    const form = file instanceof FormData ? file : new FormData()
+    const payload = file instanceof FormData ? file.get('file') : file
+    if (!(payload instanceof Blob)) throw new TypeError('Attachment upload requires a binary file field')
+    const suppliedName = typeof File !== 'undefined' && payload instanceof File ? payload.name : undefined
+    if (!(file instanceof FormData)) form.append('file', payload, filename ?? suppliedName ?? 'attachment')
+    const attachment = unwrap(await client.POST('/api/v1/pages/{id}/attachments', {
+      params: {
+        path: { id: pageId },
+        query: { size: payload.size },
+        header: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+      },
+      body: { file: filename ?? suppliedName ?? 'attachment' },
+      bodySerializer: () => form,
+    }))
+    if (!attachment) throw new TypeError('Attachment response was empty')
+    return attachment
+  }
+
+  const requireBlob = (value: unknown): Blob => {
+    if (value instanceof Blob) return value
+    throw new TypeError('Binary response was not parsed as a Blob')
+  }
+
+  const downloadAttachment = async ({ attachmentId, range }: DownloadAttachmentInput): Promise<Blob> => {
+    const result = await client.GET('/api/v1/attachments/{id}', {
+      params: {
+        path: { id: attachmentId },
+        header: range ? { Range: range } : undefined,
+      },
+      parseAs: 'blob',
+    })
+    return requireBlob(unwrap(result))
+  }
+
+  const downloadExport = async ({ exportId }: DownloadExportInput): Promise<Blob> => {
+    const result = await client.GET('/api/v1/exports/{id}/download', {
+      params: { path: { id: exportId } },
+      parseAs: 'blob',
+    })
+    return requireBlob(unwrap(result))
+  }
+
+  return Object.assign(client, {
+    invalidateCsrf: () => { csrf = undefined },
+    uploadAttachment,
+    downloadAttachment,
+    downloadExport,
+  })
 }
 
 export const apiClient = createApiClient()

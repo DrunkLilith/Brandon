@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, createApiClient, unwrap } from './client'
@@ -35,5 +37,69 @@ describe('typed API client', () => {
     expect(failure).toBeInstanceOf(ApiError)
     expect(failure).toMatchObject({ status: 401, code: 'authentication_required' })
     expect(JSON.stringify(failure)).not.toContain('secretDebug')
+  })
+
+  it('serializes attachment uploads as multipart with a browser-generated boundary', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'csrf-value' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'attachment-id', pageId: 'page-id', name: 'notes.txt', mime: 'text/plain', size: 5, archived: false,
+      }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const client = createApiClient()
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+
+    const attachment = await client.uploadAttachment({
+      pageId: 'page-id',
+      file,
+      idempotencyKey: '00000000-0000-0000-0000-000000000001',
+    })
+
+    expect(attachment.name).toBe('notes.txt')
+    const request = fetcher.mock.calls[1][0] as Request
+    expect(new URL(request.url).searchParams.get('size')).toBe('5')
+    expect(request.headers.get('Idempotency-Key')).toBe('00000000-0000-0000-0000-000000000001')
+    expect(request.headers.get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/)
+    const sent = await request.clone().formData()
+    const sentFile = sent.get('file')
+    expect(sentFile).toBeInstanceOf(File)
+    expect((sentFile as File).name).toBe('notes.txt')
+    expect(await (sentFile as File).text()).toBe('hello')
+  })
+
+  it('accepts prebuilt FormData and derives the declared size from its file field', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'csrf-value' }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: 'attachment-id', pageId: 'page-id', name: 'ready.txt', mime: 'text/plain', size: 5, archived: false,
+      }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const form = new FormData()
+    form.append('file', new File(['ready'], 'ready.txt', { type: 'text/plain' }))
+
+    await createApiClient().uploadAttachment({ pageId: 'page-id', file: form })
+
+    const request = fetcher.mock.calls[1][0] as Request
+    expect(new URL(request.url).searchParams.get('size')).toBe('5')
+    expect(request.headers.get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/)
+    expect((await request.clone().formData()).get('file')).toBeInstanceOf(File)
+  })
+
+  it('parses attachment and export downloads as blobs without caller casts', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 206, headers: { 'content-type': 'application/octet-stream' } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([4, 5]), { status: 200, headers: { 'content-type': 'application/x-tar' } }))
+    vi.stubGlobal('fetch', fetcher)
+    const client = createApiClient()
+
+    const attachment = await client.downloadAttachment({ attachmentId: 'attachment-id', range: 'bytes=0-2' })
+    const archive = await client.downloadExport({ exportId: 'export-id' })
+
+    expect(attachment).toBeInstanceOf(Blob)
+    expect([...new Uint8Array(await attachment.arrayBuffer())]).toEqual([1, 2, 3])
+    expect(archive).toBeInstanceOf(Blob)
+    expect([...new Uint8Array(await archive.arrayBuffer())]).toEqual([4, 5])
+    const attachmentRequest = fetcher.mock.calls[0][0] as Request
+    expect(attachmentRequest.headers.get('Range')).toBe('bytes=0-2')
   })
 })

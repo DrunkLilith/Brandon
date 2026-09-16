@@ -55,6 +55,12 @@ async fn send(
         .header("sec-fetch-site", "same-origin")
         .body(Body::from(value.to_string()))
         .unwrap();
+    if method == "POST" && uri == "/api/v1/invitations" {
+        request.headers_mut().insert(
+            "idempotency-key",
+            Uuid::now_v7().to_string().parse().unwrap(),
+        );
+    }
     if let Some(cookie) = cookie {
         request
             .headers_mut()

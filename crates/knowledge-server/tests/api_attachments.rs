@@ -133,7 +133,7 @@ async fn upload_rate_bucket_is_independent_and_allows_more_than_five_files(pool:
 }
 
 #[sqlx::test]
-async fn recovery_uses_configured_retention_not_a_hardcoded_window(pool: PgPool) {
+async fn recovery_uses_persisted_retention_immediately_after_bootstrap(pool: PgPool) {
     let app = app(pool.clone()).await;
     let (cookie, csrf, page) = setup(&app).await;
     let attachment = json_body(
@@ -176,7 +176,7 @@ async fn recovery_uses_configured_retention_not_a_hardcoded_window(pool: PgPool)
         )
         .await
         .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::NO_CONTENT
     );
 }
 
@@ -196,6 +196,9 @@ async fn send(
         .header(header::ORIGIN, ORIGIN)
         .header("sec-fetch-site", "same-origin")
         .header(header::CONTENT_TYPE, content_type);
+    if method == "POST" && uri == "/api/v1/invitations" {
+        builder = builder.header("idempotency-key", Uuid::now_v7().to_string());
+    }
     if let Some(cookie) = cookie {
         builder = builder.header(header::COOKIE, cookie);
     }

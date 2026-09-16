@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::{
     Json, Router,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::{Path, Query, State, rejection::JsonRejection, rejection::QueryRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,7 +15,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{
-    auth::CurrentUser,
+    auth::{CurrentUser, unwrap_workspace_key},
     spaces::{authorize, resolve_access, revalidate_session},
     users::{decrypt_text, load_workspace_key, lock_and_revalidate_admin},
 };
@@ -163,6 +163,7 @@ async fn status(
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let components = readiness(&state).await;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_and_revalidate_admin(&mut tx, current).await?;
@@ -197,7 +198,6 @@ async fn status(
     .await
     .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    let components = readiness(&state).await;
     let migration_state = if components.migrations {
         "current"
     } else {
@@ -230,20 +230,28 @@ struct ArchivedItem {
 
 type ArchivedEnvelopeRow = (Uuid, Vec<u8>, Vec<u8>, i32, DateTime<Utc>);
 
+#[derive(Deserialize, Default)]
+struct UuidListQuery {
+    after: Option<Uuid>,
+    limit: Option<usize>,
+}
+
 async fn archived_groups(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
+    query: Result<Query<UuidListQuery>, QueryRejection>,
 ) -> Result<Response, ApiProblem> {
-    archived_items(&state, current, request_id, "groups").await
+    archived_items(&state, current, request_id, "groups", query).await
 }
 
 async fn archived_spaces(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
+    query: Result<Query<UuidListQuery>, QueryRejection>,
 ) -> Result<Response, ApiProblem> {
-    archived_items(&state, current, request_id, "spaces").await
+    archived_items(&state, current, request_id, "spaces", query).await
 }
 
 async fn archived_items(
@@ -251,7 +259,13 @@ async fn archived_items(
     current: CurrentUser,
     request_id: RequestId,
     table: &'static str,
+    query: Result<Query<UuidListQuery>, QueryRejection>,
 ) -> Result<Response, ApiProblem> {
+    let Query(query) = query.map_err(|_| ApiProblem::validation("query", "is invalid"))?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiProblem::validation("limit", "must be between 1 and 100"));
+    }
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
@@ -264,13 +278,29 @@ async fn archived_items(
         revalidate_session(&mut tx, current).await?;
     }
     let settings = read_settings(&mut tx, current.workspace_id).await?;
-    let query = if table == "groups" {
-        "SELECT id,name_ciphertext,name_nonce,name_key_version,archived_at FROM groups WHERE workspace_id=$1 AND archived_at IS NOT NULL AND archived_at >= now()-($2::text || ' days')::interval ORDER BY archived_at DESC,id LIMIT 100"
+    let rows: Vec<ArchivedEnvelopeRow> = if table == "groups" {
+        sqlx::query_as(
+            "SELECT id,name_ciphertext,name_nonce,name_key_version,archived_at
+               FROM groups
+              WHERE workspace_id=$1 AND archived_at IS NOT NULL
+                AND archived_at >= now()-make_interval(days=>$2)
+                AND ($3::uuid IS NULL OR id>$3)
+              ORDER BY id LIMIT $4",
+        )
+        .bind(current.workspace_id)
+        .bind(settings.attachment_recovery_days)
+        .bind(query.after)
+        .bind(i64::try_from(limit + 1).map_err(internal)?)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal)?
     } else {
-        "SELECT s.id,s.name_ciphertext,s.name_nonce,s.name_key_version,s.archived_at
+        sqlx::query_as(
+            "SELECT s.id,s.name_ciphertext,s.name_nonce,s.name_key_version,s.archived_at
            FROM spaces s
           WHERE s.workspace_id=$1 AND s.archived_at IS NOT NULL
-            AND s.archived_at >= now()-($2::text || ' days')::interval
+            AND s.archived_at >= now()-make_interval(days=>$2)
+            AND ($4::uuid IS NULL OR s.id>$4)
             AND EXISTS (
               SELECT 1 FROM users u
               JOIN workspace_members wm ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
@@ -286,15 +316,18 @@ async fn archived_items(
                   )
                 )
             )
-          ORDER BY s.archived_at DESC,s.id LIMIT 100"
-    };
-    let mut query = sqlx::query_as(query)
+          ORDER BY s.id LIMIT $5",
+        )
         .bind(current.workspace_id)
-        .bind(settings.attachment_recovery_days);
-    if table == "spaces" {
-        query = query.bind(current.user_id);
-    }
-    let rows: Vec<ArchivedEnvelopeRow> = query.fetch_all(&mut *tx).await.map_err(internal)?;
+        .bind(settings.attachment_recovery_days)
+        .bind(current.user_id)
+        .bind(query.after)
+        .bind(i64::try_from(limit + 1).map_err(internal)?)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(internal)?
+    };
+    let has_more = rows.len() > limit;
     append_audit_event(
         &mut tx,
         &key,
@@ -315,6 +348,7 @@ async fn archived_items(
     let singular = if table == "groups" { "group" } else { "space" };
     let values = rows
         .into_iter()
+        .take(limit)
         .map(|(id, ciphertext, nonce, version, archived_at)| {
             let name = decrypt_text(
                 &key,
@@ -330,7 +364,12 @@ async fn archived_items(
             })
         })
         .collect::<Result<Vec<_>, ApiProblem>>()?;
-    Ok(no_store(Json(values).into_response()))
+    let next_cursor = has_more
+        .then(|| values.last().map(|item| item.id))
+        .flatten();
+    Ok(no_store(
+        Json(json!({"items":values,"nextCursor":next_cursor})).into_response(),
+    ))
 }
 
 async fn restore_group(
@@ -461,50 +500,109 @@ struct Subject {
     status: &'static str,
 }
 
+type SubjectEnvelopeRow = (String, Uuid, Vec<u8>, Vec<u8>, i32);
+
+#[derive(Deserialize, Default)]
+struct SubjectListQuery {
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
 async fn subjects(
     State(state): State<AppState>,
     current: CurrentUser,
     Path(space_id): Path<Uuid>,
+    query: Result<Query<SubjectListQuery>, QueryRejection>,
 ) -> Result<Response, ApiProblem> {
+    let Query(query) = query.map_err(|_| ApiProblem::validation("query", "is invalid"))?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiProblem::validation("limit", "must be between 1 and 100"));
+    }
+    let cursor = query
+        .after
+        .as_deref()
+        .map(parse_subject_cursor)
+        .transpose()?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut tx, current.workspace_id)
+        .await
+        .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
     let access = resolve_access(&mut tx, current.user_id, space_id).await?;
     authorize(&access, Capability::ManageSpace)?;
-    let users:Vec<(Uuid,Vec<u8>,Vec<u8>,i32)>=sqlx::query_as("SELECT u.id,u.display_name_ciphertext,u.display_name_nonce,u.display_name_key_version FROM users u JOIN workspace_members wm ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id WHERE u.workspace_id=$1 AND u.status='active' AND u.deleted_at IS NULL AND wm.status='active' ORDER BY u.id LIMIT 100").bind(current.workspace_id).fetch_all(&mut *tx).await.map_err(internal)?;
-    let groups:Vec<(Uuid,Vec<u8>,Vec<u8>,i32)>=sqlx::query_as("SELECT id,name_ciphertext,name_nonce,name_key_version FROM groups WHERE workspace_id=$1 AND archived_at IS NULL ORDER BY id LIMIT 100").bind(current.workspace_id).fetch_all(&mut *tx).await.map_err(internal)?;
+    let cursor_kind = cursor.as_ref().map(|value| value.0.as_str());
+    let cursor_id = cursor.as_ref().map(|value| value.1);
+    let rows: Vec<SubjectEnvelopeRow> = sqlx::query_as(
+        "SELECT kind,id,ciphertext,nonce,key_version FROM (
+            SELECT 'group'::text AS kind,id,name_ciphertext AS ciphertext,
+                   name_nonce AS nonce,name_key_version AS key_version
+              FROM groups WHERE workspace_id=$1 AND archived_at IS NULL
+            UNION ALL
+            SELECT 'user'::text AS kind,u.id,u.display_name_ciphertext,
+                   u.display_name_nonce,u.display_name_key_version
+              FROM users u JOIN workspace_members wm
+                ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+             WHERE u.workspace_id=$1 AND u.status='active'
+               AND u.deleted_at IS NULL AND wm.status='active'
+        ) subjects
+        WHERE $2::text IS NULL OR kind>$2 OR (kind=$2 AND id>$3)
+        ORDER BY kind,id LIMIT $4",
+    )
+    .bind(current.workspace_id)
+    .bind(cursor_kind)
+    .bind(cursor_id)
+    .bind(i64::try_from(limit + 1).map_err(internal)?)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(internal)?;
     tx.commit().await.map_err(internal)?;
-    let mut result = Vec::with_capacity(users.len() + groups.len());
-    for (id, c, n, v) in users {
+    let has_more = rows.len() > limit;
+    let mut result = Vec::with_capacity(limit.min(rows.len()));
+    for (kind, id, c, n, v) in rows.into_iter().take(limit) {
+        let (kind, aad) = if kind == "group" {
+            (
+                "group",
+                format!("workspace:{}:group:{id}:name", current.workspace_id),
+            )
+        } else {
+            (
+                "user",
+                format!("workspace:{}:user:{id}:display-name", current.workspace_id),
+            )
+        };
         result.push(Subject {
             id,
-            kind: "user",
-            label: decrypt_text(
-                &key,
-                &format!("workspace:{}:user:{id}:display-name", current.workspace_id),
-                c,
-                n,
-                v,
-            )?,
+            kind,
+            label: decrypt_text(&key, &aad, c, n, v)?,
             status: "active",
         });
     }
-    for (id, c, n, v) in groups {
-        result.push(Subject {
-            id,
-            kind: "group",
-            label: decrypt_text(
-                &key,
-                &format!("workspace:{}:group:{id}:name", current.workspace_id),
-                c,
-                n,
-                v,
-            )?,
-            status: "active",
-        });
+    let next_cursor = has_more
+        .then(|| {
+            result
+                .last()
+                .map(|item| format!("{}:{}", item.kind, item.id))
+        })
+        .flatten();
+    Ok(no_store(
+        Json(json!({"items":result,"nextCursor":next_cursor})).into_response(),
+    ))
+}
+
+fn parse_subject_cursor(value: &str) -> Result<(String, Uuid), ApiProblem> {
+    let (kind, id) = value
+        .split_once(':')
+        .ok_or_else(|| ApiProblem::validation("after", "is invalid"))?;
+    if !matches!(kind, "group" | "user") {
+        return Err(ApiProblem::validation("after", "is invalid"));
     }
-    Ok(no_store(Json(result).into_response()))
+    let id = id
+        .parse()
+        .map_err(|_| ApiProblem::validation("after", "is invalid"))?;
+    Ok((kind.to_owned(), id))
 }
 
 pub(crate) struct Readiness {
@@ -535,15 +633,87 @@ pub(crate) async fn readiness(state: &AppState) -> Readiness {
     )
     .await
     .is_ok_and(|r| r.is_ok());
-    let expected = knowledge_store::MIGRATOR.iter().count() as i64;
     let migrations = if database {
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM _sqlx_migrations WHERE success")
-                .fetch_one(runtime.store.pool()),
-        )
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let applied: Vec<(i64, Vec<u8>, bool)> = sqlx::query_as(
+                "SELECT version,checksum,success FROM _sqlx_migrations ORDER BY version",
+            )
+            .fetch_all(runtime.store.pool())
+            .await?;
+            let expected: Vec<(i64, &[u8])> = knowledge_store::MIGRATOR
+                .iter()
+                .map(|migration| (migration.version, migration.checksum.as_ref()))
+                .collect();
+            let exact = applied.len() == expected.len()
+                && applied.iter().zip(expected).all(
+                    |((actual_version, actual_checksum, success), (version, checksum))| {
+                        *success
+                            && *actual_version == version
+                            && actual_checksum.as_slice() == checksum
+                    },
+                );
+            let schema: bool = sqlx::query_scalar(
+                "SELECT NOT EXISTS (
+                        SELECT 1 FROM (VALUES
+                            ('workspaces','wrapped_key_ciphertext'),
+                            ('users','status'),
+                            ('workspace_members','role'),
+                            ('sessions','revoked_at'),
+                            ('operational_settings','attachment_recovery_days'),
+                            ('pages','archived_at'),
+                            ('page_revisions','body_ciphertext'),
+                            ('attachments','archived_at'),
+                            ('jobs','status'),
+                            ('exports','object_key'),
+                            ('audit_events','event_hash')
+                        ) AS required(table_name,column_name)
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns actual
+                             WHERE actual.table_schema='public'
+                               AND actual.table_name=required.table_name
+                               AND actual.column_name=required.column_name
+                        )
+                    )",
+            )
+            .fetch_one(runtime.store.pool())
+            .await?;
+            Ok::<bool, sqlx::Error>(exact && schema)
+        })
         .await
-        .is_ok_and(|result| result.is_ok_and(|count| count == expected))
+        .is_ok_and(|result| result.unwrap_or(false))
+    } else {
+        false
+    };
+    let master_key = if database {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let records: Vec<(Uuid, Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
+                "SELECT id,wrapped_key_ciphertext,wrapped_key_nonce,wrapped_key_version
+                   FROM workspaces ORDER BY id LIMIT 1001",
+            )
+            .fetch_all(runtime.store.pool())
+            .await
+            .map_err(|_| ())?;
+            if records.is_empty() || records.len() > 1000 {
+                return Ok::<bool, ()>(false);
+            }
+            for (workspace_id, ciphertext, nonce, key_version) in records {
+                let Ok(nonce) = nonce.try_into() else {
+                    return Ok(false);
+                };
+                let record = knowledge_store::users::WorkspaceKeyRecord {
+                    workspace_id,
+                    ciphertext,
+                    nonce,
+                    key_version,
+                };
+                if unwrap_workspace_key(&runtime.master_key, &record).is_err() {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })
+        .await
+        .is_ok_and(|result| result.unwrap_or(false))
     } else {
         false
     };
@@ -556,7 +726,7 @@ pub(crate) async fn readiness(state: &AppState) -> Readiness {
     Readiness {
         database,
         migrations,
-        master_key: true,
+        master_key,
         object_storage,
     }
 }

@@ -993,18 +993,16 @@ async fn mutate(
     )
     .await?;
     if restore {
-        let persisted_retention: Option<(i32, bool)> = sqlx::query_as(
-            "SELECT attachment_recovery_days, updated_by IS NOT NULL
+        let persisted_retention: Option<i32> = sqlx::query_scalar(
+            "SELECT attachment_recovery_days
                FROM operational_settings WHERE workspace_id=$1",
         )
         .bind(current.workspace_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(internal)?;
-        let retention_days = match persisted_retention {
-            Some((days, true)) => days,
-            _ => runtime.attachment_retention_days as i32,
-        };
+        let retention_days =
+            persisted_retention.unwrap_or(runtime.attachment_retention_days as i32);
         let retained: bool = sqlx::query_scalar(
             "SELECT archived_at > now()-make_interval(days => $2) FROM attachments WHERE id=$1",
         )

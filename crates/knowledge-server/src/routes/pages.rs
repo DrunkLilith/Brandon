@@ -878,7 +878,24 @@ async fn get_revision(
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
     revalidate_session(&mut transaction, current).await?;
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM pages
+             WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL
+        )",
+    )
+    .bind(current.workspace_id)
+    .bind(page_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal)?;
+    if !active {
+        return Err(ApiProblem::not_found());
+    }
     authorize_page(&mut transaction, current, page_id, Capability::ViewHistory).await?;
     let row: Option<RevisionPayloadRow> = sqlx::query_as(
         "SELECT id,title_ciphertext,title_nonce,title_key_version,

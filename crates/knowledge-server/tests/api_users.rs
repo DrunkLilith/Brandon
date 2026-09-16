@@ -65,6 +65,12 @@ async fn send(
     csrf: Option<&str>,
 ) -> axum::response::Response {
     let mut request = request(method, uri, body);
+    if method == "POST" && uri == "/api/v1/invitations" {
+        request.headers_mut().insert(
+            "idempotency-key",
+            uuid::Uuid::now_v7().to_string().parse().unwrap(),
+        );
+    }
     if let Some(cookie) = cookie {
         request
             .headers_mut()
@@ -74,6 +80,28 @@ async fn send(
         request
             .headers_mut()
             .insert("x-csrf-token", csrf.parse().unwrap());
+    }
+    app.clone().oneshot(request).await.unwrap()
+}
+
+async fn send_invitation_with_key(
+    app: &Router,
+    body: Value,
+    cookie: &str,
+    csrf: &str,
+    idempotency_key: Option<&str>,
+) -> axum::response::Response {
+    let mut request = request("POST", "/api/v1/invitations", body);
+    request
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("x-csrf-token", csrf.parse().unwrap());
+    if let Some(key) = idempotency_key {
+        request
+            .headers_mut()
+            .insert("idempotency-key", key.parse().unwrap());
     }
     app.clone().oneshot(request).await.unwrap()
 }
@@ -227,6 +255,89 @@ async fn invitation_is_returned_once_and_creates_an_active_user(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(event_types, ["invitation.created", "invitation.accepted"]);
+}
+
+#[sqlx::test]
+async fn invitation_creation_requires_and_atomically_replays_idempotency_keys(pool: PgPool) {
+    let (app, pool) = app(pool).await;
+    let cookie = login(&app, "admin@example.com", ADMIN_PASSWORD).await;
+    let csrf = csrf(&app, &cookie).await;
+    let body = json!({"email":"replay@example.com","workspaceRole":"member"});
+
+    let missing = send_invitation_with_key(&app, body.clone(), &cookie, &csrf, None).await;
+    assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let key = uuid::Uuid::now_v7().to_string();
+    let first = send_invitation_with_key(&app, body.clone(), &cookie, &csrf, Some(&key)).await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let first = json_body(first).await;
+    let replay = send_invitation_with_key(&app, body.clone(), &cookie, &csrf, Some(&key)).await;
+    assert_eq!(replay.status(), StatusCode::CREATED);
+    assert_eq!(json_body(replay).await, first);
+    for _ in 0..8 {
+        let replay = send_invitation_with_key(&app, body.clone(), &cookie, &csrf, Some(&key)).await;
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        assert_eq!(json_body(replay).await, first);
+    }
+    let mismatch = send_invitation_with_key(
+        &app,
+        json!({"email":"different@example.com","workspaceRole":"member"}),
+        &cookie,
+        &csrf,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(mismatch.status(), StatusCode::CONFLICT);
+
+    let concurrent_key = uuid::Uuid::now_v7().to_string();
+    let concurrent_body = json!({"email":"concurrent-replay@example.com","workspaceRole":"member"});
+    let left = send_invitation_with_key(
+        &app,
+        concurrent_body.clone(),
+        &cookie,
+        &csrf,
+        Some(&concurrent_key),
+    );
+    let right =
+        send_invitation_with_key(&app, concurrent_body, &cookie, &csrf, Some(&concurrent_key));
+    let (left, right) = tokio::join!(left, right);
+    assert_eq!(left.status(), StatusCode::CREATED);
+    assert_eq!(right.status(), StatusCode::CREATED);
+    assert_eq!(json_body(left).await, json_body(right).await);
+
+    let invitation_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM invitations
+          WHERE email_hmac IN (
+            SELECT email_hmac FROM invitations
+             WHERE id IN (
+                SELECT invitation_id FROM invitation_idempotency
+             )
+          )",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(invitation_count, 2);
+    let idempotency_rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+        "SELECT fingerprint,token_ciphertext FROM invitation_idempotency ORDER BY idempotency_key",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(idempotency_rows.len(), 2);
+    assert!(idempotency_rows.iter().all(|(fingerprint, token)| {
+        fingerprint.len() == 32
+            && !token
+                .windows(first["token"].as_str().unwrap().len())
+                .any(|window| window == first["token"].as_str().unwrap().as_bytes())
+    }));
+    let created_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='invitation.created'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(created_audits, 2);
 }
 
 async fn create_invitation(

@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Extension, Path, State, rejection::JsonRejection},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
@@ -94,6 +94,8 @@ struct InvitationCreatedResponse {
     expires_at: chrono::DateTime<Utc>,
 }
 
+type InvitationReplayRow = (Vec<u8>, Uuid, Vec<u8>, Vec<u8>, i32, chrono::DateTime<Utc>);
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserCreatedResponse {
@@ -156,9 +158,15 @@ async fn create_invitation(
     ClientAddress(source): ClientAddress,
     Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
+    headers: HeaderMap,
     payload: Result<Json<CreateInvitationRequest>, JsonRejection>,
 ) -> Result<Response, ApiProblem> {
     require_admin(current)?;
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<Uuid>().ok())
+        .ok_or_else(|| ApiProblem::validation("Idempotency-Key", "must be a UUID"))?;
     let Json(input) = payload
         .map_err(|_| ApiProblem::validation("body", "expected a valid invitation JSON object"))?;
     let email = input.email.trim().to_lowercase();
@@ -174,18 +182,17 @@ async fn create_invitation(
         .derive(KeyPurpose::Search)
         .map_err(|_| ApiProblem::internal())?;
     let email_hmac = search_key.authenticate(email.as_bytes());
+    let mut fingerprint_input = Vec::with_capacity(32 + 1 + input.workspace_role.as_str().len());
+    fingerprint_input.extend_from_slice(&email_hmac);
+    fingerprint_input.push(0);
+    fingerprint_input.extend_from_slice(input.workspace_role.as_str().as_bytes());
+    let fingerprint = search_key.authenticate(&fingerprint_input);
     let source_identity = source_identity(source);
     let actor_identity = format!("{}:{}", current.workspace_id, current.user_id);
     let buckets = [
         rate_limit_bucket(b"invitation-create-source", source_identity.as_bytes()),
         rate_limit_bucket(b"invitation-create-actor", actor_identity.as_bytes()),
     ];
-    if !UserRepository::consume_login_attempt(runtime.store.pool(), &buckets)
-        .await
-        .map_err(|_| ApiProblem::internal())?
-    {
-        return Err(ApiProblem::invitation_rate_limited());
-    }
     let invitation_id = Uuid::now_v7();
     let email_cipher = EnvelopeCipher::new(
         KeyVersion(1),
@@ -205,6 +212,13 @@ async fn create_invitation(
     let token = Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw_token));
     let token_hash: [u8; 32] = Sha256::digest(*raw_token).into();
     let expires_at = Utc::now() + Duration::days(INVITATION_LIFETIME_DAYS);
+    let token_aad = format!(
+        "workspace:{}:invitation-idempotency:{}:{idempotency_key}:token",
+        current.workspace_id, current.user_id
+    );
+    let encrypted_token = email_cipher
+        .encrypt(token_aad.as_bytes(), token.as_bytes())
+        .map_err(|_| ApiProblem::internal())?;
 
     let mut transaction = runtime
         .store
@@ -213,6 +227,53 @@ async fn create_invitation(
         .await
         .map_err(|_| ApiProblem::internal())?;
     lock_and_revalidate_admin(&mut transaction, current).await?;
+    let replay: Option<InvitationReplayRow> = sqlx::query_as(
+        "SELECT i.fingerprint,i.invitation_id,i.token_ciphertext,i.token_nonce,
+                i.token_key_version,v.expires_at
+           FROM invitation_idempotency i
+           JOIN invitations v ON v.id=i.invitation_id
+          WHERE i.workspace_id=$1 AND i.actor_user_id=$2 AND i.idempotency_key=$3
+          FOR UPDATE",
+    )
+    .bind(current.workspace_id)
+    .bind(current.user_id)
+    .bind(idempotency_key)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    if let Some((stored_fingerprint, id, ciphertext, nonce, version, expires_at)) = replay {
+        if stored_fingerprint.as_slice() != fingerprint {
+            return Err(ApiProblem::conflict(
+                "Idempotency key was used for a different request",
+            ));
+        }
+        let nonce: [u8; 12] = nonce.try_into().map_err(|_| ApiProblem::internal())?;
+        let version = u32::try_from(version).map_err(|_| ApiProblem::internal())?;
+        let decrypted = email_cipher
+            .decrypt(
+                token_aad.as_bytes(),
+                &EncryptedEnvelope {
+                    algorithm: "AES-256-GCM".to_owned(),
+                    key_version: KeyVersion(version),
+                    nonce,
+                    ciphertext,
+                },
+            )
+            .map_err(|_| ApiProblem::internal())?;
+        let token =
+            String::from_utf8(decrypted.expose().to_vec()).map_err(|_| ApiProblem::internal())?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| ApiProblem::internal())?;
+        return Ok(invitation_created_response(id, token, expires_at));
+    }
+    if !UserRepository::consume_login_attempt(runtime.store.pool(), &buckets)
+        .await
+        .map_err(|_| ApiProblem::internal())?
+    {
+        return Err(ApiProblem::invitation_rate_limited());
+    }
     lock_email_identity(&mut transaction, current.workspace_id, &email_hmac).await?;
     let expired_invitation_id: Option<Uuid> = sqlx::query_scalar(
         "UPDATE invitations SET revoked_at = now()
@@ -260,11 +321,12 @@ async fn create_invitation(
         ));
     }
 
-    let insert = sqlx::query(
+    let insert = sqlx::query_scalar::<_, chrono::DateTime<Utc>>(
         "INSERT INTO invitations (
             id, workspace_id, email_hmac, email_ciphertext, email_nonce, email_key_version,
             workspace_role, token_hash, invited_by, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)",
+         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
+         RETURNING expires_at",
     )
     .bind(invitation_id)
     .bind(current.workspace_id)
@@ -275,16 +337,35 @@ async fn create_invitation(
     .bind(token_hash.as_slice())
     .bind(current.user_id)
     .bind(expires_at)
-    .execute(&mut *transaction)
+    .fetch_one(&mut *transaction)
     .await;
-    if let Err(error) = insert {
-        if error.as_database_error().is_some_and(|database| {
-            database.constraint() == Some("invitations_pending_email_unique")
-        }) {
-            return Err(ApiProblem::conflict("A pending invitation already exists"));
+    let expires_at = match insert {
+        Ok(expires_at) => expires_at,
+        Err(error) => {
+            if error.as_database_error().is_some_and(|database| {
+                database.constraint() == Some("invitations_pending_email_unique")
+            }) {
+                return Err(ApiProblem::conflict("A pending invitation already exists"));
+            }
+            return Err(ApiProblem::internal());
         }
-        return Err(ApiProblem::internal());
-    }
+    };
+    sqlx::query(
+        "INSERT INTO invitation_idempotency (
+            workspace_id,actor_user_id,idempotency_key,fingerprint,invitation_id,
+            token_ciphertext,token_nonce,token_key_version
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,1)",
+    )
+    .bind(current.workspace_id)
+    .bind(current.user_id)
+    .bind(idempotency_key)
+    .bind(fingerprint.as_slice())
+    .bind(invitation_id)
+    .bind(encrypted_token.ciphertext)
+    .bind(encrypted_token.nonce.as_slice())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
     append_audit_event(
         &mut transaction,
         &workspace_key,
@@ -306,11 +387,23 @@ async fn create_invitation(
         .await
         .map_err(|_| ApiProblem::internal())?;
 
+    Ok(invitation_created_response(
+        invitation_id,
+        token.to_string(),
+        expires_at,
+    ))
+}
+
+fn invitation_created_response(
+    id: Uuid,
+    token: String,
+    expires_at: chrono::DateTime<Utc>,
+) -> Response {
     let mut response = (
         StatusCode::CREATED,
         Json(InvitationCreatedResponse {
-            id: invitation_id,
-            token: token.to_string(),
+            id,
+            token,
             expires_at,
         }),
     )
@@ -318,7 +411,7 @@ async fn create_invitation(
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok(response)
+    response
 }
 
 async fn accept_invitation(

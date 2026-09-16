@@ -1,9 +1,8 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{ConnectInfo, Extension, FromRequestParts, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
@@ -31,12 +30,12 @@ const SESSION_COOKIE: &str = "knowledge_session";
 const SESSION_SECONDS: i64 = 30 * 24 * 60 * 60;
 const CSRF_MESSAGE: &[u8] = b"knowledge-platform/csrf/v1";
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/logout", post(logout))
-        .route("/api/v1/auth/session", get(session))
-        .route("/api/v1/auth/csrf", get(csrf))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/auth/login" => [post => login => ("login", Public, 200)],
+    "/api/v1/auth/logout" => [post => logout => ("logout", Mutation, 204)],
+    "/api/v1/auth/session" => [get => session => ("getSession", Session, 200)],
+    "/api/v1/auth/csrf" => [get => csrf => ("getCsrf", Session, 200)],
 }
 
 #[derive(Deserialize)]

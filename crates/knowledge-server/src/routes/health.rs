@@ -1,12 +1,27 @@
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderValue, StatusCode, header},
+    response::IntoResponse,
+};
 use serde_json::{Value, json};
 
 use crate::state::AppState;
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/health/live", get(live))
-        .route("/api/v1/health/ready", get(ready))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/health/live" => [get => live => ("getLiveness", Public, 200)],
+    "/api/v1/health/ready" => [get => ready => ("getReadiness", Public, 200)],
+    "/api/v1/openapi.json" => [get => openapi => ("getOpenApi", Public, 200)],
+}
+
+async fn openapi() -> axum::response::Response {
+    let mut response = Json(crate::openapi::document()).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600"),
+    );
+    response
 }
 
 async fn ready(State(state): State<AppState>) -> impl IntoResponse {

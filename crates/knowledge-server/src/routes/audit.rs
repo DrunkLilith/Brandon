@@ -10,11 +10,10 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
-    routing::get,
 };
 use chrono::{DateTime, Utc};
 use knowledge_store::audit::{AuditFilters, AuditReader};
@@ -22,8 +21,9 @@ use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new().route("/api/v1/audit-events", get(list))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/audit-events" => [get => list => ("listAuditEvents", Session, 200)],
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,9 +1,8 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Path, State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use knowledge_core::{
@@ -26,21 +25,25 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/spaces", post(create_space).get(list_spaces))
-        .route(
-            "/api/v1/spaces/{id}",
-            get(get_space).patch(update_space).delete(archive_space),
-        )
-        .route(
-            "/api/v1/spaces/{space_id}/grants",
-            post(create_grant).get(list_grants),
-        )
-        .route(
-            "/api/v1/spaces/{space_id}/grants/{grant_id}",
-            axum::routing::patch(update_grant).delete(delete_grant),
-        )
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/spaces" => [
+        post => create_space => ("createSpace", Mutation, 201),
+        get => list_spaces => ("listSpaces", Session, 200),
+    ],
+    "/api/v1/spaces/{id}" => [
+        get => get_space => ("getSpace", Session, 200),
+        patch => update_space => ("updateSpace", Mutation, 200),
+        delete => archive_space => ("archiveSpace", Mutation, 204),
+    ],
+    "/api/v1/spaces/{space_id}/grants" => [
+        post => create_grant => ("createSpaceGrant", Mutation, 201),
+        get => list_grants => ("listSpaceGrants", Session, 200),
+    ],
+    "/api/v1/spaces/{space_id}/grants/{grant_id}" => [
+        patch => update_grant => ("updateSpaceGrant", Mutation, 200),
+        delete => delete_grant => ("deleteSpaceGrant", Mutation, 204),
+    ],
 }
 
 #[derive(Deserialize)]

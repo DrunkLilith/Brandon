@@ -22,7 +22,6 @@ use state::AppState;
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(routes::health::router())
-        .route("/api/v1/openapi.json", axum::routing::get(openapi_handler))
         .merge(routes::operational::router())
         .merge(routes::auth::router())
         .merge(routes::users::router())
@@ -39,16 +38,6 @@ pub fn build_router(state: AppState) -> Router {
             middleware::request_security,
         ))
         .layer(axum_middleware::from_fn(middleware::request_id))
-}
-
-async fn openapi_handler() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let mut response = axum::Json(openapi::document()).into_response();
-    response.headers_mut().insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("public, max-age=3600"),
-    );
-    response
 }
 
 /// Builds a router backed by dependency-free state for contract tests.

@@ -1,10 +1,9 @@
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
     extract::{Extension, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use futures_util::stream;
 use knowledge_core::{
@@ -29,10 +28,13 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/exports", post(create).get(list))
-        .route("/api/v1/exports/{id}/download", get(download))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/exports" => [
+        post => create => ("createExport", Mutation, 202),
+        get => list => ("listExports", Session, 200),
+    ],
+    "/api/v1/exports/{id}/download" => [get => download => ("downloadExport", Session, 200)],
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

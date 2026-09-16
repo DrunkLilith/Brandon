@@ -2047,9 +2047,14 @@ async fn non_ascii_or_duplicate_range_headers_return_416(pool: PgPool) {
                 axum::http::HeaderValue::from_bytes(&[255]).unwrap(),
             );
         }
-        assert_eq!(
-            app.clone().oneshot(request).await.unwrap().status(),
-            StatusCode::RANGE_NOT_SATISFIABLE
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(response.headers()[header::CONTENT_RANGE], "bytes */5");
+        assert!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }

@@ -1,9 +1,8 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Path, Query, State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
 };
 use knowledge_core::{
     pages::SavePage,
@@ -32,23 +31,27 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/pages", post(create_page).get(list_pages))
-        .route(
-            "/api/v1/pages/{id}",
-            get(get_page).patch(save_page).delete(archive_page),
-        )
-        .route("/api/v1/pages/{id}/move", post(move_page))
-        .route("/api/v1/pages/{id}/unarchive", post(unarchive_page))
-        .route("/api/v1/pages/{id}/revisions", get(list_revisions))
-        .route("/api/v1/pages/{id}/revisions/{version}", get(get_revision))
-        .route("/api/v1/pages/{id}/restore", post(restore_revision))
-        .route("/api/v1/pages/{id}/backlinks", get(backlinks))
-        .route(
-            "/api/v1/pages/{id}/permissions/{subject}",
-            put(upsert_page_permission).delete(delete_page_permission),
-        )
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/pages" => [
+        post => create_page => ("createPage", Mutation, 201),
+        get => list_pages => ("listPages", Session, 200),
+    ],
+    "/api/v1/pages/{id}" => [
+        get => get_page => ("getPage", Session, 200),
+        patch => save_page => ("updatePage", Mutation, 200),
+        delete => archive_page => ("archivePage", Mutation, 204),
+    ],
+    "/api/v1/pages/{id}/move" => [post => move_page => ("movePage", Mutation, 204)],
+    "/api/v1/pages/{id}/unarchive" => [post => unarchive_page => ("unarchivePage", Mutation, 204)],
+    "/api/v1/pages/{id}/revisions" => [get => list_revisions => ("listPageRevisions", Session, 200)],
+    "/api/v1/pages/{id}/revisions/{version}" => [get => get_revision => ("getPageRevision", Session, 200)],
+    "/api/v1/pages/{id}/restore" => [post => restore_revision => ("restorePageRevision", Mutation, 200)],
+    "/api/v1/pages/{id}/backlinks" => [get => backlinks => ("listBacklinks", Session, 200)],
+    "/api/v1/pages/{id}/permissions/{subject}" => [
+        put => upsert_page_permission => ("upsertPagePermission", Mutation, 200),
+        delete => delete_page_permission => ("deletePagePermission", Mutation, 204),
+    ],
 }
 
 #[derive(Deserialize)]

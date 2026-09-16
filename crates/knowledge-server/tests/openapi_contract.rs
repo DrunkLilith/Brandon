@@ -1,12 +1,8 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::PathBuf,
-};
+use std::collections::BTreeSet;
 
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header},
+    http::{Method, Request, StatusCode, header},
 };
 use knowledge_server::build_test_router;
 use serde_json::Value;
@@ -15,7 +11,7 @@ use tower::ServiceExt;
 const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
 
 #[tokio::test]
-async fn openapi_is_deterministic_and_matches_runtime_route_sources() {
+async fn openapi_is_deterministic_and_every_documented_operation_is_routable() {
     let app = build_test_router();
     let response = app
         .clone()
@@ -35,15 +31,16 @@ async fn openapi_is_deterministic_and_matches_runtime_route_sources() {
     );
     let first = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let second = to_bytes(
-        app.oneshot(
-            Request::builder()
-                .uri("/api/v1/openapi.json")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-        .into_body(),
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/openapi.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body(),
         usize::MAX,
     )
     .await
@@ -52,23 +49,45 @@ async fn openapi_is_deterministic_and_matches_runtime_route_sources() {
     let document: Value = serde_json::from_slice(&first).unwrap();
     assert_eq!(document["openapi"], "3.1.0");
 
-    let documented: BTreeMap<String, BTreeSet<String>> = document["paths"]
-        .as_object()
+    for (path, item) in document["paths"].as_object().unwrap() {
+        let uri = concrete_uri(path);
+        for method in item
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| METHODS.contains(&key.as_str()))
+        {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::from_bytes(method.as_bytes()).unwrap())
+                        .uri(&uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {uri}"
+            );
+        }
+    }
+    assert_eq!(
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/not-a-real-route")
+                .body(Body::empty())
+                .unwrap()
+        )
+        .await
         .unwrap()
-        .iter()
-        .map(|(path, item)| {
-            (
-                path.clone(),
-                item.as_object()
-                    .unwrap()
-                    .keys()
-                    .filter(|key| METHODS.contains(&key.as_str()))
-                    .cloned()
-                    .collect(),
-            )
-        })
-        .collect();
-    assert_eq!(documented, registered_operations());
+        .status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -234,6 +253,9 @@ async fn openapi_models_real_bodies_statuses_headers_and_security() {
         parameter(&document, "/api/v1/attachments/{id}", "get", "Range")["in"],
         "header"
     );
+    let upload_size = parameter(&document, "/api/v1/pages/{id}/attachments", "post", "size");
+    assert_eq!(upload_size["schema"]["minimum"], 1);
+    assert_eq!(upload_size["schema"]["maximum"], 104_857_600);
     assert!(
         find_operation(&document, "movePage")["responses"]
             .get("204")
@@ -266,55 +288,152 @@ async fn openapi_models_real_bodies_statuses_headers_and_security() {
             .get("spaceId")
             .is_none()
     );
+    assert_eq!(
+        find_operation(&document, "getReadiness")["responses"]["503"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/Readiness"
+    );
+    assert!(
+        find_operation(&document, "login")["responses"]
+            .get("401")
+            .is_some()
+    );
+    assert_eq!(
+        find_operation(&document, "updateUser")["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/UserUpdate"
+    );
+    assert_eq!(
+        find_operation(&document, "updateSpaceGrant")["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/SpaceGrantUpdate"
+    );
+    let audit = &document["components"]["schemas"]["AuditEvent"];
+    for field in ["actorUserId", "sessionId", "type", "requestId"] {
+        assert!(
+            audit["properties"].get(field).is_some(),
+            "audit omits {field}"
+        );
+    }
+    assert!(audit["properties"].get("eventType").is_none());
+    assert!(
+        document["components"]["schemas"]["LoginRequest"]["properties"]["password"]
+            .get("minLength")
+            .is_none()
+    );
+    for schema in ["GroupUpdateRequest", "SpaceUpdateRequest"] {
+        assert_eq!(
+            document["components"]["schemas"][schema]["minProperties"],
+            1
+        );
+    }
+    for operation_id in [
+        "login",
+        "acceptInvitation",
+        "listGroups",
+        "getGroup",
+        "getSpace",
+        "listPages",
+        "getPage",
+        "listPageRevisions",
+        "getPageRevision",
+        "listBacklinks",
+        "listAttachments",
+        "downloadAttachment",
+    ] {
+        assert!(
+            find_operation(&document, operation_id)["responses"]
+                .get("403")
+                .is_some(),
+            "{operation_id} omits a reachable 403"
+        );
+    }
+    for operation_id in ["updatePage", "restorePageRevision"] {
+        assert_eq!(
+            find_operation(&document, operation_id)["responses"]["409"]["content"]["application/problem+json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/VersionConflictProblem"
+        );
+    }
+    let range = &find_operation(&document, "downloadAttachment")["responses"]["416"];
+    assert!(range.get("content").is_none());
+    assert_eq!(range["headers"]["Content-Range"]["required"], true);
+    assert_eq!(
+        find_operation(&document, "downloadAttachment")["responses"]["200"]["content"]["*/*"]["schema"]
+            ["format"],
+        "binary"
+    );
+    for header_name in [
+        "Content-Disposition",
+        "Content-Length",
+        "Accept-Ranges",
+        "Cache-Control",
+        "X-Content-Type-Options",
+    ] {
+        assert_eq!(
+            find_operation(&document, "downloadAttachment")["responses"]["200"]["headers"]
+                [header_name]["required"],
+            true,
+            "attachment download omits {header_name}"
+        );
+    }
+    for header_name in ["Content-Disposition", "Content-Length", "Cache-Control"] {
+        assert_eq!(
+            find_operation(&document, "downloadExport")["responses"]["200"]["headers"][header_name]
+                ["required"],
+            true,
+            "export download omits {header_name}"
+        );
+    }
 }
 
-fn registered_operations() -> BTreeMap<String, BTreeSet<String>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut sources = vec![fs::read_to_string(root.join("lib.rs")).unwrap()];
-    for entry in fs::read_dir(root.join("routes")).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().is_some_and(|extension| extension == "rs") {
-            sources.push(fs::read_to_string(path).unwrap());
-        }
-    }
-    let mut result: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for source in sources {
-        let mut offset = 0;
-        while let Some(relative) = source[offset..].find(".route(") {
-            let start = offset + relative;
-            let open = start + ".route".len();
-            let mut depth = 0_i32;
-            let mut end = open;
-            for (index, byte) in source.as_bytes()[open..].iter().enumerate() {
-                match byte {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = open + index + 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
+#[tokio::test]
+async fn readiness_503_runtime_shape_matches_its_documented_schema() {
+    let response = build_test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/health/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(
+        body.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        [
+            "database",
+            "masterKey",
+            "migrations",
+            "objectStorage",
+            "status"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+}
+
+fn concrete_uri(path: &str) -> String {
+    path.split('/')
+        .map(|segment| match segment {
+            "{version}" => "1",
+            "{token}" => "invalid-token",
+            "{subject}" => "user%3A00000000-0000-0000-0000-000000000001",
+            value if value.starts_with('{') && value.ends_with('}') => {
+                "00000000-0000-0000-0000-000000000001"
             }
-            let registration = &source[start..end];
-            let first_quote = registration.find('"').unwrap();
-            let after_quote = &registration[first_quote + 1..];
-            let path_end = after_quote.find('"').unwrap();
-            let path = &after_quote[..path_end];
-            if path.starts_with("/api/v1/") {
-                let methods = result.entry(path.to_owned()).or_default();
-                for method in METHODS {
-                    if registration.contains(&format!("{method}(")) {
-                        methods.insert(method.to_owned());
-                    }
-                }
-            }
-            offset = end;
-        }
-    }
-    result
+            value => value,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn find_operation<'a>(document: &'a Value, id: &str) -> &'a Value {

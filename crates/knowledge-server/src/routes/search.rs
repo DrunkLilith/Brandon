@@ -9,11 +9,10 @@
 //! and `from`/`to` bound `updated_at` inclusively using RFC 3339 timestamps.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
-    routing::get,
 };
 use chrono::{DateTime, Utc};
 use knowledge_core::permissions::Capability;
@@ -39,8 +38,9 @@ const MAX_QUERY_CHARACTERS: usize = 500;
 const MAX_QUERY_WORDS: usize = 16;
 const MAX_SNIPPET_CHARACTERS: usize = 160;
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new().route("/api/v1/search", get(search))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/search" => [get => search => ("search", Session, 200)],
 }
 
 #[derive(Deserialize)]

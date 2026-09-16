@@ -1,9 +1,8 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Path, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
@@ -31,23 +30,23 @@ use crate::{
 const INVITATION_LIFETIME_DAYS: i64 = 7;
 type EncryptedTextFields = (Vec<u8>, Vec<u8>, i32);
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/v1/invitations",
-            post(create_invitation).get(list_invitations),
-        )
-        .route("/api/v1/invitations/{id}", delete(revoke_invitation))
-        .route(
-            "/api/v1/invitations/{token}/accept",
-            post(accept_invitation),
-        )
-        .route("/api/v1/users", get(list_users))
-        .route("/api/v1/users/{id}", patch(update_user))
-        .route(
-            "/api/v1/users/{id}/revoke-sessions",
-            post(revoke_user_sessions),
-        )
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/invitations" => [
+        post => create_invitation => ("createInvitation", Mutation, 201),
+        get => list_invitations => ("listInvitations", Session, 200),
+    ],
+    "/api/v1/invitations/{id}" => [
+        delete => revoke_invitation => ("revokeInvitation", Mutation, 204),
+    ],
+    "/api/v1/invitations/{token}/accept" => [
+        post => accept_invitation => ("acceptInvitation", Public, 201),
+    ],
+    "/api/v1/users" => [get => list_users => ("listUsers", Session, 200)],
+    "/api/v1/users/{id}" => [patch => update_user => ("updateUser", Mutation, 200)],
+    "/api/v1/users/{id}/revoke-sessions" => [
+        post => revoke_user_sessions => ("revokeUserSessions", Mutation, 204),
+    ],
 }
 
 #[derive(Deserialize)]

@@ -1,11 +1,10 @@
 use std::time::Duration;
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State, rejection::JsonRejection, rejection::QueryRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use knowledge_core::permissions::Capability;
@@ -30,18 +29,18 @@ use axum::Extension;
 const DEFAULT_ATTACHMENT_RECOVERY_DAYS: i32 = 30;
 const DEFAULT_EXPORT_RETENTION_HOURS: i32 = 24;
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/v1/admin/settings",
-            get(settings).patch(update_settings),
-        )
-        .route("/api/v1/admin/status", get(status))
-        .route("/api/v1/groups/archived", get(archived_groups))
-        .route("/api/v1/groups/{id}/restore", post(restore_group))
-        .route("/api/v1/spaces/archived", get(archived_spaces))
-        .route("/api/v1/spaces/{id}/restore", post(restore_space))
-        .route("/api/v1/spaces/{id}/subjects", get(subjects))
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/admin/settings" => [
+        get => settings => ("getSettings", Session, 200),
+        patch => update_settings => ("updateSettings", Mutation, 200),
+    ],
+    "/api/v1/admin/status" => [get => status => ("getAdminStatus", Session, 200)],
+    "/api/v1/groups/archived" => [get => archived_groups => ("listArchivedGroups", Session, 200)],
+    "/api/v1/groups/{id}/restore" => [post => restore_group => ("restoreGroup", Mutation, 204)],
+    "/api/v1/spaces/archived" => [get => archived_spaces => ("listArchivedSpaces", Session, 200)],
+    "/api/v1/spaces/{id}/restore" => [post => restore_space => ("restoreSpace", Mutation, 204)],
+    "/api/v1/spaces/{id}/subjects" => [get => subjects => ("listSubjects", Session, 200)],
 }
 
 #[derive(Serialize)]

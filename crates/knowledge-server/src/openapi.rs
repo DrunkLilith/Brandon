@@ -5,10 +5,37 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy)]
-enum Access {
+pub(crate) enum Access {
     Public,
     Session,
     Mutation,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct OperationSpec {
+    pub(crate) path: &'static str,
+    pub(crate) method: &'static str,
+    pub(crate) id: &'static str,
+    pub(crate) access: Access,
+    pub(crate) success: u16,
+}
+
+impl OperationSpec {
+    pub(crate) const fn new(
+        path: &'static str,
+        method: &'static str,
+        id: &'static str,
+        access: Access,
+        success: u16,
+    ) -> Self {
+        Self {
+            path,
+            method,
+            id,
+            access,
+            success,
+        }
+    }
 }
 
 fn operation(id: &str, access: Access, success: u16) -> Value {
@@ -55,14 +82,30 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
         Access::Session => vec![401, 500, 503],
         Access::Mutation => vec![401, 403, 500, 503],
     };
+    if matches!(id, "login" | "acceptInvitation") {
+        statuses.push(403);
+    }
+    if id == "login" {
+        statuses.push(401);
+    }
     if matches!(
         id,
         "listInvitations"
             | "listUsers"
+            | "listGroups"
+            | "getGroup"
             | "listArchivedGroups"
             | "listArchivedSpaces"
             | "listSubjects"
+            | "getSpace"
             | "listSpaceGrants"
+            | "listPages"
+            | "getPage"
+            | "listPageRevisions"
+            | "getPageRevision"
+            | "listBacklinks"
+            | "listAttachments"
+            | "downloadAttachment"
             | "listAuditEvents"
             | "listExports"
             | "getSettings"
@@ -226,7 +269,7 @@ fn success_schema(id: &str) -> Value {
         "createInvitation" => reference("InvitationCreated"),
         "acceptInvitation" => reference("UserCreated"),
         "listUsers" => array("User"),
-        "updateUser" => reference("User"),
+        "updateUser" => reference("UserUpdate"),
         "listGroups" => array("Group"),
         "listArchivedGroups" | "listArchivedSpaces" => reference("ArchivedList"),
         "createGroup" | "getGroup" | "updateGroup" => reference("Group"),
@@ -234,7 +277,8 @@ fn success_schema(id: &str) -> Value {
         "createSpace" | "getSpace" | "updateSpace" => reference("Space"),
         "listSubjects" => reference("SubjectList"),
         "listSpaceGrants" => array("SpaceGrant"),
-        "createSpaceGrant" | "updateSpaceGrant" => reference("SpaceGrant"),
+        "createSpaceGrant" => reference("SpaceGrant"),
+        "updateSpaceGrant" => reference("SpaceGrantUpdate"),
         "listPages" => array("PageTreeItem"),
         "createPage" | "getPage" => reference("Page"),
         "updatePage" | "restorePageRevision" => reference("PageVersion"),
@@ -254,30 +298,32 @@ fn success_schema(id: &str) -> Value {
     }
 }
 
-fn add(paths: &mut BTreeMap<String, Value>, path: &str, operations: &[(&str, &str, Access, u16)]) {
-    let mut item = Map::new();
-    for (method, id, access, success) in operations {
-        let mut value = operation(id, *access, *success);
-        let parameters: Vec<Value> = path
-            .split('/')
-            .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
-            .map(|name| {
-                let schema = if name == "version" {
-                    json!({"type":"integer","minimum":1})
-                } else if matches!(name, "token" | "subject") {
-                    json!({"type":"string"})
-                } else {
-                    json!({"type":"string","format":"uuid"})
-                };
-                json!({"name":name,"in":"path","required":true,"schema":schema})
-            })
-            .collect();
-        if !parameters.is_empty() {
-            value["parameters"] = Value::Array(parameters);
-        }
-        item.insert((*method).to_owned(), value);
+fn add(paths: &mut BTreeMap<String, Value>, spec: &OperationSpec) {
+    let mut value = operation(spec.id, spec.access, spec.success);
+    let parameters: Vec<Value> = spec
+        .path
+        .split('/')
+        .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+        .map(|name| {
+            let schema = if name == "version" {
+                json!({"type":"integer","minimum":1})
+            } else if matches!(name, "token" | "subject") {
+                json!({"type":"string"})
+            } else {
+                json!({"type":"string","format":"uuid"})
+            };
+            json!({"name":name,"in":"path","required":true,"schema":schema})
+        })
+        .collect();
+    if !parameters.is_empty() {
+        value["parameters"] = Value::Array(parameters);
     }
-    paths.insert(path.to_owned(), Value::Object(item));
+    let item = paths
+        .entry(spec.path.to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    item.as_object_mut()
+        .expect("path item is an object")
+        .insert(spec.method.to_owned(), value);
 }
 
 fn parameter(
@@ -302,270 +348,9 @@ fn parameter(
 /// Builds the single environment-independent API document.
 pub fn document() -> Value {
     let mut paths = BTreeMap::new();
-    add(
-        &mut paths,
-        "/api/v1/health/live",
-        &[("get", "getLiveness", Access::Public, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/health/ready",
-        &[("get", "getReadiness", Access::Public, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/openapi.json",
-        &[("get", "getOpenApi", Access::Public, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/auth/login",
-        &[("post", "login", Access::Public, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/auth/logout",
-        &[("post", "logout", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/auth/session",
-        &[("get", "getSession", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/auth/csrf",
-        &[("get", "getCsrf", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/invitations",
-        &[
-            ("get", "listInvitations", Access::Session, 200),
-            ("post", "createInvitation", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/invitations/{id}",
-        &[("delete", "revokeInvitation", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/invitations/{token}/accept",
-        &[("post", "acceptInvitation", Access::Public, 201)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/users",
-        &[("get", "listUsers", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/users/{id}",
-        &[("patch", "updateUser", Access::Mutation, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/users/{id}/revoke-sessions",
-        &[("post", "revokeUserSessions", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/groups",
-        &[
-            ("get", "listGroups", Access::Session, 200),
-            ("post", "createGroup", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/groups/archived",
-        &[("get", "listArchivedGroups", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/groups/{id}",
-        &[
-            ("get", "getGroup", Access::Session, 200),
-            ("patch", "updateGroup", Access::Mutation, 200),
-            ("delete", "archiveGroup", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/groups/{id}/restore",
-        &[("post", "restoreGroup", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/groups/{group_id}/members/{user_id}",
-        &[
-            ("put", "addGroupMember", Access::Mutation, 204),
-            ("delete", "removeGroupMember", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces",
-        &[
-            ("get", "listSpaces", Access::Session, 200),
-            ("post", "createSpace", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/archived",
-        &[("get", "listArchivedSpaces", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/{id}",
-        &[
-            ("get", "getSpace", Access::Session, 200),
-            ("patch", "updateSpace", Access::Mutation, 200),
-            ("delete", "archiveSpace", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/{id}/restore",
-        &[("post", "restoreSpace", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/{id}/subjects",
-        &[("get", "listSubjects", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/{space_id}/grants",
-        &[
-            ("get", "listSpaceGrants", Access::Session, 200),
-            ("post", "createSpaceGrant", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/spaces/{space_id}/grants/{grant_id}",
-        &[
-            ("patch", "updateSpaceGrant", Access::Mutation, 200),
-            ("delete", "deleteSpaceGrant", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages",
-        &[
-            ("get", "listPages", Access::Session, 200),
-            ("post", "createPage", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}",
-        &[
-            ("get", "getPage", Access::Session, 200),
-            ("patch", "updatePage", Access::Mutation, 200),
-            ("delete", "archivePage", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/move",
-        &[("post", "movePage", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/unarchive",
-        &[("post", "unarchivePage", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/revisions",
-        &[("get", "listPageRevisions", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/revisions/{version}",
-        &[("get", "getPageRevision", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/restore",
-        &[("post", "restorePageRevision", Access::Mutation, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/backlinks",
-        &[("get", "listBacklinks", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/permissions/{subject}",
-        &[
-            ("put", "upsertPagePermission", Access::Mutation, 200),
-            ("delete", "deletePagePermission", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/pages/{id}/attachments",
-        &[
-            ("get", "listAttachments", Access::Session, 200),
-            ("post", "uploadAttachment", Access::Mutation, 201),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/attachments/{id}",
-        &[
-            ("get", "downloadAttachment", Access::Session, 200),
-            ("delete", "archiveAttachment", Access::Mutation, 204),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/attachments/{id}/unarchive",
-        &[("post", "unarchiveAttachment", Access::Mutation, 204)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/search",
-        &[("get", "search", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/audit-events",
-        &[("get", "listAuditEvents", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/exports",
-        &[
-            ("get", "listExports", Access::Session, 200),
-            ("post", "createExport", Access::Mutation, 202),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/exports/{id}/download",
-        &[("get", "downloadExport", Access::Session, 200)],
-    );
-    add(
-        &mut paths,
-        "/api/v1/admin/settings",
-        &[
-            ("get", "getSettings", Access::Session, 200),
-            ("patch", "updateSettings", Access::Mutation, 200),
-        ],
-    );
-    add(
-        &mut paths,
-        "/api/v1/admin/status",
-        &[("get", "getAdminStatus", Access::Session, 200)],
-    );
-
+    for spec in crate::routes::operation_specs() {
+        add(&mut paths, spec);
+    }
     for (path, method, required) in [
         ("/api/v1/invitations", "post", true),
         ("/api/v1/pages/{id}/attachments", "post", false),
@@ -594,7 +379,7 @@ pub fn document() -> Value {
             "post",
             "size",
             true,
-            json!({"type":"integer","format":"int64","minimum":0}),
+            json!({"type":"integer","format":"int64","minimum":1,"maximum":104857600}),
         ),
         (
             "/api/v1/pages/{id}/attachments",
@@ -730,28 +515,76 @@ pub fn document() -> Value {
     paths.get_mut("/api/v1/pages/{id}/attachments").unwrap()["post"]["requestBody"] = json!({
         "required":true,"content":{"multipart/form-data":{"schema":{"$ref":"#/components/schemas/AttachmentUpload"}}}
     });
+    paths.get_mut("/api/v1/health/ready").unwrap()["get"]["responses"]["503"] =
+        json_response("Not ready", reference("Readiness"));
     paths.get_mut("/api/v1/attachments/{id}").unwrap()["get"]["responses"]["200"]["content"] =
-        json!({"application/octet-stream":{"schema":{"type":"string","format":"binary"}}});
+        json!({"*/*":{"schema":{"type":"string","format":"binary"}}});
     paths.get_mut("/api/v1/attachments/{id}").unwrap()["get"]["responses"]["206"] = {
         let mut value = json_response(
             "Partial attachment",
             json!({"type":"string","format":"binary"}),
         );
-        value["content"] =
-            json!({"application/octet-stream":{"schema":{"type":"string","format":"binary"}}});
+        value["content"] = json!({"*/*":{"schema":{"type":"string","format":"binary"}}});
         value["headers"]["Content-Range"] = json!({"required":true,"schema":{"type":"string"}});
         value["headers"]["Accept-Ranges"] =
             json!({"required":true,"schema":{"type":"string","enum":["bytes"]}});
         value
     };
-    paths.get_mut("/api/v1/attachments/{id}").unwrap()["get"]["responses"]["416"] =
-        problem("Range not satisfiable");
+    paths.get_mut("/api/v1/attachments/{id}").unwrap()["get"]["responses"]["416"] = {
+        let mut value = response("Range not satisfiable");
+        value["headers"]["Content-Range"] = json!({"required":true,"schema":{"type":"string"}});
+        value
+    };
+    for status in ["200", "206"] {
+        let headers = &mut paths.get_mut("/api/v1/attachments/{id}").unwrap()["get"]["responses"]
+            [status]["headers"];
+        headers["Content-Disposition"] = json!({"required":true,"schema":{"type":"string"}});
+        headers["Content-Length"] =
+            json!({"required":true,"schema":{"type":"integer","format":"int64","minimum":0}});
+        headers["Accept-Ranges"] =
+            json!({"required":true,"schema":{"type":"string","enum":["bytes"]}});
+        headers["Cache-Control"] =
+            json!({"required":true,"schema":{"type":"string","enum":["no-store"]}});
+        headers["X-Content-Type-Options"] =
+            json!({"required":true,"schema":{"type":"string","enum":["nosniff"]}});
+    }
     paths.get_mut("/api/v1/exports/{id}/download").unwrap()["get"]["responses"]["200"]["content"] =
         json!({"application/x-tar":{"schema":{"type":"string","format":"binary"}}});
+    for (name, schema) in [
+        ("Content-Disposition", json!({"type":"string"})),
+        (
+            "Content-Length",
+            json!({"type":"integer","format":"int64","minimum":0}),
+        ),
+        (
+            "Cache-Control",
+            json!({"type":"string","enum":["no-store"]}),
+        ),
+    ] {
+        paths.get_mut("/api/v1/exports/{id}/download").unwrap()["get"]["responses"]["200"]["headers"]
+            [name] = json!({"required":true,"schema":schema});
+    }
     paths.get_mut("/api/v1/auth/login").unwrap()["post"]["responses"]["200"]["headers"]["Set-Cookie"] =
         json!({"required":true,"schema":{"type":"string"}});
     paths.get_mut("/api/v1/auth/logout").unwrap()["post"]["responses"]["204"]["headers"]["Set-Cookie"] =
         json!({"required":true,"schema":{"type":"string"}});
+    for operation_id in ["updatePage", "restorePageRevision"] {
+        for item in paths.values_mut() {
+            for operation in item.as_object_mut().expect("path item object").values_mut() {
+                if operation["operationId"] == operation_id {
+                    operation["responses"]["409"] = {
+                        let mut value = response("Version conflict");
+                        value["content"] = json!({
+                            "application/problem+json":{
+                                "schema":reference("VersionConflictProblem")
+                            }
+                        });
+                        value
+                    };
+                }
+            }
+        }
+    }
 
     for (operation_id, schema) in [
         ("login", "LoginRequest"),
@@ -803,30 +636,33 @@ fn schemas() -> Value {
     let date = || json!({"type":"string","format":"date-time"});
     json!({
         "Problem":{"type":"object","additionalProperties":false,"required":["type","title","status","detail","code"],"properties":{"type":{"type":"string"},"title":{"type":"string"},"status":{"type":"integer"},"detail":{"type":"string"},"code":{"type":"string"}}},
+        "VersionConflictProblem":{"type":"object","additionalProperties":false,"required":["type","title","status","code","currentVersion"],"properties":{"type":{"type":"string"},"title":{"type":"string"},"status":{"type":"integer","enum":[409]},"code":{"type":"string","enum":["version_conflict"]},"currentVersion":{"type":"integer","minimum":1}}},
         "Liveness":{"type":"object","additionalProperties":false,"required":["status"],"properties":{"status":{"type":"string","enum":["ok"]}}},
         "Readiness":{"type":"object","additionalProperties":false,"required":["status","database","migrations","masterKey","objectStorage"],"properties":{"status":{"type":"string","enum":["ready","not_ready"]},"database":{"type":"boolean"},"migrations":{"type":"boolean"},"masterKey":{"type":"boolean"},"objectStorage":{"type":"boolean"}}},
         "OpenApiDocument":{"type":"object","additionalProperties":true,"required":["openapi","info","paths","components"],"properties":{"openapi":{"type":"string"},"info":{"type":"object"},"paths":{"type":"object"},"components":{"type":"object"}}},
         "Session":{"type":"object","additionalProperties":false,"required":["sessionId","userId","workspaceId","workspaceAdmin"],"properties":{"sessionId":uuid(),"userId":uuid(),"workspaceId":uuid(),"workspaceAdmin":{"type":"boolean"}}},
         "Csrf":{"type":"object","additionalProperties":false,"required":["token"],"properties":{"token":{"type":"string"}}},
-        "LoginRequest":{"type":"object","additionalProperties":false,"required":["email","password"],"properties":{"email":{"type":"string","format":"email"},"password":{"type":"string","format":"password","minLength":12}}},
+        "LoginRequest":{"type":"object","additionalProperties":false,"required":["email","password"],"properties":{"email":{"type":"string","format":"email"},"password":{"type":"string","format":"password"}}},
         "InvitationCreateRequest":{"type":"object","additionalProperties":false,"required":["email","workspaceRole"],"properties":{"email":{"type":"string","format":"email"},"workspaceRole":{"type":"string","enum":["admin","member"]}}},
         "InvitationAcceptRequest":{"type":"object","additionalProperties":false,"required":["displayName","password"],"properties":{"displayName":{"type":"string","minLength":1},"password":{"type":"string","format":"password","minLength":12}}},
         "InvitationCreated":{"type":"object","additionalProperties":false,"required":["id","token","expiresAt"],"properties":{"id":uuid(),"token":{"type":"string"},"expiresAt":date()}},
         "Invitation":{"type":"object","additionalProperties":false,"required":["id","email","workspaceRole","status","expiresAt"],"properties":{"id":uuid(),"email":{"type":["string","null"],"format":"email"},"workspaceRole":{"type":"string","enum":["admin","member"]},"status":{"type":"string"},"expiresAt":date()}},
         "UserCreated":{"type":"object","additionalProperties":false,"required":["id","workspaceId"],"properties":{"id":uuid(),"workspaceId":uuid()}},
         "User":{"type":"object","additionalProperties":false,"required":["id","email","displayName","workspaceRole","status"],"properties":{"id":uuid(),"email":{"type":["string","null"],"format":"email"},"displayName":{"type":"string"},"workspaceRole":{"type":"string","enum":["admin","member"]},"status":{"type":"string","enum":["active","suspended","deleted","invited"]}}},
+        "UserUpdate":{"type":"object","additionalProperties":false,"required":["id","status","workspaceRole"],"properties":{"id":uuid(),"status":{"type":"string","enum":["active","suspended"]},"workspaceRole":{"type":"string","enum":["admin","member"]}}},
         "UserUpdateRequest":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"status":{"type":"string","enum":["active","suspended"]},"workspaceRole":{"type":"string","enum":["admin","member"]}}},
         "Group":{"type":"object","additionalProperties":false,"required":["id","name","description","memberIds","archivedAt"],"properties":{"id":uuid(),"name":{"type":"string"},"description":{"type":["string","null"]},"memberIds":{"type":"array","items":uuid()},"archivedAt":{"oneOf":[date(),{"type":"null"}]}}},
         "GroupCreateRequest":{"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
-        "GroupUpdateRequest":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
+        "GroupUpdateRequest":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
         "ArchivedItem":{"type":"object","additionalProperties":false,"required":["id","name","archivedAt"],"properties":{"id":uuid(),"name":{"type":"string"},"archivedAt":date()}},
         "ArchivedList":{"type":"object","additionalProperties":false,"required":["items","nextCursor"],"properties":{"items":{"type":"array","items":reference("ArchivedItem")},"nextCursor":{"oneOf":[uuid(),{"type":"null"}]}}},
         "Space":{"type":"object","required":["id","name","description","effectiveRole","archivedAt"],"properties":{"id":uuid(),"name":{"type":"string"},"description":{"type":["string","null"]},"effectiveRole":{"type":"string","enum":["admin","owner","editor","viewer","none"]},"archivedAt":{"oneOf":[date(),{"type":"null"}]}}},
         "SpaceCreateRequest":{"type":"object","additionalProperties":false,"required":["name"],"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
-        "SpaceUpdateRequest":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
+        "SpaceUpdateRequest":{"type":"object","additionalProperties":false,"minProperties":1,"properties":{"name":{"type":"string","minLength":1},"description":{"type":["string","null"]}}},
         "Subject":{"type":"object","additionalProperties":false,"required":["id","type","label","status"],"properties":{"id":uuid(),"type":{"type":"string","enum":["user","group"]},"label":{"type":"string"},"status":{"type":"string","enum":["active"]}}},
         "SubjectList":{"type":"object","additionalProperties":false,"required":["items","nextCursor"],"properties":{"items":{"type":"array","items":reference("Subject")},"nextCursor":{"type":["string","null"]}}},
         "SpaceGrant":{"type":"object","additionalProperties":false,"required":["id","subjectType","subjectId","role"],"properties":{"id":uuid(),"subjectType":{"type":"string","enum":["user","group"]},"subjectId":uuid(),"role":{"type":"string","enum":["owner","editor","viewer"]}}},
+        "SpaceGrantUpdate":{"type":"object","additionalProperties":false,"required":["id","role"],"properties":{"id":uuid(),"role":{"type":"string","enum":["owner","editor","viewer"]}}},
         "SpaceGrantCreateRequest":{"type":"object","additionalProperties":false,"required":["subjectType","subjectId","role"],"properties":{"subjectType":{"type":"string","enum":["user","group"]},"subjectId":uuid(),"role":{"type":"string","enum":["owner","editor","viewer"]}}},
         "SpaceGrantUpdateRequest":{"type":"object","additionalProperties":false,"required":["role"],"properties":{"role":{"type":"string","enum":["owner","editor","viewer"]}}},
         "Page":{"type":"object","additionalProperties":false,"required":["id","spaceId","parentId","stableKey","title","markdown","properties","restricted","version"],"properties":{"id":uuid(),"spaceId":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"stableKey":uuid(),"title":{"type":"string"},"markdown":{"type":"string"},"properties":{"type":"object","additionalProperties":true},"restricted":{"type":"boolean"},"version":{"type":"integer","minimum":1}}},
@@ -844,7 +680,7 @@ fn schemas() -> Value {
         "Attachment":{"type":"object","additionalProperties":false,"required":["id","pageId","name","mime","size","archived"],"properties":{"id":uuid(),"pageId":uuid(),"name":{"type":"string"},"mime":{"type":"string"},"size":{"type":"integer","format":"int64"},"archived":{"type":"boolean"}}},
         "AttachmentUpload":{"type":"object","additionalProperties":false,"required":["file"],"properties":{"file":{"type":"string","format":"binary"}}},
         "SearchHit":{"type":"object","additionalProperties":false,"required":["pageId","title","snippet","updatedAt"],"properties":{"pageId":uuid(),"title":{"type":"string"},"snippet":{"type":"string"},"updatedAt":date()}},
-        "AuditEvent":{"type":"object","required":["id","eventType","targetType","createdAt"],"properties":{"id":uuid(),"eventType":{"type":"string"},"targetType":{"type":"string"},"targetId":{"oneOf":[uuid(),{"type":"null"}]},"createdAt":date(),"metadata":{"type":"object","additionalProperties":true}}},
+        "AuditEvent":{"type":"object","additionalProperties":false,"required":["id","actorUserId","sessionId","type","targetType","targetId","requestId","createdAt","metadata"],"properties":{"id":uuid(),"actorUserId":{"oneOf":[uuid(),{"type":"null"}]},"sessionId":{"oneOf":[uuid(),{"type":"null"}]},"type":{"type":"string"},"targetType":{"type":"string"},"targetId":{"oneOf":[uuid(),{"type":"null"}]},"requestId":uuid(),"createdAt":date(),"metadata":{"type":"object","additionalProperties":true}}},
         "AuditEventList":{"type":"object","additionalProperties":false,"required":["events","nextCursor"],"properties":{"events":{"type":"array","items":reference("AuditEvent")},"nextCursor":{"oneOf":[uuid(),{"type":"null"}]}}},
         "Export":{"type":"object","additionalProperties":false,"required":["id","spaceId","status","expiresAt","createdAt"],"properties":{"id":uuid(),"spaceId":uuid(),"status":{"type":"string","enum":["queued","running","ready","failed","expired"]},"expiresAt":{"oneOf":[date(),{"type":"null"}]},"createdAt":date()}},
         "ExportList":{"type":"object","additionalProperties":false,"required":["exports","nextCursor"],"properties":{"exports":{"type":"array","items":reference("Export")},"nextCursor":{"oneOf":[uuid(),{"type":"null"}]}}},

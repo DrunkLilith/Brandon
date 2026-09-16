@@ -23,7 +23,6 @@ use axum::{
     },
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -48,14 +47,23 @@ use zeroize::Zeroizing;
 pub const MAX_UPLOAD_SIZE: u64 = 100 * 1024 * 1024;
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
 const MULTIPART_OVERHEAD: usize = 8192;
+api_router! {
+    fn route_registry;
+    "/api/v1/pages/{id}/attachments" => [
+        post => upload => ("uploadAttachment", Mutation, 201),
+        get => list => ("listAttachments", Session, 200),
+    ],
+    "/api/v1/attachments/{id}" => [
+        get => download => ("downloadAttachment", Session, 200),
+        delete => archive => ("archiveAttachment", Mutation, 204),
+    ],
+    "/api/v1/attachments/{id}/unarchive" => [post => unarchive => ("unarchiveAttachment", Mutation, 204)],
+}
+
 pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/pages/{id}/attachments", post(upload).get(list))
-        .route("/api/v1/attachments/{id}", get(download).delete(archive))
-        .route("/api/v1/attachments/{id}/unarchive", post(unarchive))
-        .layer(DefaultBodyLimit::max(
-            MAX_UPLOAD_SIZE as usize + MULTIPART_OVERHEAD,
-        ))
+    route_registry().layer(DefaultBodyLimit::max(
+        MAX_UPLOAD_SIZE as usize + MULTIPART_OVERHEAD,
+    ))
 }
 async fn bounded_multipart(
     request: Request,

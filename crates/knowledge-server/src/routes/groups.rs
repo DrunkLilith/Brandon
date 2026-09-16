@@ -1,9 +1,8 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Path, State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
 use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
@@ -20,17 +19,21 @@ use crate::{
     state::AppState,
 };
 
-pub(crate) fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/groups", post(create_group).get(list_groups))
-        .route(
-            "/api/v1/groups/{id}",
-            get(get_group).patch(update_group).delete(archive_group),
-        )
-        .route(
-            "/api/v1/groups/{group_id}/members/{user_id}",
-            put(add_member).delete(remove_member),
-        )
+api_router! {
+    pub(crate) fn router;
+    "/api/v1/groups" => [
+        post => create_group => ("createGroup", Mutation, 201),
+        get => list_groups => ("listGroups", Session, 200),
+    ],
+    "/api/v1/groups/{id}" => [
+        get => get_group => ("getGroup", Session, 200),
+        patch => update_group => ("updateGroup", Mutation, 200),
+        delete => archive_group => ("archiveGroup", Mutation, 204),
+    ],
+    "/api/v1/groups/{group_id}/members/{user_id}" => [
+        put => add_member => ("addGroupMember", Mutation, 204),
+        delete => remove_member => ("removeGroupMember", Mutation, 204),
+    ],
 }
 
 #[derive(Deserialize)]

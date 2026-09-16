@@ -684,25 +684,25 @@ Commit: `feat(attachments): add encrypted staged file storage`
 - Produces: `POST/GET /api/v1/exports`, `GET /exports/{id}/download`.
 - Produces: leased at-least-once `JobRunner` and idempotent handlers.
 
-- [ ] **Step 1: Write RED audit filter and hash-chain verification tests**
+- [x] **Step 1: Write RED audit filter and hash-chain verification tests**
 
 Admin can filter actor/type/target/date; member denied; deleting/reordering fixture events makes verifier fail.
 
-- [ ] **Step 2: Implement audit read model with encrypted safe metadata and stable cursors**
+- [x] **Step 2: Implement audit read model with encrypted safe metadata and stable cursors**
 
-- [ ] **Step 3: Write RED job lease/retry/idempotency tests**
+- [x] **Step 3: Write RED job lease/retry/idempotency tests**
 
 Two runners cannot own one active lease; expired lease is reclaimed; repeated export job produces one logical result.
 
-- [ ] **Step 4: Implement PostgreSQL job leasing with `FOR UPDATE SKIP LOCKED`**
+- [x] **Step 4: Implement PostgreSQL job leasing with `FOR UPDATE SKIP LOCKED`**
 
-- [ ] **Step 5: Write RED export archive test**
+- [x] **Step 5: Write RED export archive test**
 
 Archive contains Markdown/YAML stable IDs and attachments only from requested accessible space; object store keeps encrypted archive; download is short-lived and audited.
 
-- [ ] **Step 6: Implement streaming export, expiry and cleanup**
+- [x] **Step 6: Implement streaming export, expiry and cleanup**
 
-- [ ] **Step 7: Run tests and commit**
+- [x] **Step 7: Run tests and commit**
 
 Run: `cargo test -p knowledge-server --test api_audit --test api_exports`  
 Expected: PASS.  

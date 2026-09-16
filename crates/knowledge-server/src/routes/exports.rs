@@ -156,6 +156,21 @@ async fn list(
         .await
         .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
+    let workspace_admin: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM users u
+            JOIN workspace_members m
+              ON m.workspace_id=u.workspace_id AND m.user_id=u.id
+           WHERE u.workspace_id=$1 AND u.id=$2
+             AND u.status='active' AND u.deleted_at IS NULL
+             AND m.status='active' AND m.role='admin'
+        )",
+    )
+    .bind(current.workspace_id)
+    .bind(current.user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
     let rows = sqlx::query_as::<
         _,
         (
@@ -189,7 +204,7 @@ async fn list(
     )
     .bind(current.workspace_id)
     .bind(current.user_id)
-    .bind(current.workspace_admin)
+    .bind(workspace_admin)
     .bind(query.after)
     .bind(i64::try_from(limit + 1).map_err(internal)?)
     .fetch_all(&mut *tx)
@@ -210,7 +225,7 @@ async fn list(
     let next_cursor = has_more
         .then(|| output.last().map(|item| item.id))
         .flatten();
-    if current.workspace_admin {
+    if workspace_admin {
         append_audit_event(
             &mut tx,
             &key,

@@ -184,6 +184,29 @@ async fn value(response: axum::response::Response) -> Value {
     )
     .unwrap()
 }
+async fn wait_for_locked_query(pool: &PgPool, query_fragment: &str) {
+    let pattern = format!("%{query_fragment}%");
+    for _ in 0..200 {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1 FROM pg_stat_activity
+                 WHERE datname=current_database()
+                   AND pid<>pg_backend_pid()
+                   AND wait_event_type='Lock'
+                   AND query LIKE $1
+            )",
+        )
+        .bind(&pattern)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("query did not reach the expected lock wait: {query_fragment}");
+}
 async fn login(app: &Router) -> (String, String) {
     let response = send(
         app,
@@ -575,6 +598,85 @@ async fn export_list_applies_current_space_acl_before_its_limit(pool: PgPool) {
     let body = value(response).await;
     assert_eq!(body["exports"].as_array().unwrap().len(), 1);
     assert_eq!(body["exports"][0]["id"], visible_id);
+}
+
+#[sqlx::test]
+async fn export_list_rechecks_admin_role_after_workspace_lock(pool: PgPool) {
+    let (app, _state, pool, _objects) = setup(pool).await;
+    let (cookie, csrf) = login(&app).await;
+    let (space, _) = create_space_page(&app, &cookie, &csrf).await;
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/v1/exports",
+            json!({"spaceId":space}),
+            Some(&cookie),
+            Some(&csrf),
+            Some(&Uuid::now_v7().to_string()),
+        )
+        .await
+        .status(),
+        StatusCode::ACCEPTED
+    );
+    let (workspace, user): (Uuid, Uuid) =
+        sqlx::query_as("SELECT workspace_id,id FROM users LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE")
+        .bind(workspace)
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+
+    let list_app = app.clone();
+    let list_cookie = cookie.clone();
+    let list = tokio::spawn(async move {
+        send(
+            &list_app,
+            "GET",
+            "/api/v1/exports",
+            json!({}),
+            Some(&list_cookie),
+            None,
+            None,
+        )
+        .await
+    });
+    wait_for_locked_query(&pool, "SELECT id FROM workspaces WHERE id = $1 FOR UPDATE").await;
+    sqlx::query(
+        "UPDATE workspace_members SET role='member'
+          WHERE workspace_id=$1 AND user_id=$2",
+    )
+    .bind(workspace)
+    .bind(user)
+    .execute(&mut *blocker)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM space_grants WHERE workspace_id=$1 AND space_id=$2")
+        .bind(workspace)
+        .bind(space)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    blocker.commit().await.unwrap();
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), list)
+        .await
+        .expect("list must resume after the workspace lock is released")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = value(response).await;
+    assert_eq!(body["exports"].as_array().unwrap().len(), 0);
+    let inappropriate_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='export.admin_access'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(inappropriate_audits, 0);
 }
 
 #[sqlx::test]

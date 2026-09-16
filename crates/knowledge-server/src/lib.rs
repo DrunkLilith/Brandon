@@ -3,7 +3,9 @@
 mod audit;
 pub mod bootstrap;
 pub mod config;
+pub mod export_archive;
 pub mod middleware;
+pub mod operations;
 pub mod problem;
 pub mod state;
 
@@ -24,6 +26,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::pages::router())
         .merge(routes::search::router())
         .merge(routes::attachments::router())
+        .merge(routes::audit::router())
+        .merge(routes::exports::router())
         .with_state(state.clone())
         .layer(axum_middleware::from_fn_with_state(
             state,

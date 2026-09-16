@@ -21,13 +21,50 @@ impl AttachmentStream {
         attachment: &[u8; 16],
         size: u64,
     ) -> Self {
+        Self::new_with_domain(
+            key,
+            version,
+            workspace,
+            attachment,
+            size,
+            b"knowledge/attachment-stream/v1",
+        )
+    }
+
+    /// Uses the attachment stream framing with a separately authenticated
+    /// export identity. The wire format and bounded frame sizes stay shared.
+    pub fn new_export(
+        key: PurposeKey,
+        version: KeyVersion,
+        workspace: &[u8; 16],
+        export: &[u8; 16],
+        size: u64,
+    ) -> Self {
+        Self::new_with_domain(
+            key,
+            version,
+            workspace,
+            export,
+            size,
+            b"knowledge/export-stream/v1",
+        )
+    }
+
+    fn new_with_domain(
+        key: PurposeKey,
+        version: KeyVersion,
+        workspace: &[u8; 16],
+        entity: &[u8; 16],
+        size: u64,
+        domain: &[u8],
+    ) -> Self {
         let mut header = [0; HEADER_SIZE];
         header[..8].copy_from_slice(b"KPAEAD01");
         header[8..12].copy_from_slice(&(STREAM_CHUNK_SIZE as u32).to_be_bytes());
         header[12..].copy_from_slice(&size.to_be_bytes());
-        let mut identity = b"knowledge/attachment-stream/v1".to_vec();
+        let mut identity = domain.to_vec();
         identity.extend(workspace);
-        identity.extend(attachment);
+        identity.extend(entity);
         identity.extend(version.0.to_be_bytes());
         Self {
             cipher: EnvelopeCipher::new(version, key),

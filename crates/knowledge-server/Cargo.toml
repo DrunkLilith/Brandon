@@ -36,6 +36,8 @@ workspace = true
 [dev-dependencies]
 tower.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tar = "0.4.46"
+serde_yaml_ng = "0.10.0"
 
 [lints]
 workspace = true

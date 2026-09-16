@@ -27,15 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::connect(&DatabaseSettings::new(database_url, 10)).await?;
     store.migrate().await?;
     let listener = TcpListener::bind(config.listen_address).await?;
-    axum::serve(
+    let state = AppState::new(store, master_key, &public_origin, &trusted_proxy_cidrs)?
+        .with_object_store(objects)
+        .with_attachment_retention(attachment_retention_days)?;
+    let scheduler = tokio::spawn(knowledge_server::operations::run_scheduler(state.clone()));
+    let result = axum::serve(
         listener,
-        build_router(
-            AppState::new(store, master_key, &public_origin, &trusted_proxy_cidrs)?
-                .with_object_store(objects)
-                .with_attachment_retention(attachment_retention_days)?,
-        )
-        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await?;
+    .await;
+    scheduler.abort();
+    result?;
     Ok(())
 }

@@ -136,3 +136,75 @@ fn event_hash(
     digest.update(metadata_ciphertext);
     digest.finalize().into()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use knowledge_store::audit::{AuditCheckpoint, AuditRecord, verify_chain};
+
+    #[test]
+    fn chain_rejects_deletion_reordering_metadata_and_removed_valid_suffix() {
+        let key = WorkspaceKey::generate().unwrap();
+        let workspace = Uuid::now_v7();
+        let mut records = Vec::new();
+        for _ in 0..3 {
+            let id = Uuid::now_v7();
+            let event = AuditEvent {
+                workspace_id: workspace,
+                actor_user_id: None,
+                session_id: None,
+                event_type: "fixture",
+                target_type: "fixture",
+                target_id: None,
+                request_id: Uuid::now_v7(),
+                metadata: serde_json::json!({"operation":"fixture"}),
+            };
+            let cipher =
+                EnvelopeCipher::new(KeyVersion(1), key.derive(KeyPurpose::Content).unwrap());
+            let envelope = cipher
+                .encrypt(
+                    format!("workspace:{workspace}:audit:{id}:metadata").as_bytes(),
+                    br#"{"operation":"fixture"}"#,
+                )
+                .unwrap();
+            let previous = records
+                .last()
+                .map(|r: &AuditRecord| r.event_hash.clone().try_into().unwrap());
+            let hash = event_hash(id, &event, previous.as_ref(), &envelope.ciphertext);
+            records.push(AuditRecord {
+                id,
+                workspace_id: workspace,
+                actor_user_id: None,
+                session_id: None,
+                event_type: "fixture".into(),
+                target_type: "fixture".into(),
+                target_id: None,
+                request_id: event.request_id,
+                created_at: Utc::now(),
+                metadata_ciphertext: envelope.ciphertext,
+                metadata_nonce: envelope.nonce.to_vec(),
+                metadata_key_version: 1,
+                previous_hash: previous.map(|h: [u8; 32]| h.to_vec()),
+                event_hash: hash.to_vec(),
+            });
+        }
+        let checkpoint = AuditCheckpoint {
+            count: 3,
+            head: Some(records[2].event_hash.clone().try_into().unwrap()),
+        };
+        assert!(verify_chain(&records, &key, workspace, &checkpoint).is_ok());
+        assert!(
+            verify_chain(&records[..2], &key, workspace, &checkpoint).is_err(),
+            "trusted checkpoint detects removed suffix"
+        );
+        records.swap(0, 1);
+        assert!(verify_chain(&records, &key, workspace, &checkpoint).is_err());
+        records.swap(0, 1);
+        records[1].metadata_nonce[0] ^= 1;
+        assert!(verify_chain(&records, &key, workspace, &checkpoint).is_err());
+        records[1].metadata_nonce[0] ^= 1;
+        records.remove(1);
+        assert!(verify_chain(&records, &key, workspace, &checkpoint).is_err());
+    }
+}

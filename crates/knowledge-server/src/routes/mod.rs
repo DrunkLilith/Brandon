@@ -1,5 +1,7 @@
 pub(crate) mod attachments;
+pub(crate) mod audit;
 pub(crate) mod auth;
+pub(crate) mod exports;
 pub(crate) mod groups;
 pub(crate) mod health;
 pub(crate) mod pages;

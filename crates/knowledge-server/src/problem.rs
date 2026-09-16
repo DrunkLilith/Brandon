@@ -26,6 +26,16 @@ impl ApiProblem {
         }
     }
     #[must_use]
+    pub fn export_rate_limited() -> Self {
+        Self {
+            problem_type: "https://knowledge.local/problems/export-rate-limited",
+            title: "Too many export requests",
+            status: StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            detail: "Try the export request again later".to_owned(),
+            code: "export_rate_limited",
+        }
+    }
+    #[must_use]
     pub fn validation(field: &str, message: &str) -> Self {
         Self {
             problem_type: "https://knowledge.local/problems/validation-failed",

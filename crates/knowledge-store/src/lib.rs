@@ -3,6 +3,7 @@
 pub mod attachments;
 pub mod audit;
 pub mod groups;
+pub mod jobs;
 pub mod pages;
 pub mod search;
 pub mod spaces;

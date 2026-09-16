@@ -21,5 +21,5 @@ async fn store_applies_migrations_idempotently(pool: PgPool) {
     .await
     .expect("table count should be readable");
 
-    assert_eq!(product_tables, 21);
+    assert_eq!(product_tables, 22);
 }

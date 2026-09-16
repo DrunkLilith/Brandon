@@ -42,6 +42,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/api/v1/pages/{id}/move", post(move_page))
         .route("/api/v1/pages/{id}/unarchive", post(unarchive_page))
         .route("/api/v1/pages/{id}/revisions", get(list_revisions))
+        .route("/api/v1/pages/{id}/revisions/{version}", get(get_revision))
         .route("/api/v1/pages/{id}/restore", post(restore_revision))
         .route("/api/v1/pages/{id}/backlinks", get(backlinks))
         .route(
@@ -158,6 +159,21 @@ struct PageResponse {
     version: i64,
     restricted: bool,
 }
+
+type RevisionPayloadRow = (
+    Uuid,
+    Vec<u8>,
+    Vec<u8>,
+    i32,
+    Vec<u8>,
+    Vec<u8>,
+    i32,
+    Vec<u8>,
+    Vec<u8>,
+    i32,
+    Uuid,
+    chrono::DateTime<chrono::Utc>,
+);
 
 async fn create_page(
     State(state): State<AppState>,
@@ -852,6 +868,65 @@ async fn list_revisions(
     ).bind(current.workspace_id).bind(page_id).fetch_all(&mut *transaction).await.map_err(internal)?;
     transaction.commit().await.map_err(internal)?;
     Ok(Json(rows.into_iter().map(|(version, author_id, created_at)| json!({"version": version, "authorId": author_id, "createdAt": created_at})).collect::<Vec<_>>()).into_response())
+}
+
+async fn get_revision(
+    State(state): State<AppState>,
+    current: CurrentUser,
+    Path((page_id, version)): Path<(Uuid, i64)>,
+) -> Result<Response, ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
+    authorize_page(&mut transaction, current, page_id, Capability::ViewHistory).await?;
+    let row: Option<RevisionPayloadRow> = sqlx::query_as(
+        "SELECT id,title_ciphertext,title_nonce,title_key_version,
+                body_ciphertext,body_nonce,body_key_version,
+                properties_ciphertext,properties_nonce,properties_key_version,
+                author_id,created_at
+           FROM page_revisions
+          WHERE workspace_id=$1 AND page_id=$2 AND version=$3",
+    )
+    .bind(current.workspace_id)
+    .bind(page_id)
+    .bind(version)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(internal)?;
+    let row = row.ok_or_else(ApiProblem::not_found)?;
+    transaction.commit().await.map_err(internal)?;
+    let title = decrypt_text(
+        &workspace_key,
+        &page_aad(current.workspace_id, page_id, Some(version), "title"),
+        row.1,
+        row.2,
+        row.3,
+    )?;
+    let markdown = decrypt_text(
+        &workspace_key,
+        &page_aad(current.workspace_id, page_id, Some(version), "body"),
+        row.4,
+        row.5,
+        row.6,
+    )?;
+    let properties: Value = serde_json::from_str(&decrypt_text(
+        &workspace_key,
+        &page_aad(current.workspace_id, page_id, Some(version), "properties"),
+        row.7,
+        row.8,
+        row.9,
+    )?)
+    .map_err(internal)?;
+    let mut response = Json(json!({
+        "id":row.0,"pageId":page_id,"version":version,"title":title,
+        "markdown":markdown,"properties":properties,"authorId":row.10,"createdAt":row.11
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
 }
 
 async fn restore_revision(

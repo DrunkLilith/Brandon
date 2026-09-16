@@ -26,6 +26,9 @@ pub trait ObjectUpload: Send {
     fn abort(self: Box<Self>) -> StorageFuture<'static, ()>;
 }
 pub trait ObjectStore: Send + Sync {
+    fn health(&self) -> StorageFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
     fn start(&self, key: Uuid) -> StorageFuture<'_, Box<dyn ObjectUpload>>;
     fn read_range(&self, key: Uuid, range: std::ops::Range<u64>) -> StorageFuture<'_, Bytes>;
     fn size(&self, key: Uuid) -> StorageFuture<'_, u64>;
@@ -163,6 +166,17 @@ impl ObjectUpload for MultipartWriter {
 macro_rules! adapter {
     ($ty:ty,$memory:expr) => {
         impl ObjectStore for $ty {
+            fn health(&self) -> StorageFuture<'_, ()> {
+                Box::pin(async move {
+                    self.backend
+                        .list(None)
+                        .next()
+                        .await
+                        .transpose()
+                        .map(|_| ())
+                        .map_err(|_| StorageError)
+                })
+            }
             fn start(&self, key: Uuid) -> StorageFuture<'_, Box<dyn ObjectUpload>> {
                 Box::pin(async move {
                     let path = Path::from(key.to_string());

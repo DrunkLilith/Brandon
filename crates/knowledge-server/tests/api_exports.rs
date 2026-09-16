@@ -293,6 +293,60 @@ async fn upload_attachment(app: &Router, cookie: &str, csrf: &str, page: Uuid) {
 }
 
 #[sqlx::test]
+async fn export_expiry_uses_the_persisted_operational_setting(pool: PgPool) {
+    let (app, state, pool, _) = setup(pool).await;
+    let (cookie, csrf) = login(&app).await;
+    assert_eq!(
+        send(
+            &app,
+            "PATCH",
+            "/api/v1/admin/settings",
+            json!({"attachmentRecoveryDays":30,"exportRetentionHours":36}),
+            Some(&cookie),
+            Some(&csrf),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let (space, _) = create_space_page(&app, &cookie, &csrf).await;
+    let created = send(
+        &app,
+        "POST",
+        "/api/v1/exports",
+        json!({"spaceId":space}),
+        Some(&cookie),
+        Some(&csrf),
+        Some(&Uuid::now_v7().to_string()),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::ACCEPTED);
+    let export_id: Uuid = value(created).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        JobRunner::new(Uuid::now_v7())
+            .run_once(&state)
+            .await
+            .unwrap()
+    );
+    let hours: f64 = sqlx::query_scalar(
+        "SELECT (EXTRACT(EPOCH FROM (expires_at-ready_at))/3600)::double precision FROM exports WHERE id=$1",
+    )
+    .bind(export_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        (hours - 36.0).abs() < 0.01,
+        "expected 36 hours, got {hours}"
+    );
+}
+
+#[sqlx::test]
 async fn export_request_is_idempotent_encrypted_downloadable_audited_and_revocation_safe(
     pool: PgPool,
 ) {

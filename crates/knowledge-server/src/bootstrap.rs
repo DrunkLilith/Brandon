@@ -128,6 +128,14 @@ impl BootstrapService {
         .await?;
 
         sqlx::query(
+            "INSERT INTO operational_settings (workspace_id, attachment_recovery_days, export_retention_hours)
+             VALUES ($1, 30, 24)",
+        )
+        .bind(workspace_id.as_uuid())
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
             "INSERT INTO users (
                 id, workspace_id, email_hmac, email_ciphertext, email_nonce, email_key_version,
                 display_name_ciphertext, display_name_nonce, display_name_key_version,

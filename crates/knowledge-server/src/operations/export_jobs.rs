@@ -462,7 +462,7 @@ impl JobRunner {
         {
             return Err(OperationError);
         }
-        sqlx::query("UPDATE exports SET status='ready',ciphertext_size=$3,stream_header=$4,ready_at=now(),expires_at=now()+interval '24 hours',updated_at=now() WHERE workspace_id=$1 AND id=$2 AND object_key=$5").bind(lease.workspace_id).bind(payload.export_id).bind(i64::try_from(ciphertext).map_err(|_|OperationError)?).bind(encryptor.header()).bind(object).execute(&mut *tx).await.map_err(|_|OperationError)?;
+        sqlx::query("UPDATE exports SET status='ready',ciphertext_size=$3,stream_header=$4,ready_at=now(),expires_at=now()+make_interval(hours=>COALESCE((SELECT export_retention_hours FROM operational_settings WHERE workspace_id=$1),24)),updated_at=now() WHERE workspace_id=$1 AND id=$2 AND object_key=$5").bind(lease.workspace_id).bind(payload.export_id).bind(i64::try_from(ciphertext).map_err(|_|OperationError)?).bind(encryptor.header()).bind(object).execute(&mut *tx).await.map_err(|_|OperationError)?;
         sqlx::query("DELETE FROM export_staging WHERE object_key=$1")
             .bind(object)
             .execute(&mut *tx)

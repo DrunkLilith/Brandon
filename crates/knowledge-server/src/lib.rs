@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! HTTP server library for Knowledge Platform.
 
 mod audit;

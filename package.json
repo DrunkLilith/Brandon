@@ -3,9 +3,13 @@
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "scripts": {
+    "api:check": "node scripts/generate-api.mjs --check",
     "api:generate": "node scripts/generate-api.mjs",
     "build": "pnpm --recursive build",
     "test": "pnpm --recursive test",
     "typecheck": "pnpm --recursive typecheck"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0"
   }
 }

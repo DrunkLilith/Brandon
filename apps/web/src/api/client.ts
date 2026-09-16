@@ -1,16 +1,9 @@
-import type { Csrf, Problem } from './generated'
+import createClient from 'openapi-fetch'
 
-type JsonValue = Record<string, unknown> | unknown[] | string | number | boolean | null
+import type { components, paths } from './generated'
 
-export interface RequestOptions {
-  method?: string
-  json?: JsonValue
-  body?: BodyInit
-  signal?: AbortSignal
-  csrf?: boolean
-  response?: 'json' | 'binary' | 'empty'
-  headers?: HeadersInit
-}
+type Problem = components['schemas']['Problem']
+type Csrf = components['schemas']['Csrf']
 
 export class ApiError extends Error {
   readonly status: number
@@ -36,56 +29,45 @@ const safeProblem = (value: unknown, status: number): Problem => {
   return { status, code: 'request_failed', title: 'Request failed', type: 'about:blank', detail: '' }
 }
 
-export class ApiClient {
-  #csrf: string | undefined
+type ApiResult<Data, Error> =
+  | { data: Data; error?: never; response: Response }
+  | { data?: never; error: Error; response: Response }
 
-  invalidateCsrf() {
-    this.#csrf = undefined
-  }
-
-  async #csrfToken(signal?: AbortSignal) {
-    if (this.#csrf) return this.#csrf
-    const response = await fetch('/api/v1/auth/csrf', { credentials: 'include', signal })
-    if (!response.ok) throw await this.#error(response)
-    this.#csrf = ((await response.json()) as Csrf).token
-    return this.#csrf
-  }
-
-  async #error(response: Response) {
-    let value: unknown
-    if (response.headers.get('content-type')?.includes('application/problem+json')) {
-      try { value = await response.json() } catch { value = undefined }
-    }
-    return new ApiError(safeProblem(value, response.status))
-  }
-
-  async request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
-    const method = (options.method ?? 'GET').toUpperCase()
-    const mutation = !['GET', 'HEAD', 'OPTIONS'].includes(method)
-    const headers = new Headers(options.headers)
-    let body = options.body
-    if (options.json !== undefined) {
-      headers.set('Content-Type', 'application/json')
-      body = JSON.stringify(options.json)
-    }
-    if (mutation && options.csrf !== false) {
-      headers.set('X-CSRF-Token', await this.#csrfToken(options.signal))
-    }
-    const response = await fetch(path, {
-      method,
-      headers,
-      body,
-      signal: options.signal,
-      credentials: 'include',
-    })
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) this.invalidateCsrf()
-      throw await this.#error(response)
-    }
-    if (options.response === 'empty' || response.status === 204) return undefined as T
-    if (options.response === 'binary') return (await response.blob()) as T
-    return await response.json() as T
-  }
+export function unwrap<Data, Error>(result: ApiResult<Data, Error>): Data {
+  if (result.error !== undefined) throw new ApiError(safeProblem(result.error, result.response.status))
+  return result.data as Data
 }
 
-export const apiClient = new ApiClient()
+export function createApiClient() {
+  let csrf: string | undefined
+  const baseUrl = globalThis.location?.origin ?? 'http://localhost'
+  const client = createClient<paths>({
+    baseUrl,
+    credentials: 'include',
+    fetch: (request) => globalThis.fetch(request),
+  })
+
+  client.use({
+    async onRequest({ request }) {
+      const path = new URL(request.url).pathname
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && path !== '/api/v1/auth/login') {
+        if (!csrf) {
+          const response = await fetch('/api/v1/auth/csrf', { credentials: 'include', signal: request.signal })
+          const value: unknown = await response.json().catch(() => undefined)
+          if (!response.ok) throw new ApiError(safeProblem(value, response.status))
+          csrf = (value as Csrf).token
+        }
+        request.headers.set('X-CSRF-Token', csrf)
+      }
+      return request
+    },
+    onResponse({ response }) {
+      if (response.status === 401 || response.status === 403) csrf = undefined
+      return response
+    },
+  })
+
+  return Object.assign(client, { invalidateCsrf: () => { csrf = undefined } })
+}
+
+export const apiClient = createApiClient()

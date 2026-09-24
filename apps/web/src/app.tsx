@@ -5,6 +5,13 @@ import { useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { AppShell } from './app-shell/app-shell'
+import { AdminLayout } from './admin/admin-layout'
+import { AuditPage } from './admin/audit'
+import { DashboardPage } from './admin/dashboard'
+import { GroupsPage } from './admin/groups'
+import { SettingsPage } from './admin/settings'
+import { SpacesPage } from './admin/spaces'
+import { UsersPage } from './admin/users'
 import { LoginPage } from './auth/login-page'
 import { SessionProvider, useSession } from './auth/session'
 
@@ -35,7 +42,7 @@ function AdminRoute() {
   if (loading) return <Loading />
   if (error) return <SessionUnavailable />
   if (!session) return <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}${location.hash}` }} />
-  return session.workspaceAdmin ? <AppShell><section className="empty-state"><p className="eyebrow">Администрирование</p><h1>Панель управления</h1></section></AppShell> : <Navigate to="/app" replace />
+  return session.workspaceAdmin ? <AdminLayout /> : <Navigate to="/app" replace />
 }
 
 export function App() {
@@ -43,7 +50,15 @@ export function App() {
   return <QueryClientProvider client={queryClient}><SessionProvider><BrowserRouter><Routes>
     <Route path="/login" element={<LoginRoute />} />
     <Route path="/app/*" element={<AppRoute />} />
-    <Route path="/admin/*" element={<AdminRoute />} />
+    <Route path="/admin" element={<AdminRoute />}>
+      <Route index element={<DashboardPage />} />
+      <Route path="users" element={<UsersPage />} />
+      <Route path="groups" element={<GroupsPage />} />
+      <Route path="spaces" element={<SpacesPage />} />
+      <Route path="audit" element={<AuditPage />} />
+      <Route path="settings" element={<SettingsPage />} />
+      <Route path="*" element={<Navigate to="/admin" replace />} />
+    </Route>
     <Route path="*" element={<Navigate to="/app" replace />} />
   </Routes></BrowserRouter></SessionProvider></QueryClientProvider>
 }

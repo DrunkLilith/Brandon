@@ -1,13 +1,54 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import type { components } from '../api/generated'
+import { workspaceMessages as text } from '../pages/messages'
 
-export function Topbar({ onLogout }: { onLogout(): Promise<void> }) {
+export function Topbar({
+  onLogout,
+  onSearch,
+  space,
+  page,
+}: {
+  onLogout(): Promise<void>
+  onSearch(): void
+  space?: components['schemas']['Space']
+  page?: components['schemas']['Page']
+}) {
   const [profileOpen, setProfileOpen] = useState(false)
-  return <header className="topbar">
-    <div className="breadcrumbs" aria-label="Хлебные крошки"><span>Пространство</span><span aria-hidden="true">/</span><strong>Обзор</strong></div>
-    <button className="search-button" type="button" disabled aria-label="Поиск — доступно в следующей версии" title="Доступно в следующей версии"><span>Поиск по знаниям · скоро</span></button>
-    <div className="profile-menu">
-      <button className="profile-button" type="button" aria-label="Профиль" aria-expanded={profileOpen} onClick={() => setProfileOpen((open) => !open)}>A</button>
-      {profileOpen && <div className="profile-popover"><button type="button" onClick={() => void onLogout()}>Выйти</button></div>}
-    </div>
-  </header>
+  return (
+    <header className="topbar">
+      <nav className="breadcrumbs" aria-label="Хлебные крошки">
+        <Link to="/app">{text.workspace.overview}</Link>
+        {space && (
+          <>
+            <span aria-hidden="true">/</span>
+            <Link to={`/app/spaces/${space.id}`}>{space.name}</Link>
+          </>
+        )}
+        {page && <strong>{page.title}</strong>}
+      </nav>
+      <button className="search-button" type="button" onClick={onSearch}>
+        <span>{text.workspace.search}</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+      <div className="profile-menu">
+        <button
+          className="profile-button"
+          type="button"
+          aria-label="Профиль"
+          aria-expanded={profileOpen}
+          onClick={() => setProfileOpen((open) => !open)}
+        >
+          A
+        </button>
+        {profileOpen && (
+          <div className="profile-popover">
+            <button type="button" onClick={() => void onLogout()}>
+              Выйти
+            </button>
+          </div>
+        )}
+      </div>
+    </header>
+  )
 }

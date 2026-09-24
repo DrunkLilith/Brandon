@@ -7,6 +7,23 @@ import { ApiError, createApiClient, unwrap } from './client'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('typed API client', () => {
+  it.each(['csrf', 'upload'])('aborts attachment %s transport when its signal is cancelled', async (phase) => {
+    const abort = new AbortController()
+    let transportSignal: AbortSignal | undefined
+    let reached!: () => void
+    const ready = new Promise<void>(resolve => { reached = resolve })
+    vi.stubGlobal('fetch', vi.fn((input: Request | string, init?: RequestInit) => {
+      if (typeof input === 'string' && phase === 'upload') return Promise.resolve(new Response(JSON.stringify({ token: 'csrf' })))
+      transportSignal = typeof input === 'string' ? init?.signal ?? undefined : input.signal
+      reached()
+      return new Promise<Response>((_, reject) => transportSignal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+    }))
+    const upload = createApiClient().uploadAttachment({ pageId: 'p', file: new File(['abc'], 'a.txt'), signal: abort.signal })
+    await ready
+    abort.abort()
+    expect(transportSignal?.aborted).toBe(true)
+    await expect(upload).rejects.toMatchObject({ name: 'AbortError' })
+  })
   it('uses same-origin cookies and obtains CSRF before a mutation', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'csrf-value' }), { status: 200, headers: { 'content-type': 'application/json' } }))

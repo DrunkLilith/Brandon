@@ -232,6 +232,7 @@ describe('users and invitations administration', () => {
       if (path === '/api/v1/invitations') return json([])
       if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
       if (path === '/api/v1/users/admin' && request.method === 'PATCH') return json({ id: 'admin', workspaceRole: 'member', status: 'active' })
+      if (path === '/api/v1/spaces') return json([])
       throw new Error(`Unexpected request: ${request.method} ${path}`)
     }))
     const user = userEvent.setup()
@@ -241,7 +242,7 @@ describe('users and invitations administration', () => {
     await user.selectOptions(row.querySelectorAll('select')[1], 'member')
     await user.click(row.querySelector('button')!)
 
-    expect(await screen.findByRole('heading', { name: 'Ваши знания — в одном месте' })).toBeVisible()
+    expect(await screen.findByText('Нет доступных пространств. Обратитесь к администратору.')).toBeVisible()
     expect(sessionRequests).toBeGreaterThanOrEqual(2)
   })
 

@@ -1,7 +1,7 @@
 import './styles.css'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
 import { AppShell } from './app-shell/app-shell'
@@ -18,6 +18,12 @@ import { SessionProvider, useSession } from './auth/session'
 function Loading() { return <main className="loading" aria-label="Загрузка">Загрузка…</main> }
 function SessionUnavailable() { return <main className="loading" role="alert">Не удалось проверить сеанс. Попробуйте обновить страницу.</main> }
 
+function WorkspaceBoundary({ children }: { children: ReactNode }) {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
+  useEffect(() => () => { void client.cancelQueries(); client.clear() }, [client])
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+}
+
 function LoginRoute() {
   const { session, loading, error } = useSession()
   const location = useLocation()
@@ -33,7 +39,7 @@ function AppRoute() {
   const location = useLocation()
   if (loading) return <Loading />
   if (error) return <SessionUnavailable />
-  return session ? <AppShell /> : <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}${location.hash}` }} />
+  return session ? <WorkspaceBoundary key={session.sessionId}><AppShell /></WorkspaceBoundary> : <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}${location.hash}` }} />
 }
 
 function AdminRoute() {

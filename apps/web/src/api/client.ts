@@ -11,6 +11,7 @@ interface UploadAttachmentInput {
   file: Blob | File | FormData
   filename?: string
   idempotencyKey?: string
+  signal?: AbortSignal
 }
 
 interface DownloadAttachmentInput {
@@ -94,7 +95,7 @@ export function createApiClient() {
     },
   })
 
-  const uploadAttachment = async ({ pageId, file, filename, idempotencyKey }: UploadAttachmentInput): Promise<Attachment> => {
+  const uploadAttachment = async ({ pageId, file, filename, idempotencyKey, signal }: UploadAttachmentInput): Promise<Attachment> => {
     const form = file instanceof FormData ? file : new FormData()
     const payload = file instanceof FormData ? file.get('file') : file
     if (!(payload instanceof Blob)) throw new TypeError('Attachment upload requires a binary file field')
@@ -108,6 +109,7 @@ export function createApiClient() {
       },
       body: { file: filename ?? suppliedName ?? 'attachment' },
       bodySerializer: () => form,
+      signal,
     }))
     if (!attachment) throw new TypeError('Attachment response was empty')
     return attachment

@@ -12,6 +12,26 @@
   box-sizing: border-box;
 }
 
+.workspace-content { min-width:0; padding:1.4rem clamp(1rem,3vw,3rem); }
+.page-workspace { max-width:76rem; margin:auto; }
+.page-workspace>label:first-child { display:grid; gap:.5rem; }
+.page-workspace input:not([type=checkbox]), .page-workspace textarea { width:100%; padding:.7rem; border:1px solid #cbd5ce; border-radius:.5rem; font:inherit; }
+.page-workspace>label:first-child input { font-size:1.8rem; font-weight:700; }
+.page-toolbar { margin-bottom:1rem; }
+.workspace-content button, .markdown-rich button { border:1px solid #bcc8c0; border-radius:.5rem; padding:.5rem .7rem; background:white; cursor:pointer; }
+button:disabled { opacity:.55; cursor:default; }
+.tree-row { display:flex; align-items:center; gap:.3rem; overflow:hidden; white-space:nowrap; cursor:pointer; border-radius:.35rem; }
+.tree-row span { overflow:hidden; text-overflow:ellipsis; }
+.tree-row[aria-selected=true] { background:#dce9df; font-weight:700; }
+.tree-row button { border:0; background:transparent; }
+.markdown-rich { padding:1rem; background:white; border:1px solid #dce2dd; border-radius:.7rem; margin:.8rem 0; overflow-wrap:anywhere; }
+.markdown-rich .ProseMirror { min-height:18rem; outline:none; }
+.markdown-raw { min-height:22rem; margin:.8rem 0; font-family:monospace!important; }
+.page-workspace pre, .admin-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+.page-workspace del { background:#ffe3e3; }
+.page-workspace ins { background:#dbf3df; }
+@media(max-width:760px) { .app-shell{grid-template-columns:1fr!important}.sidebar{border-right:0}.topbar{grid-template-columns:1fr auto!important}.topbar .breadcrumbs{grid-column:1/-1}.workspace-content{padding:1rem} }
+
 body {
   min-width: 320px;
   min-height: 100vh;

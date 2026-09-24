@@ -8,16 +8,30 @@ import {
 } from '@milkdown/core'
 import { commonmark, imageSchema } from '@milkdown/preset-commonmark'
 import { replaceAll } from '@milkdown/utils'
-import { useEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from 'react'
 import { ErrorNotice } from '../admin/shared'
 
+export type MarkdownHandle = { flush(): string }
+
 export function MilkdownAdapter({
+  ref,
   value,
   onChange,
+  onDirty,
+  onUnmount,
   readOnly = false,
 }: {
+  ref?: Ref<MarkdownHandle>
   value: string
   onChange(value: string): void
+  onDirty?(): void
+  onUnmount?(value: string): void
   readOnly?: boolean
 }) {
   const root = useRef<HTMLDivElement>(null),
@@ -27,11 +41,41 @@ export function MilkdownAdapter({
     locked = useRef(readOnly),
     emitted = useRef(value)
   const replacing = useRef(false)
+  const pending = useRef(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const dirty = useRef(onDirty),
+    unmount = useRef(onUnmount)
   const [error, setError] = useState<unknown>()
   latest.current = value
   change.current = onChange
   locked.current = readOnly
+  dirty.current = onDirty
+  unmount.current = onUnmount
+  const cancelTimer = () => {
+    if (timer.current !== null) clearTimeout(timer.current)
+    timer.current = null
+  }
+  const flush = (notify = true) => {
+    cancelTimer()
+    if (pending.current && editor.current) {
+      const markdown = editor.current.action((ctx) =>
+        ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc),
+      )
+      pending.current = false
+      if (markdown !== emitted.current) {
+        emitted.current = markdown
+        if (notify) change.current(markdown)
+        else unmount.current?.(markdown)
+      }
+    }
+    return emitted.current
+  }
+  const flushCurrent = useRef(flush)
+  flushCurrent.current = flush
+  useImperativeHandle(ref, () => ({ flush: () => flushCurrent.current() }), [])
   const replaceValue = (instance: Editor, markdown: string) => {
+    cancelTimer()
+    pending.current = false
     emitted.current = markdown
     replacing.current = true
     try {
@@ -49,9 +93,8 @@ export function MilkdownAdapter({
         ctx.update(editorViewOptionsCtx, (options) => ({
           ...options,
           editable: () => !locked.current,
-          // The listener plugin debounces document events and cancels them on
-          // destroy. Publish the authoritative, fully applied document now so
-          // save, mode changes and navigation never see a stale draft.
+          // Keep the authoritative document current cheaply. Full Markdown
+          // serialization/persistence is coalesced, with explicit boundary flushes.
           dispatchTransaction(transaction) {
             const view = ctx.get(editorViewCtx)
             const previous = view.state.doc
@@ -61,11 +104,10 @@ export function MilkdownAdapter({
               !replacing.current &&
               !previous.eq(view.state.doc)
             ) {
-              const markdown = ctx.get(serializerCtx)(view.state.doc)
-              if (markdown !== emitted.current) {
-                emitted.current = markdown
-                change.current(markdown)
-              }
+              if (!pending.current) dirty.current?.()
+              pending.current = true
+              cancelTimer()
+              timer.current = setTimeout(() => flushCurrent.current(), 200)
             }
           },
           attributes: {
@@ -99,6 +141,8 @@ export function MilkdownAdapter({
         if (!disposed) setError(reason)
       })
     return () => {
+      // Persist the last edit without updating an unmounting React component.
+      flushCurrent.current(false)
       disposed = true
       editor.current = null
       void instance.destroy()

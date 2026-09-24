@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, apiClient, unwrap } from '../api/client'
 import type { components } from '../api/generated'
 import { ErrorNotice, LoadingBlock } from '../admin/shared'
@@ -11,6 +11,7 @@ import {
   type Draft,
 } from '../editor/draft-store'
 import { MarkdownEditor } from '../editor/markdown-editor'
+import type { MarkdownHandle } from '../editor/milkdown-adapter'
 import { ConflictDialog } from '../editor/conflict-dialog'
 import { HistoryPanel } from '../editor/history-panel'
 import { PagePermissions } from './page-permissions'
@@ -80,6 +81,7 @@ function PageEditor({
     error?: unknown
   } | null>(null)
   const key = draftKey(workspaceId, base.id, base.version)
+  const editor = useRef<MarkdownHandle>(null)
   const change = (next: Draft) => {
     setDirty(true)
     setDraft(next)
@@ -177,10 +179,19 @@ function PageEditor({
       </label>
       <p>{text.workspace.version(base.version)}</p>
       <MarkdownEditor
+        ref={editor}
         value={draft.markdown}
         readOnly={!base.capabilities.edit || save.isPending}
         onChange={(markdown) => {
           if (!save.isPending) change({ ...draft, markdown })
+        }}
+        onDirty={() => setDirty(true)}
+        onUnmount={(markdown) => {
+          try {
+            writeDraft(key, { ...draft, markdown })
+          } catch {
+            // The page is leaving; do not update unmounted UI state.
+          }
         }}
       />
       <details>
@@ -226,7 +237,7 @@ function PageEditor({
               save.mutate({
                 draft: {
                   title: draft.title,
-                  markdown: draft.markdown,
+                  markdown: editor.current?.flush() ?? draft.markdown,
                   properties: draft.properties,
                   restricted: draft.restricted,
                 },

@@ -340,6 +340,97 @@ async fn invitation_creation_requires_and_atomically_replays_idempotency_keys(po
     assert_eq!(created_audits, 2);
 }
 
+#[sqlx::test]
+async fn invitation_expiry_is_validated_defaulted_and_part_of_idempotency(pool: PgPool) {
+    let (app, pool) = app(pool).await;
+    let cookie = login(&app, "admin@example.com", ADMIN_PASSWORD).await;
+    let csrf = csrf(&app, &cookie).await;
+
+    for invalid in [0, 721] {
+        let response = send_invitation_with_key(
+            &app,
+            json!({
+                "email": format!("invalid-{invalid}@example.com"),
+                "workspaceRole": "member",
+                "expiresInHours": invalid
+            }),
+            &cookie,
+            &csrf,
+            Some(&uuid::Uuid::now_v7().to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let invitation_count: i64 = sqlx::query_scalar("SELECT count(*) FROM invitations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(invitation_count, 0, "invalid expiry must not mutate state");
+
+    let custom_key = uuid::Uuid::now_v7().to_string();
+    let custom = send_invitation_with_key(
+        &app,
+        json!({
+            "email": "custom-expiry@example.com",
+            "workspaceRole": "admin",
+            "expiresInHours": 24
+        }),
+        &cookie,
+        &csrf,
+        Some(&custom_key),
+    )
+    .await;
+    assert_eq!(custom.status(), StatusCode::CREATED);
+    let custom = json_body(custom).await;
+    let custom_hours: f64 = sqlx::query_scalar(
+        "SELECT (EXTRACT(EPOCH FROM (expires_at-created_at))/3600)::double precision FROM invitations WHERE id=$1",
+    )
+    .bind(custom["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!((custom_hours - 24.0).abs() < 0.01);
+
+    let mismatch = send_invitation_with_key(
+        &app,
+        json!({
+            "email": "custom-expiry@example.com",
+            "workspaceRole": "admin",
+            "expiresInHours": 48
+        }),
+        &cookie,
+        &csrf,
+        Some(&custom_key),
+    )
+    .await;
+    assert_eq!(mismatch.status(), StatusCode::CONFLICT);
+
+    let defaulted = send_invitation_with_key(
+        &app,
+        json!({"email": "default-expiry@example.com", "workspaceRole": "member"}),
+        &cookie,
+        &csrf,
+        Some(&uuid::Uuid::now_v7().to_string()),
+    )
+    .await;
+    assert_eq!(defaulted.status(), StatusCode::CREATED);
+    let defaulted = json_body(defaulted).await;
+    let default_hours: f64 = sqlx::query_scalar(
+        "SELECT (EXTRACT(EPOCH FROM (expires_at-created_at))/3600)::double precision FROM invitations WHERE id=$1",
+    )
+    .bind(
+        defaulted["id"]
+            .as_str()
+            .unwrap()
+            .parse::<uuid::Uuid>()
+            .unwrap(),
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!((default_hours - 168.0).abs() < 0.01);
+}
+
 async fn create_invitation(
     app: &Router,
     cookie: &str,

@@ -815,6 +815,8 @@ export type components = {
         readonly InvitationCreateRequest: {
             /** Format: email */
             readonly email: string;
+            /** @default 168 */
+            readonly expiresInHours: number;
             /** @enum {string} */
             readonly workspaceRole: "admin" | "member";
         };

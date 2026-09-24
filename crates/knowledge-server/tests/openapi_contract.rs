@@ -240,6 +240,12 @@ async fn openapi_models_real_bodies_statuses_headers_and_security() {
             .get("429")
             .is_some()
     );
+    let invitation_expiry = &document["components"]["schemas"]["InvitationCreateRequest"]["properties"]
+        ["expiresInHours"];
+    assert_eq!(invitation_expiry["type"], "integer");
+    assert_eq!(invitation_expiry["minimum"], 1);
+    assert_eq!(invitation_expiry["maximum"], 720);
+    assert_eq!(invitation_expiry["default"], 168);
     assert_eq!(
         parameter(
             &document,

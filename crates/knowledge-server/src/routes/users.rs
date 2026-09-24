@@ -27,7 +27,6 @@ use crate::{
     state::AppState,
 };
 
-const INVITATION_LIFETIME_DAYS: i64 = 7;
 type EncryptedTextFields = (Vec<u8>, Vec<u8>, i32);
 
 api_router! {
@@ -54,6 +53,7 @@ api_router! {
 struct CreateInvitationRequest {
     email: String,
     workspace_role: WorkspaceRoleInput,
+    expires_in_hours: Option<i64>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -168,6 +168,13 @@ async fn create_invitation(
         .ok_or_else(|| ApiProblem::validation("Idempotency-Key", "must be a UUID"))?;
     let Json(input) = payload
         .map_err(|_| ApiProblem::validation("body", "expected a valid invitation JSON object"))?;
+    let expires_in_hours = input.expires_in_hours.unwrap_or(168);
+    if !(1..=720).contains(&expires_in_hours) {
+        return Err(ApiProblem::validation(
+            "expiresInHours",
+            "must be between 1 and 720",
+        ));
+    }
     let email = input.email.trim().to_lowercase();
     validate_email(&email)?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
@@ -181,10 +188,12 @@ async fn create_invitation(
         .derive(KeyPurpose::Search)
         .map_err(|_| ApiProblem::internal())?;
     let email_hmac = search_key.authenticate(email.as_bytes());
-    let mut fingerprint_input = Vec::with_capacity(32 + 1 + input.workspace_role.as_str().len());
+    let mut fingerprint_input =
+        Vec::with_capacity(32 + 1 + input.workspace_role.as_str().len() + 8);
     fingerprint_input.extend_from_slice(&email_hmac);
     fingerprint_input.push(0);
     fingerprint_input.extend_from_slice(input.workspace_role.as_str().as_bytes());
+    fingerprint_input.extend_from_slice(&expires_in_hours.to_be_bytes());
     let fingerprint = search_key.authenticate(&fingerprint_input);
     let source_identity = source_identity(source);
     let actor_identity = format!("{}:{}", current.workspace_id, current.user_id);
@@ -210,7 +219,7 @@ async fn create_invitation(
     getrandom::fill(&mut *raw_token).map_err(|_| ApiProblem::internal())?;
     let token = Zeroizing::new(URL_SAFE_NO_PAD.encode(*raw_token));
     let token_hash: [u8; 32] = Sha256::digest(*raw_token).into();
-    let expires_at = Utc::now() + Duration::days(INVITATION_LIFETIME_DAYS);
+    let expires_at = Utc::now() + Duration::hours(expires_in_hours);
     let token_aad = format!(
         "workspace:{}:invitation-idempotency:{}:{idempotency_key}:token",
         current.workspace_id, current.user_id

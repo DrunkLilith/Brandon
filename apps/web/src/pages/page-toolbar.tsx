@@ -43,6 +43,10 @@ export function PageToolbar({
     ...treeQuery(destination),
     enabled: action === 'move' && destination !== spaceId,
   })
+  const unresolvedTarget =
+    action === 'move' &&
+    destination !== spaceId &&
+    (target.isFetching || target.isError || target.data === undefined)
   const descendants = new Set<string>(page ? [page.id] : [])
   let changed = true
   while (changed) {
@@ -120,8 +124,16 @@ export function PageToolbar({
       return null
     },
     onMutate: async (input) => {
-      await cache.cancelQueries({ queryKey: ['workspace'] })
-      const snapshots = cache.getQueriesData({ queryKey: ['workspace'] })
+      const keys = [treeKey(spaceId)]
+      if (input.action === 'move' && input.destination !== spaceId)
+        keys.push(treeKey(input.destination))
+      await Promise.all(
+        keys.map((queryKey) => cache.cancelQueries({ queryKey, exact: true })),
+      )
+      const snapshots = keys.map((key) => ({
+        key,
+        state: cache.getQueryState(key),
+      }))
       const old = cache.getQueryData<readonly Node[]>(treeKey(spaceId)) ?? nodes
       let next = [...old]
       if (input.action === 'create' || input.action === 'child')
@@ -179,8 +191,14 @@ export function PageToolbar({
       return { snapshots }
     },
     onError: (_error, _input, context) => {
-      for (const [key, value] of context?.snapshots ?? [])
-        cache.setQueryData(key, value)
+      for (const { key, state } of context?.snapshots ?? []) {
+        if (state)
+          cache
+            .getQueryCache()
+            .find({ queryKey: key, exact: true })
+            ?.setState(state)
+        else cache.removeQueries({ queryKey: key, exact: true })
+      }
     },
     onSuccess: async (result, input) => {
       setAction(null)
@@ -235,6 +253,7 @@ export function PageToolbar({
           <form
             onSubmit={(event) => {
               event.preventDefault()
+              if (mutation.isPending || unresolvedTarget) return
               if (action === 'up' && !previousSibling) return
               mutation.mutate({
                 action,
@@ -314,7 +333,7 @@ export function PageToolbar({
               </>
             )}
             <button
-              disabled={mutation.isPending || target.isFetching}
+              disabled={mutation.isPending || unresolvedTarget}
               type="submit"
             >
               {text.workspace.apply}

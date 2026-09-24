@@ -29,7 +29,7 @@ export function PageView({
 }) {
   const query = useQuery(pageQuery(pageId))
   if (query.isPending) return <LoadingBlock />
-  if (query.isError) return <ErrorNotice error={query.error} />
+  if (!query.data) return <ErrorNotice error={query.error} />
   if (query.data.spaceId !== spaceId)
     return (
       <ErrorNotice
@@ -44,7 +44,10 @@ export function PageView({
       />
     )
   return (
-    <PageEditor key={pageId} initial={query.data} workspaceId={workspaceId} />
+    <>
+      {query.isError && <ErrorNotice error={query.error} />}
+      <PageEditor key={pageId} initial={query.data} workspaceId={workspaceId} />
+    </>
   )
 }
 function PageEditor({

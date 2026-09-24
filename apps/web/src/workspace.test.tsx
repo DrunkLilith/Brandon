@@ -411,6 +411,56 @@ it('validates upload, shows indeterminate progress and cancels the actual reques
   expect(screen.getByText(/Шифрование на сервере/)).toBeVisible()
 })
 
+it('reuses the logical upload key after cancellation with an uncertain server commit', async () => {
+  const keys: (string | null)[] = []
+  const { user } = setup((request) => {
+    if (
+      request.method === 'POST' &&
+      new URL(request.url).pathname.endsWith('/attachments')
+    ) {
+      keys.push(request.headers.get('Idempotency-Key'))
+      if (keys.length === 1)
+        return new Promise<Response>((_, reject) => {
+          // The server may already have committed; cancellation only prevents
+          // receiving its response, so retry must use its replay key.
+          request.signal.addEventListener('abort', () =>
+            reject(new DOMException('Aborted', 'AbortError')),
+          )
+        })
+      return json(
+        {
+          id: 'attachment',
+          pageId: 'p',
+          name: 'a.txt',
+          size: 3,
+          mime: 'text/plain',
+          archived: false,
+        },
+        201,
+      )
+    }
+  })
+  await screen.findByLabelText('Название страницы')
+  await user.upload(screen.getByLabelText('Файл'), new File(['abc'], 'a.txt'))
+  await user.click(screen.getByRole('button', { name: 'Загрузить файл' }))
+  await waitFor(() => expect(keys).toHaveLength(1))
+  await user.click(screen.getByRole('button', { name: 'Отменить загрузку' }))
+  await screen.findByText('Загрузка отменена')
+  await user.click(screen.getByRole('button', { name: 'Загрузить файл' }))
+  await waitFor(() => expect(keys).toHaveLength(2))
+  expect(keys[0]).toBeTruthy()
+  expect(keys[1]).toBe(keys[0])
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Загрузить файл' }),
+    ).toBeDisabled(),
+  )
+  await user.upload(screen.getByLabelText('Файл'), new File(['def'], 'b.txt'))
+  await user.click(screen.getByRole('button', { name: 'Загрузить файл' }))
+  await waitFor(() => expect(keys).toHaveLength(3))
+  expect(keys[2]).not.toBe(keys[1])
+})
+
 it('keeps the same upload idempotency key across an uncertain retry', async () => {
   const keys: (string | null)[] = []
   const { user } = setup((request) => {

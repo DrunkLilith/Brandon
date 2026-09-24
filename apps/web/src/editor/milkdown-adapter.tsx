@@ -3,9 +3,10 @@ import {
   rootCtx,
   defaultValueCtx,
   editorViewOptionsCtx,
+  editorViewCtx,
+  serializerCtx,
 } from '@milkdown/core'
 import { commonmark, imageSchema } from '@milkdown/preset-commonmark'
-import { listener, listenerCtx } from '@milkdown/plugin-listener'
 import { replaceAll } from '@milkdown/utils'
 import { useEffect, useRef, useState } from 'react'
 import { ErrorNotice } from '../admin/shared'
@@ -25,10 +26,20 @@ export function MilkdownAdapter({
     change = useRef(onChange),
     locked = useRef(readOnly),
     emitted = useRef(value)
+  const replacing = useRef(false)
   const [error, setError] = useState<unknown>()
   latest.current = value
   change.current = onChange
   locked.current = readOnly
+  const replaceValue = (instance: Editor, markdown: string) => {
+    emitted.current = markdown
+    replacing.current = true
+    try {
+      instance.action(replaceAll(markdown))
+    } finally {
+      replacing.current = false
+    }
+  }
   useEffect(() => {
     let disposed = false
     const instance = Editor.make()
@@ -38,6 +49,25 @@ export function MilkdownAdapter({
         ctx.update(editorViewOptionsCtx, (options) => ({
           ...options,
           editable: () => !locked.current,
+          // The listener plugin debounces document events and cancels them on
+          // destroy. Publish the authoritative, fully applied document now so
+          // save, mode changes and navigation never see a stale draft.
+          dispatchTransaction(transaction) {
+            const view = ctx.get(editorViewCtx)
+            const previous = view.state.doc
+            view.updateState(view.state.apply(transaction))
+            if (
+              !disposed &&
+              !replacing.current &&
+              !previous.eq(view.state.doc)
+            ) {
+              const markdown = ctx.get(serializerCtx)(view.state.doc)
+              if (markdown !== emitted.current) {
+                emitted.current = markdown
+                change.current(markdown)
+              }
+            }
+          },
           attributes: {
             role: 'textbox',
             'aria-label': 'Визуальный Markdown',
@@ -53,15 +83,8 @@ export function MilkdownAdapter({
             node.attrs.alt || node.attrs.src,
           ],
         }))
-        ctx.get(listenerCtx).markdownUpdated((_ctx, markdown, previous) => {
-          if (markdown !== previous && !disposed) {
-            emitted.current = markdown
-            change.current(markdown)
-          }
-        })
       })
       .use(commonmark)
-      .use(listener)
     void instance
       .create()
       .then(() => {
@@ -70,8 +93,7 @@ export function MilkdownAdapter({
           return
         }
         editor.current = instance
-        if (latest.current !== value)
-          instance.action(replaceAll(latest.current))
+        if (latest.current !== value) replaceValue(instance, latest.current)
       })
       .catch((reason) => {
         if (!disposed) setError(reason)
@@ -84,8 +106,7 @@ export function MilkdownAdapter({
   }, [])
   useEffect(() => {
     if (editor.current && value !== emitted.current) {
-      emitted.current = value
-      editor.current.action(replaceAll(value))
+      replaceValue(editor.current, value)
     }
   }, [value])
   return (

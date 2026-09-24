@@ -87,7 +87,8 @@ export function Uploader({ pageId }: { pageId: string }) {
           </div>
           <button
             onClick={() => {
-              idempotencyKey.current = null
+              // Abort cannot establish whether the server committed. Keep
+              // this file's replay key until acknowledged success or reselection.
               abort.current?.abort()
             }}
           >

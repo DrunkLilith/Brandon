@@ -763,28 +763,28 @@ Commit: `feat(web): add typed login and workspace shell`
 **Interfaces:**
 - Produces `/admin`, `/admin/users`, `/admin/groups`, `/admin/spaces`, `/admin/audit`, `/admin/settings`.
 
-- [ ] **Step 1: Write RED invitation management component test**
+- [x] **Step 1: Write RED invitation management component test**
 
 Test opens dialog, validates email, submits role/expiry, displays token once and supports secure copy confirmation.
 
-- [ ] **Step 2: Implement users/invitations screens through generated API hooks**
+- [x] **Step 2: Implement users/invitations screens through generated API hooks**
 
-- [ ] **Step 3: Write RED group membership and space grant tests**
+- [x] **Step 3: Write RED group membership and space grant tests**
 
 Tests cover searchable user selection, idempotent add/remove, user/group grant subject and role validation.
 
-- [ ] **Step 4: Implement groups, spaces and grants screens**
+- [x] **Step 4: Implement groups, spaces and grants screens**
 
-- [ ] **Step 5: Write RED audit/settings/dashboard tests**
+- [x] **Step 5: Write RED audit/settings/dashboard tests**
 
 Audit filters keep cursor state; security controls revoke sessions; readiness failures are visible without exposing secrets.
 
-- [ ] **Step 6: Implement remaining admin routes; run accessibility checks**
+- [x] **Step 6: Implement remaining admin routes; run accessibility checks**
 
 Run: `pnpm --filter @knowledge/web test --run`  
 Expected: PASS with no React act or accessibility warnings.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Commit: `feat(web): add complete administration console`
 

@@ -19,6 +19,173 @@ use uuid::Uuid;
 const PASSWORD: &str = "correct horse battery staple";
 const ORIGIN: &str = "https://knowledge.local";
 
+#[sqlx::test]
+async fn permission_and_title_reads_revalidate_after_workspace_lock_wait(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let owner = create_user(&app, &cookie, &csrf, "owner@example.com").await;
+    let space = create_space(&app, &cookie, &csrf).await;
+    grant_space(&app, &cookie, &csrf, space, owner, "owner").await;
+    let page = create_page(&app, &cookie, &csrf, space, None, false, "Title").await;
+    let workspace: Uuid = sqlx::query_scalar("SELECT id FROM workspaces LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for uri in [
+        format!("/api/v1/pages/{page}/permissions"),
+        format!("/api/v1/pages/{page}"),
+        format!("/api/v1/pages?spaceId={space}"),
+    ] {
+        let (owner_cookie, _) = login_as(&app, "owner@example.com").await;
+        let mut lock = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE")
+            .bind(workspace)
+            .fetch_one(&mut *lock)
+            .await
+            .unwrap();
+        let pending_app = app.clone();
+        let pending = tokio::spawn(async move {
+            send(
+                &pending_app,
+                "GET",
+                &uri,
+                json!(null),
+                Some(&owner_cookie),
+                None,
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5),async {
+            loop {
+                let waiting: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id FROM workspaces%')").fetch_one(&pool).await.unwrap();
+                if waiting {break;}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("request should wait for the workspace lock");
+        sqlx::query("UPDATE sessions SET revoked_at=now() WHERE user_id=$1")
+            .bind(owner)
+            .execute(&mut *lock)
+            .await
+            .unwrap();
+        lock.commit().await.unwrap();
+        assert_eq!(pending.await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[sqlx::test]
+async fn workspace_title_disclosures_audit_administrator_access(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let space = create_space(&app, &cookie, &csrf).await;
+    let page = create_page(&app, &cookie, &csrf, space, None, false, "Private title").await;
+    for uri in [
+        format!("/api/v1/pages?spaceId={space}"),
+        format!("/api/v1/pages/{page}"),
+    ] {
+        assert_eq!(
+            send(&app, "GET", &uri, json!(null), Some(&cookie), None)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='page.admin_access'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[sqlx::test]
+async fn workspace_tree_discloses_authorized_titles_and_capabilities(pool: PgPool) {
+    let app = app(pool).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let viewer = create_user(&app, &cookie, &csrf, "viewer@example.com").await;
+    let space = create_space(&app, &cookie, &csrf).await;
+    grant_space(&app, &cookie, &csrf, space, viewer, "viewer").await;
+    let page = create_page(&app, &cookie, &csrf, space, None, false, "Visible title").await;
+    create_page(&app, &cookie, &csrf, space, None, true, "Secret title").await;
+    let (viewer_cookie, _) = login_as(&app, "viewer@example.com").await;
+    let response = send(
+        &app,
+        "GET",
+        &format!("/api/v1/pages?spaceId={space}"),
+        json!(null),
+        Some(&viewer_cookie),
+        None,
+    )
+    .await;
+    let tree = body(response).await;
+    assert_eq!(tree.as_array().unwrap().len(), 1);
+    assert_eq!(tree[0]["title"], "Visible title");
+    assert_eq!(
+        tree[0]["capabilities"],
+        json!({"edit":false,"managePermissions":false})
+    );
+    assert!(tree[0].get("markdown").is_none());
+    let page_response = body(
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/pages/{page}"),
+            json!(null),
+            Some(&cookie),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        page_response["capabilities"],
+        json!({"edit":true,"managePermissions":true})
+    );
+}
+
+#[sqlx::test]
+async fn permission_read_model_is_owner_admin_only_and_filters_inactive_subjects(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let viewer = create_user(&app, &cookie, &csrf, "viewer@example.com").await;
+    let space = create_space(&app, &cookie, &csrf).await;
+    grant_space(&app, &cookie, &csrf, space, viewer, "viewer").await;
+    let page = create_page(&app, &cookie, &csrf, space, None, true, "Restricted").await;
+    put_permission(
+        &app,
+        &cookie,
+        &csrf,
+        page,
+        &format!("user:{viewer}"),
+        "viewer",
+    )
+    .await;
+    let uri = format!("/api/v1/pages/{page}/permissions");
+    let response = send(&app, "GET", &uri, json!(null), Some(&cookie), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        body(response).await,
+        json!([{"subjectType":"user","subjectId":viewer,"role":"viewer"}])
+    );
+    let (viewer_cookie, _) = login_as(&app, "viewer@example.com").await;
+    assert_eq!(
+        send(&app, "GET", &uri, json!(null), Some(&viewer_cookie), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("UPDATE users SET status='suspended' WHERE id=$1")
+        .bind(viewer)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        body(send(&app, "GET", &uri, json!(null), Some(&cookie), None).await).await,
+        json!([])
+    );
+}
+
 async fn app(pool: PgPool) -> Router {
     MIGRATOR.run(&pool).await.unwrap();
     let store = Store::from_pool(pool);
@@ -724,7 +891,7 @@ async fn hidden_and_absent_pages_are_indistinguishable_on_read_routes(pool: PgPo
     let (viewer_cookie, viewer_csrf) = login_as(&app, "viewer@example.com").await;
     let missing = Uuid::now_v7();
 
-    for suffix in ["", "/revisions", "/backlinks"] {
+    for suffix in ["", "/revisions", "/backlinks", "/permissions"] {
         let hidden_response = send(
             &app,
             "GET",

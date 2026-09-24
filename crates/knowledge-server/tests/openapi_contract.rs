@@ -10,6 +10,30 @@ use tower::ServiceExt;
 
 const METHODS: [&str; 7] = ["get", "post", "put", "patch", "delete", "head", "options"];
 
+#[test]
+fn workspace_read_models_are_typed() {
+    let doc = knowledge_server::openapi::document();
+    assert_eq!(
+        doc["paths"]["/api/v1/pages/{id}/permissions"]["get"]["operationId"],
+        "listPagePermissions"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/pages/{id}/permissions"]["get"]["responses"]["404"]["content"]["application/problem+json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/Problem"
+    );
+    for name in ["Page", "PageTreeItem"] {
+        assert_eq!(
+            doc["components"]["schemas"][name]["properties"]["capabilities"]["$ref"],
+            "#/components/schemas/PageCapabilities"
+        );
+        assert_eq!(
+            doc["components"]["schemas"][name]["properties"]["title"]["type"],
+            "string"
+        );
+    }
+}
+
 #[tokio::test]
 async fn openapi_is_deterministic_and_every_documented_operation_is_routable() {
     let app = build_test_router();

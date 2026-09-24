@@ -146,6 +146,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "listBacklinks"
             | "upsertPagePermission"
             | "deletePagePermission"
+            | "listPagePermissions"
             | "listAttachments"
             | "uploadAttachment"
             | "downloadAttachment"
@@ -286,6 +287,7 @@ fn success_schema(id: &str) -> Value {
         "getPageRevision" => reference("PageRevision"),
         "listBacklinks" => array("PageReference"),
         "upsertPagePermission" => reference("PagePermission"),
+        "listPagePermissions" => array("PagePermission"),
         "listAttachments" => array("Attachment"),
         "uploadAttachment" => reference("Attachment"),
         "search" => array("SearchHit"),
@@ -665,8 +667,9 @@ fn schemas() -> Value {
         "SpaceGrantUpdate":{"type":"object","additionalProperties":false,"required":["id","role"],"properties":{"id":uuid(),"role":{"type":"string","enum":["owner","editor","viewer"]}}},
         "SpaceGrantCreateRequest":{"type":"object","additionalProperties":false,"required":["subjectType","subjectId","role"],"properties":{"subjectType":{"type":"string","enum":["user","group"]},"subjectId":uuid(),"role":{"type":"string","enum":["owner","editor","viewer"]}}},
         "SpaceGrantUpdateRequest":{"type":"object","additionalProperties":false,"required":["role"],"properties":{"role":{"type":"string","enum":["owner","editor","viewer"]}}},
-        "Page":{"type":"object","additionalProperties":false,"required":["id","spaceId","parentId","stableKey","title","markdown","properties","restricted","version"],"properties":{"id":uuid(),"spaceId":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"stableKey":uuid(),"title":{"type":"string"},"markdown":{"type":"string"},"properties":{"type":"object","additionalProperties":true},"restricted":{"type":"boolean"},"version":{"type":"integer","minimum":1}}},
-        "PageTreeItem":{"type":"object","additionalProperties":false,"required":["id","parentId","sortKey","version","restricted"],"properties":{"id":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"sortKey":{"type":"string"},"version":{"type":"integer","minimum":1},"restricted":{"type":"boolean"}}},
+        "PageCapabilities":{"type":"object","additionalProperties":false,"required":["edit","managePermissions"],"properties":{"edit":{"type":"boolean"},"managePermissions":{"type":"boolean"}}},
+        "Page":{"type":"object","additionalProperties":false,"required":["id","spaceId","parentId","stableKey","title","markdown","properties","restricted","version","capabilities"],"properties":{"id":uuid(),"spaceId":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"stableKey":uuid(),"title":{"type":"string"},"markdown":{"type":"string"},"properties":{"type":"object","additionalProperties":true},"restricted":{"type":"boolean"},"version":{"type":"integer","minimum":1},"capabilities":reference("PageCapabilities")}},
+        "PageTreeItem":{"type":"object","additionalProperties":false,"required":["id","parentId","sortKey","version","restricted","title","capabilities"],"properties":{"id":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"sortKey":{"type":"string"},"version":{"type":"integer","minimum":1},"restricted":{"type":"boolean"},"title":{"type":"string"},"capabilities":reference("PageCapabilities")}},
         "PageVersion":{"type":"object","additionalProperties":false,"required":["id","version"],"properties":{"id":uuid(),"version":{"type":"integer","minimum":1}}},
         "PageCreateRequest":{"type":"object","additionalProperties":false,"required":["spaceId","title","markdown","properties"],"properties":{"spaceId":uuid(),"parentId":{"oneOf":[uuid(),{"type":"null"}]},"beforeId":{"oneOf":[uuid(),{"type":"null"}]},"title":{"type":"string"},"markdown":{"type":"string"},"properties":{"type":"object","additionalProperties":true},"restricted":{"type":"boolean","default":false}}},
         "PageUpdateRequest":{"type":"object","additionalProperties":false,"required":["title","markdown","properties","restricted","expectedVersion"],"properties":{"title":{"type":"string"},"markdown":{"type":"string"},"properties":{"type":"object","additionalProperties":true},"restricted":{"type":"boolean"},"expectedVersion":{"type":"integer","minimum":1}}},

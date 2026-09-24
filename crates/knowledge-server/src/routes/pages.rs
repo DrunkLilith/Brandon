@@ -48,6 +48,7 @@ api_router! {
     "/api/v1/pages/{id}/revisions/{version}" => [get => get_revision => ("getPageRevision", Session, 200)],
     "/api/v1/pages/{id}/restore" => [post => restore_revision => ("restorePageRevision", Mutation, 200)],
     "/api/v1/pages/{id}/backlinks" => [get => backlinks => ("listBacklinks", Session, 200)],
+    "/api/v1/pages/{id}/permissions" => [get => list_page_permissions => ("listPagePermissions", Session, 200)],
     "/api/v1/pages/{id}/permissions/{subject}" => [
         put => upsert_page_permission => ("upsertPagePermission", Mutation, 200),
         delete => delete_page_permission => ("deletePagePermission", Mutation, 204),
@@ -161,6 +162,24 @@ struct PageResponse {
     properties: Value,
     version: i64,
     restricted: bool,
+    capabilities: PageCapabilities,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PageCapabilities {
+    edit: bool,
+    manage_permissions: bool,
+}
+
+impl PageCapabilities {
+    fn from_context(context: &knowledge_core::permissions::PageAccessContext) -> Self {
+        Self {
+            edit: context.can(Capability::EditPage),
+            manage_permissions: context.access().is_workspace_admin()
+                || context.access().effective_space_role() == Some(SpaceRole::Owner),
+        }
+    }
 }
 
 type RevisionPayloadRow = (
@@ -317,6 +336,9 @@ async fn create_page(
     )
     .await
     .map_err(internal)?;
+    let capabilities = PageCapabilities::from_context(
+        &authorize_page(&mut transaction, current, page_id, Capability::ReadPage).await?,
+    );
     transaction.commit().await.map_err(internal)?;
     Ok((
         StatusCode::CREATED,
@@ -330,6 +352,7 @@ async fn create_page(
             properties: input.properties,
             version: 1,
             restricted: input.restricted,
+            capabilities,
         }),
     )
         .into_response())
@@ -337,12 +360,17 @@ async fn create_page(
 
 async fn get_page(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(page_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
     let row: Option<StoredPageRow> = sqlx::query_as(
         "SELECT space_id, parent_id, stable_key,
                 title_ciphertext, title_nonce, title_key_version,
@@ -360,7 +388,7 @@ async fn get_page(
     let Some(row) = row else {
         return Err(ApiProblem::not_found());
     };
-    authorize_page(&mut transaction, current, page_id, Capability::ReadPage).await?;
+    let context = authorize_page(&mut transaction, current, page_id, Capability::ReadPage).await?;
     let title = decrypt_text(
         &workspace_key,
         &page_aad(current.workspace_id, page_id, None, "title"),
@@ -384,6 +412,18 @@ async fn get_page(
     )?;
     let properties = serde_json::from_str(&properties).map_err(internal)?;
     let parent_id = visible_parent_id(&mut transaction, current, row.1).await?;
+    if context.access().is_workspace_admin() {
+        append_page_audit(
+            &mut transaction,
+            &workspace_key,
+            current,
+            request_id,
+            "page.admin_access",
+            page_id,
+            json!({"operation":"read"}),
+        )
+        .await?;
+    }
     transaction.commit().await.map_err(internal)?;
     let mut response = Json(PageResponse {
         id: page_id,
@@ -395,6 +435,7 @@ async fn get_page(
         properties,
         version: row.12,
         restricted: row.13,
+        capabilities: PageCapabilities::from_context(&context),
     })
     .into_response();
     response
@@ -536,15 +577,21 @@ async fn save_page(
 
 async fn list_pages(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Query(query): Query<SpaceQuery>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
     let access = resolve_access(&mut transaction, current.user_id, query.space_id).await?;
     authorize(&access, Capability::ReadPage)?;
-    let rows: Vec<(Uuid, Option<Uuid>, String, i64, bool)> = sqlx::query_as(
-        "SELECT id, parent_id, sort_key, version, restricted FROM pages
+    let rows: Vec<TreeRow> = sqlx::query_as(
+        "SELECT id, parent_id, sort_key, version, restricted, title_ciphertext, title_nonce, title_key_version FROM pages
           WHERE workspace_id = $1 AND space_id = $2 AND archived_at IS NULL
           ORDER BY parent_id NULLS FIRST, sort_key, id",
     )
@@ -554,15 +601,50 @@ async fn list_pages(
     .await
     .map_err(internal)?;
     let mut visible = Vec::new();
-    for (id, parent_id, sort_key, version, restricted) in rows {
-        if can_access_page(&mut transaction, current, id, Capability::ReadPage).await? {
+    for (id, parent_id, sort_key, version, restricted, ciphertext, nonce, key_version) in rows {
+        let context = PageRepository::access_context(
+            &mut transaction,
+            current.workspace_id,
+            current.user_id,
+            id,
+        )
+        .await
+        .map_err(internal)?;
+        if let Some(context) = context.filter(|context| context.can(Capability::ReadPage)) {
             let parent_id = visible_parent_id(&mut transaction, current, parent_id).await?;
-            visible.push(json!({"id": id, "parentId": parent_id, "sortKey": sort_key, "version": version, "restricted": restricted}));
+            let title = decrypt_text(
+                &workspace_key,
+                &page_aad(current.workspace_id, id, None, "title"),
+                ciphertext,
+                nonce,
+                key_version,
+            )?;
+            visible.push(json!({"id": id, "parentId": parent_id, "sortKey": sort_key, "version": version, "restricted": restricted, "title":title, "capabilities":PageCapabilities::from_context(&context)}));
         }
     }
+    if access.is_workspace_admin() {
+        append_audit_event(
+            &mut transaction,
+            &workspace_key,
+            AuditEvent {
+                workspace_id: current.workspace_id,
+                actor_user_id: Some(current.user_id),
+                session_id: Some(current.session_id),
+                event_type: "page.admin_access",
+                target_type: "space",
+                target_id: Some(query.space_id),
+                request_id: request_id.as_uuid(),
+                metadata: json!({"operation":"list"}),
+            },
+        )
+        .await
+        .map_err(internal)?;
+    }
     transaction.commit().await.map_err(internal)?;
-    Ok(Json(visible).into_response())
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(visible)).into_response())
 }
+
+type TreeRow = (Uuid, Option<Uuid>, String, i64, bool, Vec<u8>, Vec<u8>, i32);
 
 async fn move_page(
     State(state): State<AppState>,
@@ -1090,6 +1172,42 @@ async fn backlinks(
     }
     transaction.commit().await.map_err(internal)?;
     Ok(Json(visible).into_response())
+}
+
+async fn list_page_permissions(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    current: CurrentUser,
+    Path(page_id): Path<Uuid>,
+) -> Result<Response, ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
+    authorize_page_permission_management(&mut transaction, current, page_id).await?;
+    let rows: Vec<(Option<Uuid>, Option<Uuid>, String)> = sqlx::query_as(
+        "SELECT pp.user_id, pp.group_id, pp.role FROM page_permissions pp
+         WHERE pp.workspace_id=$1 AND pp.page_id=$2 AND (
+           EXISTS (SELECT 1 FROM users u JOIN workspace_members wm ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+             WHERE u.id=pp.user_id AND u.workspace_id=pp.workspace_id AND u.status='active' AND u.deleted_at IS NULL AND wm.status='active')
+           OR EXISTS (SELECT 1 FROM groups g WHERE g.id=pp.group_id AND g.workspace_id=pp.workspace_id AND g.archived_at IS NULL))
+         ORDER BY pp.user_id NULLS LAST, pp.group_id"
+    ).bind(current.workspace_id).bind(page_id).fetch_all(&mut *transaction).await.map_err(internal)?;
+    append_page_audit(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "page.permissions_read",
+        page_id,
+        json!({}),
+    )
+    .await?;
+    transaction.commit().await.map_err(internal)?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(rows.into_iter().map(|(user, group, role)| json!({"subjectType":if user.is_some(){"user"}else{"group"},"subjectId":user.or(group),"role":role})).collect::<Vec<_>>())).into_response())
 }
 
 async fn upsert_page_permission(

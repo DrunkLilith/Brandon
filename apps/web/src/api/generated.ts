@@ -431,6 +431,22 @@ export type paths = {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/v1/pages/{id}/permissions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["listPagePermissions"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/v1/pages/{id}/permissions/{subject}": {
         readonly parameters: {
             readonly query?: never;
@@ -839,6 +855,7 @@ export type components = {
             readonly [key: string]: unknown;
         };
         readonly Page: {
+            readonly capabilities: components["schemas"]["PageCapabilities"];
             /** Format: uuid */
             readonly id: string;
             readonly markdown: string;
@@ -853,6 +870,10 @@ export type components = {
             readonly stableKey: string;
             readonly title: string;
             readonly version: number;
+        };
+        readonly PageCapabilities: {
+            readonly edit: boolean;
+            readonly managePermissions: boolean;
         };
         readonly PageCreateRequest: {
             readonly beforeId?: string | null;
@@ -906,11 +927,13 @@ export type components = {
             readonly version: number;
         };
         readonly PageTreeItem: {
+            readonly capabilities: components["schemas"]["PageCapabilities"];
             /** Format: uuid */
             readonly id: string;
             readonly parentId: string | null;
             readonly restricted: boolean;
             readonly sortKey: string;
+            readonly title: string;
             readonly version: number;
         };
         readonly PageUpdateRequest: {
@@ -3979,6 +4002,69 @@ export interface operations {
             };
             /** @description Validation failed */
             readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error */
+            readonly 500: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service unavailable */
+            readonly 503: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    readonly listPagePermissions: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Success */
+            readonly 200: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": readonly components["schemas"]["PagePermission"][];
+                };
+            };
+            /** @description Authentication required */
+            readonly 401: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            readonly 404: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;

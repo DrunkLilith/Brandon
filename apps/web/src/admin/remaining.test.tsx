@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -124,5 +124,24 @@ describe('admin dashboard', () => {
     expect(screen.queryByText(/s3:\/\/bucket|database-url=secret/)).not.toBeInTheDocument()
     expect(consoleError).not.toHaveBeenCalled()
     expect(consoleWarn).not.toHaveBeenCalled()
+  })
+
+  it('shows a safe unavailable state instead of an endless operations loader when status fails', async () => {
+    window.history.replaceState({}, '', '/admin')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestOf(input, init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return json(session)
+      if (path === '/api/v1/admin/status') return json({ type: 'x', title: 'Unavailable', status: 503, code: 'unavailable', detail: 'postgres://secret' }, 503)
+      if (path === '/api/v1/health/ready') return json({ status: 'ready' })
+      if (path === '/api/v1/exports') return json({ exports: [], nextCursor: null })
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    render(<App />)
+
+    const operations = await screen.findByRole('region', { name: 'Операции' })
+    expect(await within(operations).findByRole('alert')).toHaveTextContent('Данные об операциях недоступны.')
+    expect(within(operations).queryByText('Загрузка…')).not.toBeInTheDocument()
+    expect(screen.queryByText('postgres://secret')).not.toBeInTheDocument()
   })
 })

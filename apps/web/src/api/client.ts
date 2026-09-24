@@ -46,13 +46,23 @@ const safeProblem = (value: unknown, status: number): Problem => {
   return { status, code: 'request_failed', title: 'Request failed', type: 'about:blank', detail: '' }
 }
 
-type ApiResult<Data, Error> =
-  | { data: Data; error?: never; response: Response }
-  | { data?: never; error: Error; response: Response }
+type ApiResult = { data?: unknown; error?: unknown; response: Response }
+type SuccessData<Result> = Result extends { data: infer Data } ? Data : never
+type NormalizeGenerated<Data> = Data extends string | number | boolean | bigint | symbol | null | undefined ? Data
+  : Data extends { readonly [index: number]: infer Item; readonly length: number }
+  ? readonly NormalizeGenerated<Item>[]
+  : Data extends object ? { readonly [Key in keyof Data]: NormalizeGenerated<Data[Key]> } : Data
+type NormalizedData<Result> = NormalizeGenerated<SuccessData<Result>>
 
-export function unwrap<Data, Error>(result: ApiResult<Data, Error>): Data {
+export function unwrap<Result extends ApiResult>(result: Result): NormalizedData<Result> {
   if (result.error !== undefined) throw new ApiError(safeProblem(result.error, result.response.status))
-  return result.data as Data
+  return result.data as NormalizedData<Result>
+}
+
+export function unwrapArray<Result extends ApiResult>(result: Result): Extract<NormalizedData<Result>, readonly unknown[]> {
+  const data: unknown = unwrap(result)
+  if (!Array.isArray(data)) throw new TypeError('Expected an API array response')
+  return data as Extract<NormalizedData<Result>, readonly unknown[]>
 }
 
 export function createApiClient() {

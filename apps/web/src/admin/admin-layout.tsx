@@ -16,7 +16,7 @@ export function AdminLayout() {
   useEffect(() => { document.documentElement.lang = text.locale }, [])
   return <div className="admin-shell">
     <header className="admin-topbar">
-      <NavLink to="/app" className="admin-brand"><span aria-hidden="true" className="brand-mark small">K</span><span>Knowledge</span></NavLink>
+      <NavLink to="/app" className="admin-brand"><span aria-hidden="true" className="brand-mark small">K</span><span>{text.brand}</span></NavLink>
       <span className="admin-context">{text.console}</span>
     </header>
     <div className="admin-body">

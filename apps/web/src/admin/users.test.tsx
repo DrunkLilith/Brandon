@@ -1,8 +1,11 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '../app'
+import { UsersPage } from './users'
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -44,10 +47,23 @@ describe('users and invitations administration', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
 
     render(<App />)
-    await user.click(await screen.findByRole('button', { name: 'Пригласить пользователя' }))
+    const invitationOpener = await screen.findByRole('button', { name: 'Пригласить пользователя' })
+    invitationOpener.focus()
+    await user.click(invitationOpener)
     const dialog = screen.getByRole('dialog', { name: 'Новое приглашение' })
     expect(dialog).toBeVisible()
+    expect(document.querySelector('.admin-shell')).toHaveAttribute('inert')
     expect(screen.getByLabelText('Электронная почта приглашённого')).toHaveFocus()
+
+    await user.keyboard('{Shift>}{Tab}{/Shift}')
+    expect(screen.getByRole('button', { name: 'Создать приглашение' })).toHaveFocus()
+    await user.keyboard('{Tab}')
+    expect(screen.getByLabelText('Электронная почта приглашённого')).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Новое приглашение' })).not.toBeInTheDocument()
+    expect(document.querySelector('.admin-shell')).not.toHaveAttribute('inert')
+    expect(invitationOpener).toHaveFocus()
+    await user.click(invitationOpener)
 
     await user.type(screen.getByLabelText('Электронная почта приглашённого'), 'not-an-email')
     await user.click(screen.getByRole('button', { name: 'Создать приглашение' }))
@@ -62,6 +78,7 @@ describe('users and invitations administration', () => {
     await user.click(screen.getByRole('button', { name: 'Создать приглашение' }))
 
     expect(await screen.findByText('one-time-secret-token')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Скопировать токен' })).toHaveFocus()
     expect(invitationRequests).toHaveLength(1)
     expect(await invitationRequests[0].json()).toEqual({
       email: 'member@example.com',
@@ -76,6 +93,36 @@ describe('users and invitations administration', () => {
 
     await user.click(screen.getByRole('button', { name: 'Закрыть' }))
     expect(screen.queryByText('one-time-secret-token')).not.toBeInTheDocument()
+  })
+
+  it('never stores a one-time invitation token in the mutation cache, including completion after dismissal', async () => {
+    let releaseInvitation!: (response: Response) => void
+    const invitationResponse = new Promise<Response>((resolve) => { releaseInvitation = resolve })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(new URL(String(input), window.location.origin), init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/users') return json([])
+      if (path === '/api/v1/invitations' && request.method === 'GET') return json([])
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path === '/api/v1/invitations' && request.method === 'POST') return invitationResponse
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const user = userEvent.setup()
+    render(<QueryClientProvider client={queryClient}><MemoryRouter><UsersPage /></MemoryRouter></QueryClientProvider>)
+
+    await user.click(await screen.findByRole('button', { name: 'Пригласить пользователя' }))
+    await user.type(screen.getByLabelText('Электронная почта приглашённого'), 'dismiss@example.com')
+    await user.click(screen.getByRole('button', { name: 'Создать приглашение' }))
+    await waitFor(() => expect(queryClient.getMutationCache().getAll()).toHaveLength(1))
+    expect(JSON.stringify(queryClient.getMutationCache().getAll().map((entry) => entry.state.data))).not.toContain('never-cache-this-token')
+    await user.click(screen.getByRole('button', { name: 'Отмена' }))
+    expect(JSON.stringify(queryClient.getMutationCache().getAll().map((entry) => entry.state.data))).not.toContain('never-cache-this-token')
+    releaseInvitation(json({ id: 'invite', token: 'never-cache-this-token', expiresAt: '2026-10-01T00:00:00Z' }, 201))
+    await waitFor(() => expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success'))
+
+    expect(JSON.stringify(queryClient.getMutationCache().getAll().map((entry) => entry.state.data))).not.toContain('never-cache-this-token')
+    expect(screen.queryByText('never-cache-this-token')).not.toBeInTheDocument()
   })
 
   it('updates users and protects session and invitation revocation with confirmation', async () => {
@@ -169,5 +216,56 @@ describe('users and invitations administration', () => {
     await user.click(screen.getByRole('button', { name: 'Создать приглашение' }))
     await screen.findByText('token')
     expect(keys[2]).not.toBe(keys[1])
+  })
+
+  it('refreshes the session after self-demotion and leaves the admin console', async () => {
+    window.history.replaceState({}, '', '/admin/users')
+    let sessionRequests = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(new URL(String(input), window.location.origin), init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') {
+        sessionRequests += 1
+        return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: sessionRequests === 1 })
+      }
+      if (path === '/api/v1/users' && request.method === 'GET') return json([{ id: 'admin', email: 'admin@example.com', displayName: 'Администратор', workspaceRole: 'admin', status: 'active' }])
+      if (path === '/api/v1/invitations') return json([])
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path === '/api/v1/users/admin' && request.method === 'PATCH') return json({ id: 'admin', workspaceRole: 'member', status: 'active' })
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const row = (await screen.findByText('admin@example.com')).closest('tr')!
+    await user.selectOptions(row.querySelectorAll('select')[1], 'member')
+    await user.click(row.querySelector('button')!)
+
+    expect(await screen.findByRole('heading', { name: 'Ваши знания — в одном месте' })).toBeVisible()
+    expect(sessionRequests).toBeGreaterThanOrEqual(2)
+  })
+
+  it('refreshes the session after self-revocation and follows confirmed 401 semantics', async () => {
+    window.history.replaceState({}, '', '/admin/users')
+    let revoked = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(new URL(String(input), window.location.origin), init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return revoked
+        ? json({ type: 'x', title: 'Unauthorized', status: 401, code: 'unauthorized' }, 401)
+        : json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (path === '/api/v1/users') return json([{ id: 'admin', email: 'admin@example.com', displayName: 'Администратор', workspaceRole: 'admin', status: 'active' }])
+      if (path === '/api/v1/invitations') return json([])
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path === '/api/v1/users/admin/revoke-sessions' && request.method === 'POST') { revoked = true; return new Response(null, { status: 204 }) }
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Отозвать сеансы участника Администратор' }))
+    await user.click(screen.getByRole('button', { name: 'Подтвердить отзыв сеансов' }))
+
+    expect(await screen.findByRole('heading', { name: 'Вход' })).toBeVisible()
   })
 })

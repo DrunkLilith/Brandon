@@ -6,7 +6,7 @@ import type { components } from '../api/generated'
 
 type Session = components['schemas']['Session']
 
-const sessionKey = ['session'] as const
+export const sessionKey = ['session'] as const
 
 interface SessionContextValue {
   session: Session | null

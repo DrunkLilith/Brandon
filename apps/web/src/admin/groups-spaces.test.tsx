@@ -50,6 +50,33 @@ describe('groups administration', () => {
     await user.click(within(group).getByRole('button', { name: 'Удалить Иван Иванов' }))
     await waitFor(() => expect(mutations).toContain('DELETE /api/v1/groups/group-1/members/user-1'))
   })
+
+  it('loads every archived group page using the returned cursor', async () => {
+    window.history.replaceState({}, '', '/admin/groups')
+    const archivedAfter: Array<string | null> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestOf(input, init)
+      const url = new URL(request.url)
+      if (url.pathname === '/api/v1/auth/session') return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (url.pathname === '/api/v1/groups') return json([])
+      if (url.pathname === '/api/v1/users') return json([])
+      if (url.pathname === '/api/v1/groups/archived') {
+        const after = url.searchParams.get('after')
+        archivedAfter.push(after)
+        return after === 'group-cursor'
+          ? json({ items: [{ id: 'group-2', name: 'Второй архив', description: null, memberIds: [], archivedAt: '2026-09-02T00:00:00Z' }], nextCursor: null })
+          : json({ items: [{ id: 'group-1', name: 'Первый архив', description: null, memberIds: [], archivedAt: '2026-09-01T00:00:00Z' }], nextCursor: 'group-cursor' })
+      }
+      throw new Error(`Unexpected request: ${request.method} ${url.pathname}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByText('Первый архив')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Показать ещё архивные группы' }))
+    expect(await screen.findByText('Второй архив')).toBeVisible()
+    expect(archivedAfter).toEqual([null, 'group-cursor'])
+  })
 })
 
 describe('spaces administration', () => {
@@ -117,5 +144,117 @@ describe('spaces administration', () => {
     await user.type(screen.getByLabelText('Описание выбранного пространства'), 'Новое описание')
     await user.click(screen.getByRole('button', { name: 'Сохранить пространство' }))
     await waitFor(() => expect(updates).toEqual([{ name: 'Новый проект', description: 'Новое описание' }]))
+  })
+
+  it('loads additional subjects and archived spaces from stable cursor pages', async () => {
+    window.history.replaceState({}, '', '/admin/spaces')
+    const subjectAfter: Array<string | null> = []
+    const archivedAfter: Array<string | null> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestOf(input, init)
+      const url = new URL(request.url)
+      if (url.pathname === '/api/v1/auth/session') return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (url.pathname === '/api/v1/spaces') return json([{ id: 'space-1', name: 'Проект', description: null, effectiveRole: 'admin', archivedAt: null }])
+      if (url.pathname === '/api/v1/spaces/space-1/grants') return json([])
+      if (url.pathname === '/api/v1/spaces/space-1/subjects') {
+        const after = url.searchParams.get('after')
+        subjectAfter.push(after)
+        return after === 'subject-cursor'
+          ? json({ items: [{ id: 'group-late', label: 'Группа со второй страницы', type: 'group', status: 'active' }], nextCursor: null })
+          : json({ items: [{ id: 'user-first', label: 'Первый пользователь', type: 'user', status: 'active' }], nextCursor: 'subject-cursor' })
+      }
+      if (url.pathname === '/api/v1/spaces/archived') {
+        const after = url.searchParams.get('after')
+        archivedAfter.push(after)
+        return after === 'space-cursor'
+          ? json({ items: [{ id: 'archived-2', name: 'Второе пространство', archivedAt: '2026-09-02T00:00:00Z' }], nextCursor: null })
+          : json({ items: [{ id: 'archived-1', name: 'Первое пространство', archivedAt: '2026-09-01T00:00:00Z' }], nextCursor: 'space-cursor' })
+      }
+      throw new Error(`Unexpected request: ${request.method} ${url.pathname}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByText('Первое пространство')).toBeVisible()
+    await user.click(await screen.findByRole('button', { name: 'Показать ещё субъекты' }))
+    await user.selectOptions(screen.getByLabelText('Тип субъекта'), 'group')
+    expect(await screen.findByRole('option', { name: 'Группа со второй страницы' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Показать ещё архивные пространства' }))
+    expect(await screen.findByText('Второе пространство')).toBeVisible()
+    expect(subjectAfter).toEqual([null, 'subject-cursor'])
+    expect(archivedAfter).toEqual([null, 'space-cursor'])
+  })
+
+  it('keeps a failed grant role for retry and disables conflicting controls while mutations are pending', async () => {
+    window.history.replaceState({}, '', '/admin/spaces')
+    let releaseUpdate!: (response: Response) => void
+    let updateAttempts = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestOf(input, init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (path === '/api/v1/spaces') return json([{ id: 'space-1', name: 'Проект', description: null, effectiveRole: 'admin', archivedAt: null }])
+      if (path === '/api/v1/spaces/archived') return json({ items: [], nextCursor: null })
+      if (path === '/api/v1/spaces/space-1/subjects') return json({ items: [{ id: 'user-1', label: 'Иван', type: 'user', status: 'active' }], nextCursor: null })
+      if (path === '/api/v1/spaces/space-1/grants' && request.method === 'GET') return json([{ id: 'grant-1', subjectId: 'user-1', subjectType: 'user', role: 'viewer' }])
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path.endsWith('/grants/grant-1') && request.method === 'PATCH') {
+        updateAttempts += 1
+        if (updateAttempts === 1) return new Promise<Response>((resolve) => { releaseUpdate = resolve })
+        return json({ id: 'grant-1', subjectId: 'user-1', subjectType: 'user', role: 'editor' })
+      }
+      if (path.endsWith('/grants/grant-1') && request.method === 'DELETE') return json({ type: 'x', title: 'Unavailable', status: 503, code: 'unavailable', detail: 'secret' }, 503)
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    const grantRow = (await screen.findByText((_, element) => element?.tagName === 'SPAN' && element.textContent === 'Иван · Пользователь')).closest('li')!
+    const roleSelect = within(grantRow).getByRole('combobox')
+    const deleteButton = within(grantRow).getByRole('button', { name: 'Удалить' })
+    await user.selectOptions(roleSelect, 'editor')
+    expect(roleSelect).toBeDisabled()
+    expect(deleteButton).toBeDisabled()
+    releaseUpdate(json({ type: 'x', title: 'Conflict', status: 409, code: 'conflict', detail: 'secret' }, 409))
+    expect(await within(grantRow).findByRole('alert')).toHaveTextContent('конфликтует с текущим состоянием')
+    expect(roleSelect).toHaveValue('editor')
+    await user.click(within(grantRow).getByRole('button', { name: 'Повторить изменение роли' }))
+    await waitFor(() => expect(updateAttempts).toBe(2))
+
+    await user.click(deleteButton)
+    expect(await within(grantRow).findByRole('alert')).toHaveTextContent('Не удалось выполнить запрос')
+  })
+
+  it('selects a remaining valid space after archiving the first space and a delayed refetch', async () => {
+    window.history.replaceState({}, '', '/admin/spaces')
+    let spacesRequests = 0
+    let releaseRefetch!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = requestOf(input, init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (path === '/api/v1/spaces' && request.method === 'GET') {
+        spacesRequests += 1
+        if (spacesRequests === 1) return json([
+          { id: 'space-1', name: 'Первый проект', description: null, effectiveRole: 'admin', archivedAt: null },
+          { id: 'space-2', name: 'Второй проект', description: null, effectiveRole: 'admin', archivedAt: null },
+        ])
+        return new Promise<Response>((resolve) => { releaseRefetch = resolve })
+      }
+      if (path === '/api/v1/spaces/archived') return json({ items: [], nextCursor: null })
+      if (path.endsWith('/grants')) return json([])
+      if (path.endsWith('/subjects')) return json({ items: [], nextCursor: null })
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path === '/api/v1/spaces/space-1' && request.method === 'DELETE') return new Response(null, { status: 204 })
+      throw new Error(`Unexpected request: ${request.method} ${path}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Права доступа: Первый проект' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Архивировать' }))
+    await waitFor(() => expect(spacesRequests).toBe(2))
+    releaseRefetch(json([{ id: 'space-2', name: 'Второй проект', description: null, effectiveRole: 'admin', archivedAt: null }]))
+    expect(await screen.findByRole('heading', { name: 'Права доступа: Второй проект' })).toBeVisible()
   })
 })

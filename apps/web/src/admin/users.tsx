@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
-import { apiClient, unwrap } from '../api/client'
+import { apiClient, unwrap, unwrapArray } from '../api/client'
 import type { components } from '../api/generated'
+import { sessionKey, useSession } from '../auth/session'
 import { adminMessages as text } from './messages'
-import { apiArray, apiObject, ConfirmDialog, ErrorNotice, LoadingBlock, PageHeader } from './shared'
+import { ConfirmDialog, ErrorNotice, LoadingBlock, ModalDialog, PageHeader } from './shared'
 
 type User = components['schemas']['User']
 type Invitation = components['schemas']['Invitation']
@@ -16,27 +17,31 @@ const invitationsKey = ['admin', 'invitations'] as const
 
 function UserRow({ user }: { user: User }) {
   const queryClient = useQueryClient()
+  const { session } = useSession()
+  const refreshOwnSession = async () => {
+    if (user.id === session?.userId) await queryClient.invalidateQueries({ queryKey: sessionKey })
+  }
   const [status, setStatus] = useState<'active' | 'suspended'>(user.status === 'suspended' ? 'suspended' : 'active')
   const [role, setRole] = useState(user.workspaceRole)
   const update = useMutation({
     mutationFn: async () => unwrap(await apiClient.PATCH('/api/v1/users/{id}', { params: { path: { id: user.id } }, body: { status, workspaceRole: role } })),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: usersKey }),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: usersKey }); await refreshOwnSession() },
   })
   const [confirmSessions, setConfirmSessions] = useState(false)
   const revokeSessions = useMutation({
     mutationFn: async () => unwrap(await apiClient.POST('/api/v1/users/{id}/revoke-sessions', { params: { path: { id: user.id } } })),
-    onSuccess: () => setConfirmSessions(false),
+    onSuccess: async () => { setConfirmSessions(false); await refreshOwnSession() },
   })
   return <>
     <tr>
-      <th scope="row"><strong>{user.displayName}</strong><span>{user.email ?? 'Адрес скрыт'}</span></th>
-      <td><label><span className="sr-only">Статус {user.displayName}</span><select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'suspended')}><option value="active">Активен</option><option value="suspended">Приостановлен</option></select></label></td>
-      <td><label><span className="sr-only">Роль {user.displayName}</span><select value={role} onChange={(event) => setRole(event.target.value as 'admin' | 'member')}><option value="member">Участник</option><option value="admin">Администратор</option></select></label></td>
-      <td className="row-actions"><button type="button" onClick={() => update.mutate()} disabled={update.isPending}>Сохранить</button><button type="button" onClick={() => setConfirmSessions(true)} aria-label={`Отозвать сеансы участника ${user.displayName}`}>Отозвать сеансы</button></td>
+      <th scope="row"><strong>{user.displayName}</strong><span>{user.email ?? text.common.hiddenEmail}</span></th>
+      <td><label><span className="sr-only">{text.users.statusFor(user.displayName)}</span><select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'suspended')}><option value="active">{text.labels.userStatus.active}</option><option value="suspended">{text.labels.userStatus.suspended}</option></select></label></td>
+      <td><label><span className="sr-only">{text.users.roleFor(user.displayName)}</span><select value={role} onChange={(event) => setRole(event.target.value as 'admin' | 'member')}><option value="member">{text.labels.role.member}</option><option value="admin">{text.labels.role.admin}</option></select></label></td>
+      <td className="row-actions"><button type="button" onClick={() => update.mutate()} disabled={update.isPending}>{text.common.save}</button><button type="button" onClick={() => setConfirmSessions(true)} aria-label={text.users.revokeSessionsFor(user.displayName)}>{text.users.revokeSessions}</button></td>
     </tr>
     {update.isError && <tr><td colSpan={4}><ErrorNotice error={update.error} /></td></tr>}
     {revokeSessions.isError && <tr><td colSpan={4}><ErrorNotice error={revokeSessions.error} /></td></tr>}
-    {confirmSessions && <tr className="dialog-row"><td colSpan={4}><ConfirmDialog title="Отозвать все сеансы?" confirmLabel="Подтвердить отзыв сеансов" pending={revokeSessions.isPending} onCancel={() => setConfirmSessions(false)} onConfirm={() => revokeSessions.mutate()} /></td></tr>}
+    {confirmSessions && <tr className="dialog-row"><td colSpan={4}><ConfirmDialog title={text.users.revokeSessionsTitle} confirmLabel={text.users.confirmRevokeSessions} pending={revokeSessions.isPending} onCancel={() => setConfirmSessions(false)} onConfirm={() => revokeSessions.mutate()} /></td></tr>}
   </>
 }
 
@@ -49,23 +54,28 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
   const [created, setCreated] = useState<InvitationCreated | null>(null)
   const [copyStatus, setCopyStatus] = useState('')
   const idempotency = useRef<{ fingerprint: string; key: string } | null>(null)
+  const mounted = useRef(true)
+  const emailInput = useRef<HTMLInputElement>(null)
+  const copyButton = useRef<HTMLButtonElement>(null)
+  useEffect(() => () => { mounted.current = false }, [])
+  useEffect(() => { if (created) copyButton.current?.focus() }, [created])
   const mutation = useMutation({
-    mutationFn: async (body: InvitationPayload): Promise<InvitationCreated> => {
+    mutationFn: async (body: InvitationPayload): Promise<void> => {
       const fingerprint = JSON.stringify(body)
       if (idempotency.current?.fingerprint !== fingerprint) idempotency.current = { fingerprint, key: crypto.randomUUID() }
-      return apiObject<InvitationCreated>(unwrap(await apiClient.POST('/api/v1/invitations', { params: { header: { 'Idempotency-Key': idempotency.current.key } }, body })))
+      const result = unwrap(await apiClient.POST('/api/v1/invitations', { params: { header: { 'Idempotency-Key': idempotency.current.key } }, body }))
+      if (mounted.current) setCreated(result)
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       idempotency.current = null
-      setCreated(result)
       queryClient.invalidateQueries({ queryKey: invitationsKey })
     },
   })
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const normalized = email.trim().toLowerCase()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return setValidation('Введите корректный адрес электронной почты.')
-    if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) return setValidation('Срок действия должен быть от 1 до 720 часов.')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return setValidation(text.users.invalidEmail)
+    if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) return setValidation(text.users.invalidExpiry)
     setValidation('')
     mutation.mutate({ email: normalized, workspaceRole, expiresInHours })
   }
@@ -73,28 +83,27 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
     try {
       if (!navigator.clipboard) throw new Error('clipboard unavailable')
       await navigator.clipboard.writeText(created?.token ?? '')
-      setCopyStatus('Токен скопирован')
+      setCopyStatus(text.users.tokenCopied)
     } catch {
-      setCopyStatus('Не удалось скопировать токен')
+      setCopyStatus(text.users.tokenCopyFailed)
     }
   }
-  return <div className="modal-backdrop"><section className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="invite-title">
-    <h2 id="invite-title">Новое приглашение</h2>
+  return <ModalDialog title={text.users.newInvitation} onCancel={onClose} initialFocusRef={emailInput}>
     {created ? <div className="token-result">
-      <p>Сохраните токен сейчас. После закрытия он больше не показывается.</p>
+      <p>{text.users.tokenNotice}</p>
       <code>{created.token}</code>
-      <button type="button" onClick={copy}>Скопировать токен</button>
+      <button ref={copyButton} type="button" onClick={copy}>{text.users.copyToken}</button>
       <p role="status" aria-live="polite">{copyStatus}</p>
-      <button type="button" className="secondary-button" onClick={onClose}>Закрыть</button>
+      <button type="button" className="secondary-button" onClick={onClose}>{text.common.close}</button>
     </div> : <form onSubmit={submit} noValidate>
-      <label>Электронная почта приглашённого<input autoFocus type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-      <label>Роль в рабочем пространстве<select value={workspaceRole} onChange={(event) => setWorkspaceRole(event.target.value as 'admin' | 'member')}><option value="member">Участник</option><option value="admin">Администратор</option></select></label>
-      <label>Срок действия, часов<input type="number" min={1} max={720} value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))} /></label>
+      <label>{text.users.invitationEmail}<input ref={emailInput} type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+      <label>{text.users.workspaceRole}<select value={workspaceRole} onChange={(event) => setWorkspaceRole(event.target.value as 'admin' | 'member')}><option value="member">{text.labels.role.member}</option><option value="admin">{text.labels.role.admin}</option></select></label>
+      <label>{text.users.expiryHours}<input type="number" min={1} max={720} value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))} /></label>
       {validation && <p role="alert" className="form-error">{validation}</p>}
       {mutation.isError && <ErrorNotice error={mutation.error} />}
-      <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>Отмена</button><button type="submit" disabled={mutation.isPending}>{mutation.isPending ? 'Создание…' : 'Создать приглашение'}</button></div>
+      <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>{text.common.cancel}</button><button type="submit" disabled={mutation.isPending}>{mutation.isPending ? text.users.creating : text.users.createInvitation}</button></div>
     </form>}
-  </section></div>
+  </ModalDialog>
 }
 
 function InvitationRow({ invitation }: { invitation: Invitation }) {
@@ -104,21 +113,21 @@ function InvitationRow({ invitation }: { invitation: Invitation }) {
     mutationFn: async () => unwrap(await apiClient.DELETE('/api/v1/invitations/{id}', { params: { path: { id: invitation.id } } })),
     onSuccess: () => { setConfirm(false); queryClient.invalidateQueries({ queryKey: invitationsKey }) },
   })
-  const email = invitation.email ?? 'Адрес скрыт'
-  return <li className="admin-list-item"><div><strong>{email}</strong><span>{invitation.workspaceRole === 'admin' ? 'Администратор' : 'Участник'} · {invitation.status}</span></div>{invitation.status === 'pending' && <button type="button" onClick={() => setConfirm(true)} aria-label={`Отозвать приглашение ${email}`}>Отозвать</button>}{revoke.isError && <ErrorNotice error={revoke.error} />}{confirm && <ConfirmDialog title="Отозвать приглашение?" confirmLabel="Подтвердить отзыв приглашения" pending={revoke.isPending} onCancel={() => setConfirm(false)} onConfirm={() => revoke.mutate()} />}</li>
+  const email = invitation.email ?? text.common.hiddenEmail
+  return <li className="admin-list-item"><div><strong>{email}</strong><span>{text.labels.role[invitation.workspaceRole]} · {text.labels.invitationStatus(invitation.status)}</span></div>{invitation.status === 'pending' && <button type="button" onClick={() => setConfirm(true)} aria-label={text.users.revokeInvitationFor(email)}>{text.users.revokeInvitation}</button>}{revoke.isError && <ErrorNotice error={revoke.error} />}{confirm && <ConfirmDialog title={text.users.revokeInvitationTitle} confirmLabel={text.users.confirmRevokeInvitation} pending={revoke.isPending} onCancel={() => setConfirm(false)} onConfirm={() => revoke.mutate()} />}</li>
 }
 
 export function UsersPage() {
   const [showInvitation, setShowInvitation] = useState(false)
-  const users = useQuery({ queryKey: usersKey, queryFn: async () => apiArray<User>(unwrap(await apiClient.GET('/api/v1/users'))) })
-  const invitations = useQuery({ queryKey: invitationsKey, queryFn: async () => apiArray<Invitation>(unwrap(await apiClient.GET('/api/v1/invitations'))) })
+  const users = useQuery({ queryKey: usersKey, queryFn: async () => unwrapArray(await apiClient.GET('/api/v1/users')) })
+  const invitations = useQuery({ queryKey: invitationsKey, queryFn: async () => unwrapArray(await apiClient.GET('/api/v1/invitations')) })
   return <section>
-    <PageHeader title={text.pages.users}><button type="button" className="primary-button" onClick={() => setShowInvitation(true)}>Пригласить пользователя</button></PageHeader>
-    <section className="admin-panel" aria-labelledby="users-title"><h2 id="users-title">Участники</h2>
-      {users.isPending ? <LoadingBlock /> : users.isError ? <ErrorNotice error={users.error} /> : <div className="table-scroll"><table><thead><tr><th>Пользователь</th><th>Статус</th><th>Роль</th><th>Действия</th></tr></thead><tbody>{users.data.map((user) => <UserRow key={user.id} user={user} />)}</tbody></table></div>}
+    <PageHeader title={text.pages.users}><button type="button" className="primary-button" onClick={() => setShowInvitation(true)}>{text.users.invite}</button></PageHeader>
+    <section className="admin-panel" aria-labelledby="users-title"><h2 id="users-title">{text.users.members}</h2>
+      {users.isPending ? <LoadingBlock /> : users.isError ? <ErrorNotice error={users.error} /> : <div className="table-scroll"><table><thead><tr><th>{text.users.user}</th><th>{text.users.status}</th><th>{text.users.role}</th><th>{text.users.actions}</th></tr></thead><tbody>{users.data.map((user) => <UserRow key={user.id} user={user} />)}</tbody></table></div>}
     </section>
-    <section className="admin-panel" aria-labelledby="invitations-title"><h2 id="invitations-title">Приглашения</h2>
-      {invitations.isPending ? <LoadingBlock /> : invitations.isError ? <ErrorNotice error={invitations.error} /> : invitations.data.length ? <ul className="admin-list">{invitations.data.map((invitation) => <InvitationRow key={invitation.id} invitation={invitation} />)}</ul> : <p className="notice">Нет активных приглашений.</p>}
+    <section className="admin-panel" aria-labelledby="invitations-title"><h2 id="invitations-title">{text.users.invitations}</h2>
+      {invitations.isPending ? <LoadingBlock /> : invitations.isError ? <ErrorNotice error={invitations.error} /> : invitations.data.length ? <ul className="admin-list">{invitations.data.map((invitation) => <InvitationRow key={invitation.id} invitation={invitation} />)}</ul> : <p className="notice">{text.users.noInvitations}</p>}
     </section>
     {showInvitation && <InvitationDialog onClose={() => setShowInvitation(false)} />}
   </section>

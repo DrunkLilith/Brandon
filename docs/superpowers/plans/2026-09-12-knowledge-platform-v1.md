@@ -724,30 +724,30 @@ Commit: `feat(operations): add audit queries jobs and exports`
 - Produces: typed frontend API client with Problem Details decoding.
 - Produces: guarded `/login`, `/app`, `/admin` routes.
 
-- [ ] **Step 1: Write RED OpenAPI contract snapshot test**
+- [x] **Step 1: Write RED OpenAPI contract snapshot test**
 
 Test validates paths, Problem Details schema and security cookie/CSRF scheme.
 
-- [ ] **Step 2: Generate TypeScript client and enforce clean regeneration diff**
+- [x] **Step 2: Generate TypeScript client and enforce clean regeneration diff**
 
 Run: `pnpm api:generate && git diff --exit-code apps/web/src/api/generated.ts` in CI.
 
-- [ ] **Step 3: Write RED login behavior test**
+- [x] **Step 3: Write RED login behavior test**
 
 User submits credentials, client fetches CSRF/session, redirects to `/app`; invalid credentials render localized generic error.
 
-- [ ] **Step 4: Implement QueryClient, session provider, login and route guards**
+- [x] **Step 4: Implement QueryClient, session provider, login and route guards**
 
-- [ ] **Step 5: Write RED app-shell keyboard/navigation test**
+- [x] **Step 5: Write RED app-shell keyboard/navigation test**
 
 Shell exposes navigation landmarks, space switcher, page tree region, search button and profile menu.
 
-- [ ] **Step 6: Implement responsive shell and run tests**
+- [x] **Step 6: Implement responsive shell and run tests**
 
 Run: `pnpm --filter @knowledge/web test --run && pnpm --filter @knowledge/web build`  
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Commit: `feat(web): add typed login and workspace shell`
 

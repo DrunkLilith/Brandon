@@ -25,7 +25,8 @@ Master rotation separately rewraps every retained generation, without content re
 
 - Publish only Caddy ports 80/443. Firewall PostgreSQL 5432, MinIO 9000, backend 3000, and web 8080 from the host and external networks.
 - Use a real DNS name and valid HTTPS configuration. The local HTTP override is for smoke/drill only.
-- Retain HSTS, CSP, frame denial, content-type protection, and same-origin referrer policy from `deploy/Caddyfile` unless a reviewed change replaces them.
+- Retain HSTS, CSP, frame denial, content-type protection, and no-referrer policy from `deploy/Caddyfile` unless a reviewed change replaces them.
+- Keep both proxy access and HTTP error logs suppressed. URI paths, query strings and referrers may contain confidential data even on failed requests; backend diagnostics expose only explicitly redacted fields.
 - Run Docker root access as privileged access to all application data. Patch the host and Docker promptly.
 - Keep containers non-root/read-only where configured, preserve capability drops and `no-new-privileges`, and enforce the declared resource limits at the runtime/orchestrator level.
 - Encrypt persistent volumes and backup media; restrict filesystem ACLs for secret and backup directories.

@@ -1,3 +1,12 @@
+{
+    # Runtime HTTP errors also embed URI/headers even without access logging.
+    # Keep non-HTTP startup/TLS diagnostics; request-correlated diagnostics live
+    # in the backend's explicitly redacted operational events.
+    log default {
+        exclude http
+    }
+}
+
 {$KNOWLEDGE_SITE_ADDRESS} {
     encode zstd gzip
 

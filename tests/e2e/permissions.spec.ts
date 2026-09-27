@@ -22,6 +22,21 @@ test('production proxy does not log search queries referrers or sensitive paths'
   for (const pathname of [`/app?q=${marker}`, `/app/spaces/${marker}`, `/missing-${marker}`]) {
     await request.get(`${runtime.baseUrl}${pathname}`, { headers: { Referer: `${runtime.baseUrl}/app?q=${marker}` } })
   }
+  const compose = (...args: string[]) => execFileSync('docker', [
+    'compose', '-f', 'deploy/compose.yaml', '-p', runtime.project, ...args,
+  ], { env: { ...process.env, ...runtime.composeEnvironment }, stdio: 'ignore' })
+  // Upstream failures exercise the proxy's error logger, not only access logs.
+  // This harness owns the exact project and always restores its web service.
+  try {
+    compose('stop', 'web')
+    const failed = await request.get(`${runtime.baseUrl}/app/spaces/${marker}?q=${marker}`, {
+      headers: { Referer: `${runtime.baseUrl}/app?q=${marker}` },
+    })
+    expect(failed.status()).toBe(502)
+  } finally {
+    compose('start', 'web')
+    await expect.poll(async () => (await request.get(`${runtime.baseUrl}/`)).status()).toBe(200)
+  }
   const logs = execFileSync('docker', [
     'compose', '-f', 'deploy/compose.yaml', '-p', runtime.project, 'logs', '--no-color', 'web', 'caddy',
   ], { encoding: 'utf8', env: { ...process.env, ...runtime.composeEnvironment } })

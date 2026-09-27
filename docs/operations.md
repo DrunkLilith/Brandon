@@ -182,6 +182,7 @@ The Windows Bash command must use Git Bash explicitly, for example `C:\Program F
 - Patch Docker, Debian, PostgreSQL, Caddy, Rust/Node base images, and review the pinned archived MinIO source risk on every release.
 - Keep Docker volumes on encrypted storage and back up the key in a different security domain.
 - Use `docker compose logs --no-color --tail 200 SERVICE`; configuration errors name variables but do not print their values.
+- Proxy request logging is intentionally disabled, including nginx request errors and Caddy's HTTP logger namespace: even a 502 can otherwise record confidential URI/query/referrer data. Use health probes, container state and redacted backend operational events for diagnosis. Do not enable verbose/request logging on production traffic.
 - A lost master key makes encrypted database and object backups unrecoverable. Stop writes and escalate to the key custodian.
 - Suspected database/object corruption: stop backend, preserve volumes, restore the latest verified bundle into a new project, and compare through the API before cutover.
 - Do not manually delete objects from MinIO. Application retention/jobs own attachment and export cleanup.

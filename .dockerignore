@@ -1,0 +1,10 @@
+.git
+.superpowers
+target
+node_modules
+apps/web/dist
+*.log
+.env
+.env.*
+deploy/secrets
+backups

@@ -1,12 +1,11 @@
 use knowledge_crypto::MasterKey;
 use knowledge_server::{
     build_router,
-    config::{S3Config, ServerConfig},
+    config::{DatabaseConfig, S3Config, ServerConfig, load_required_secret},
     state::AppState,
 };
 use knowledge_store::{DatabaseSettings, Store};
 use tokio::net::TcpListener;
-use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,16 +15,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "30".into())
         .parse::<u32>()
         .map_err(|_| "invalid attachment retention configuration")?;
-    let database_url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-    let encoded_master_key = Zeroizing::new(
-        std::env::var("KNOWLEDGE_MASTER_KEY").map_err(|_| "KNOWLEDGE_MASTER_KEY must be set")?,
-    );
+    let database = DatabaseConfig::from_env()?;
+    let encoded_master_key = load_required_secret("KNOWLEDGE_MASTER_KEY")?;
     let master_key = MasterKey::from_base64(&encoded_master_key)?;
     let public_origin = std::env::var("KNOWLEDGE_PUBLIC_ORIGIN")
         .map_err(|_| "KNOWLEDGE_PUBLIC_ORIGIN must be set")?;
     let trusted_proxy_cidrs = std::env::var("KNOWLEDGE_TRUSTED_PROXY_CIDRS").unwrap_or_default();
-    let store = Store::connect(&DatabaseSettings::new(database_url, 10)).await?;
-    store.migrate().await?;
+    let store = Store::connect(&DatabaseSettings::new(database.as_url(), 10)).await?;
     let listener = TcpListener::bind(config.listen_address).await?;
     let state = AppState::new(store, master_key, &public_origin, &trusted_proxy_cidrs)?
         .with_object_store(objects)

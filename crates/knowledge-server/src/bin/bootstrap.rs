@@ -1,9 +1,11 @@
 use std::env;
 
 use knowledge_crypto::MasterKey;
-use knowledge_server::bootstrap::{BootstrapInput, BootstrapService};
+use knowledge_server::{
+    bootstrap::{BootstrapInput, BootstrapService},
+    config::{DatabaseConfig, load_required_secret},
+};
 use knowledge_store::{DatabaseSettings, Store};
-use zeroize::Zeroizing;
 
 #[derive(Debug)]
 struct Arguments {
@@ -15,15 +17,16 @@ struct Arguments {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments(env::args().skip(1))?;
-    let database_url = env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-    let encoded_master_key = Zeroizing::new(
-        env::var("KNOWLEDGE_MASTER_KEY").map_err(|_| "KNOWLEDGE_MASTER_KEY must be set")?,
-    );
+    let database = DatabaseConfig::from_env()?;
+    let encoded_master_key = load_required_secret("KNOWLEDGE_MASTER_KEY")?;
     let master_key = MasterKey::from_base64(&encoded_master_key)?;
-    let password = rpassword::prompt_password("Initial admin password: ")?;
+    let password = if env::var_os("KNOWLEDGE_BOOTSTRAP_PASSWORD_FILE").is_some() {
+        load_required_secret("KNOWLEDGE_BOOTSTRAP_PASSWORD")?.to_string()
+    } else {
+        rpassword::prompt_password("Initial admin password: ")?
+    };
 
-    let store = Store::connect(&DatabaseSettings::new(database_url, 5)).await?;
-    store.migrate().await?;
+    let store = Store::connect(&DatabaseSettings::new(database.as_url(), 5)).await?;
     let result = BootstrapService::run(
         &store,
         &master_key,

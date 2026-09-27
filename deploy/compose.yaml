@@ -1,0 +1,241 @@
+name: knowledge-platform
+
+x-backend-environment: &backend-environment
+  KNOWLEDGE_LISTEN_ADDRESS: 0.0.0.0:3000
+  KNOWLEDGE_PUBLIC_ORIGIN: ${KNOWLEDGE_PUBLIC_ORIGIN:?KNOWLEDGE_PUBLIC_ORIGIN must be set}
+  KNOWLEDGE_TRUSTED_PROXY_CIDRS: 172.16.0.0/12
+  KNOWLEDGE_DATABASE_HOST: postgres
+  KNOWLEDGE_DATABASE_PORT: "5432"
+  KNOWLEDGE_DATABASE_NAME: knowledge
+  KNOWLEDGE_DATABASE_USER: knowledge
+  KNOWLEDGE_DATABASE_PASSWORD_FILE: /run/secrets/database_password
+  KNOWLEDGE_MASTER_KEY_FILE: /run/secrets/master_key
+  KNOWLEDGE_S3_ENDPOINT: http://minio:9000
+  KNOWLEDGE_S3_BUCKET: knowledge
+  KNOWLEDGE_S3_REGION: us-east-1
+  KNOWLEDGE_S3_ACCESS_KEY_ID_FILE: /run/secrets/object_access_key
+  KNOWLEDGE_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/object_secret_key
+  KNOWLEDGE_S3_ALLOW_HTTP: "true"
+  KNOWLEDGE_ATTACHMENT_RETENTION_DAYS: "30"
+
+x-backend-common: &backend-common
+  build:
+    context: ..
+    dockerfile: crates/knowledge-server/Dockerfile
+  image: knowledge-platform/backend:local
+  environment: *backend-environment
+  secrets:
+    - master_key
+    - database_password
+    - object_access_key
+    - object_secret_key
+  networks:
+    - storage
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      KNOWLEDGE_SITE_ADDRESS: ${KNOWLEDGE_SITE_ADDRESS:?KNOWLEDGE_SITE_ADDRESS must be set}
+    ports:
+      - "${KNOWLEDGE_HTTP_PORT:-80}:80"
+      - "${KNOWLEDGE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+      - proxy
+    depends_on:
+      backend:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    image: knowledge-platform/web:local
+    restart: unless-stopped
+    networks:
+      - proxy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=0755,uid=101,gid=101
+      - /var/cache/nginx:size=16m,mode=0755,uid=101,gid=101
+      - /var/run:size=1m,mode=0755,uid=101,gid=101
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+
+  backend:
+    <<: *backend-common
+    restart: unless-stopped
+    networks:
+      - proxy
+      - storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "2.0"
+
+  migrate:
+    <<: *backend-common
+    entrypoint: ["/usr/local/bin/migrate"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bootstrap:
+    <<: *backend-common
+    entrypoint: ["/usr/local/bin/bootstrap"]
+    restart: "no"
+    profiles: ["tools"]
+
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: knowledge
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets:
+      - database_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - storage
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowledge -d knowledge"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "2.0"
+
+  minio:
+    build:
+      context: ..
+      dockerfile: deploy/minio.Dockerfile
+    image: knowledge-platform/minio:RELEASE.2025-10-15T17-29-55Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/object_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/object_secret_key
+    secrets:
+      - object_access_key
+      - object_secret_key
+    volumes:
+      - minio_data:/data
+    networks:
+      - storage
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "2.0"
+
+  minio-init:
+    build:
+      context: ..
+      dockerfile: deploy/mc.Dockerfile
+    image: knowledge-platform/mc:RELEASE.2025-08-13T08-35-41Z
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        access=$$(cat /run/secrets/object_access_key)
+        secret=$$(cat /run/secrets/object_secret_key)
+        mc alias set local http://minio:9000 "$$access" "$$secret"
+        mc mb --ignore-existing local/knowledge
+    secrets:
+      - object_access_key
+      - object_secret_key
+    networks:
+      - storage
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=0700,uid=10002,gid=10002
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  master_key:
+    file: ${KNOWLEDGE_MASTER_KEY_FILE:?KNOWLEDGE_MASTER_KEY_FILE must be set}
+  database_password:
+    file: ${KNOWLEDGE_DATABASE_PASSWORD_FILE:?KNOWLEDGE_DATABASE_PASSWORD_FILE must be set}
+  object_access_key:
+    file: ${KNOWLEDGE_OBJECT_ACCESS_KEY_FILE:?KNOWLEDGE_OBJECT_ACCESS_KEY_FILE must be set}
+  object_secret_key:
+    file: ${KNOWLEDGE_OBJECT_SECRET_KEY_FILE:?KNOWLEDGE_OBJECT_SECRET_KEY_FILE must be set}
+
+volumes:
+  postgres_data:
+  minio_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  proxy:
+    internal: true
+  storage:
+    internal: true

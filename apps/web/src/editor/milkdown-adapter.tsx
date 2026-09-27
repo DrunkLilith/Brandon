@@ -17,6 +17,7 @@ import {
   type Ref,
 } from 'react'
 import { ErrorNotice } from '../admin/shared'
+import { useI18n } from '../i18n'
 
 export type MarkdownHandle = { flush(): string }
 
@@ -35,6 +36,7 @@ export function MilkdownAdapter({
   onUnmount?(value: string): void
   readOnly?: boolean
 }) {
+  const { messages: text } = useI18n()
   const root = useRef<HTMLDivElement>(null),
     editor = useRef<Editor | null>(null)
   const latest = useRef(value),
@@ -113,7 +115,7 @@ export function MilkdownAdapter({
           },
           attributes: {
             role: 'textbox',
-            'aria-label': 'Визуальный Markdown',
+            'aria-label': text.workspace.visualMarkdown,
             'aria-multiline': 'true',
           },
         }))
@@ -155,8 +157,9 @@ export function MilkdownAdapter({
     editor.current?.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       view.updateState(view.state)
+      view.dom.setAttribute('aria-label', text.workspace.visualMarkdown)
     })
-  }, [readOnly])
+  }, [readOnly, text.workspace.visualMarkdown])
   useEffect(() => {
     if (editor.current && value !== emitted.current) {
       replaceValue(editor.current, value)

@@ -1,19 +1,17 @@
-import { useEffect } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 
-import { adminMessages as text } from './messages'
-
-const navigation = [
-  ['/admin', text.navigation.dashboard],
-  ['/admin/users', text.navigation.users],
-  ['/admin/groups', text.navigation.groups],
-  ['/admin/spaces', text.navigation.spaces],
-  ['/admin/audit', text.navigation.audit],
-  ['/admin/settings', text.navigation.settings],
-] as const
+import { useI18n } from '../i18n'
 
 export function AdminLayout() {
-  useEffect(() => { document.documentElement.lang = text.locale }, [])
+  const { messages: text } = useI18n()
+  const navigation = [
+    ['/admin', text.navigation.dashboard],
+    ['/admin/users', text.navigation.users],
+    ['/admin/groups', text.navigation.groups],
+    ['/admin/spaces', text.navigation.spaces],
+    ['/admin/audit', text.navigation.audit],
+    ['/admin/settings', text.navigation.settings],
+  ] as const
   return <div className="admin-shell">
     <header className="admin-topbar">
       <NavLink to="/app" className="admin-brand"><span aria-hidden="true" className="brand-mark small">K</span><span>{text.brand}</span></NavLink>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { components } from '../api/generated'
-import { workspaceMessages as text } from './messages'
+import { useI18n } from '../i18n'
 type Node = components['schemas']['PageTreeItem']
 const rowHeight = 36,
   visibleCount = 14,
@@ -15,6 +15,7 @@ export function PageTree({
   selected?: string
   onSelect(id: string): void
 }) {
+  const { messages: text } = useI18n()
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     const ancestors = new Set<string>()
     let id = selected

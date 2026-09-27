@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { apiClient, unwrapArray } from '../api/client'
 import { ErrorNotice, LoadingBlock } from '../admin/shared'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 import { Uploader } from './uploader'
 export function AttachmentList({
   pageId,
@@ -10,6 +10,7 @@ export function AttachmentList({
   pageId: string
   editable: boolean
 }) {
+  const { messages: text } = useI18n()
   const query = useQuery({
     queryKey: ['workspace', 'attachments', pageId],
     queryFn: async ({ signal }) =>

@@ -15,7 +15,7 @@ import type { MarkdownHandle } from '../editor/milkdown-adapter'
 import { ConflictDialog } from '../editor/conflict-dialog'
 import { HistoryPanel } from '../editor/history-panel'
 import { PagePermissions } from './page-permissions'
-import { workspaceMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { pageKey, pageQuery } from './queries'
 type Page = components['schemas']['Page']
 
@@ -58,6 +58,7 @@ function PageEditor({
   initial: Page
   workspaceId: string
 }) {
+  const { messages: text } = useI18n()
   const cache = useQueryClient(),
     [base, setBase] = useState(initial)
   const [draft, setDraft] = useState<Draft>(

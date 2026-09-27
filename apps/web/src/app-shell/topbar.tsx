@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { components } from '../api/generated'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 
 export function Topbar({
   onLogout,
@@ -14,10 +14,11 @@ export function Topbar({
   space?: components['schemas']['Space']
   page?: components['schemas']['Page']
 }) {
+  const { messages: text } = useI18n()
   const [profileOpen, setProfileOpen] = useState(false)
   return (
     <header className="topbar">
-      <nav className="breadcrumbs" aria-label="Хлебные крошки">
+      <nav className="breadcrumbs" aria-label={text.app.breadcrumbs}>
         <Link to="/app">{text.workspace.overview}</Link>
         {space && (
           <>
@@ -35,7 +36,7 @@ export function Topbar({
         <button
           className="profile-button"
           type="button"
-          aria-label="Профиль"
+          aria-label={text.app.profile}
           aria-expanded={profileOpen}
           onClick={() => setProfileOpen((open) => !open)}
         >
@@ -44,7 +45,7 @@ export function Topbar({
         {profileOpen && (
           <div className="profile-popover">
             <button type="button" onClick={() => void onLogout()}>
-              Выйти
+              {text.app.logout}
             </button>
           </div>
         )}

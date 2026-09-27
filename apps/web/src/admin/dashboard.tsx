@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { apiClient, unwrap } from '../api/client'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 export function DashboardPage() {
+  const { messages: text } = useI18n()
   const status = useQuery({ queryKey: ['admin', 'status'], queryFn: async () => unwrap(await apiClient.GET('/api/v1/admin/status')) })
   const readiness = useQuery({ queryKey: ['admin', 'readiness'], queryFn: async () => unwrap(await apiClient.GET('/api/v1/health/ready')) })
   const exportsQuery = useQuery({ queryKey: ['admin', 'exports'], queryFn: async () => unwrap(await apiClient.GET('/api/v1/exports', { params: { query: { limit: 10 } } })) })

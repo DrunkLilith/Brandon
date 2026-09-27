@@ -401,7 +401,7 @@ it('keeps the mounted in-memory draft through a background 503 and retry when st
   ).toBeVisible()
   await act(() => cache.refetchQueries({ queryKey: pageKey('p') }))
   expect(
-    await screen.findByText('Не удалось выполнить запрос. Попробуйте ещё раз.'),
+    await screen.findByText('Сервис временно недоступен. Попробуйте ещё раз.'),
   ).toBeVisible()
   expect(screen.queryByText('PRIVATE ERROR')).not.toBeInTheDocument()
   expect(title).toBeInTheDocument()

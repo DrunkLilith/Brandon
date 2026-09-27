@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { components } from '../api/generated'
 import { ErrorNotice, ModalDialog } from '../admin/shared'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 import type { Draft } from './draft-store'
 export function ConflictDialog({
   base,
@@ -20,6 +20,7 @@ export function ConflictDialog({
   onReload(page: components['schemas']['Page']): void
   onResolve(page: components['schemas']['Page']): void
 }) {
+  const { messages: text } = useI18n()
   const [copyState, setCopyState] = useState(false),
     [copyError, setCopyError] = useState<unknown>(),
     [confirm, setConfirm] = useState(false)

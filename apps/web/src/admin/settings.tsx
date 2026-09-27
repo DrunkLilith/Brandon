@@ -2,12 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState, type FormEvent } from 'react'
 
 import { apiClient, unwrap } from '../api/client'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 const settingsKey = ['admin', 'settings'] as const
 
 export function SettingsPage() {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const settings = useQuery({ queryKey: settingsKey, queryFn: async () => unwrap(await apiClient.GET('/api/v1/admin/settings')) })
   const [attachmentRecoveryDays, setAttachmentRecoveryDays] = useState(30)

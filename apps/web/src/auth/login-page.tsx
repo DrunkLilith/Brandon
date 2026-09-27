@@ -2,9 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { ApiError } from '../api/client'
+import { useI18n } from '../i18n'
 import { useSession } from './session'
 
 export function LoginPage() {
+  const { messages: text } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const { login } = useSession()
@@ -31,15 +33,15 @@ export function LoginPage() {
     <section className="login-card" aria-labelledby="login-title">
       <div className="brand-mark" aria-hidden="true">K</div>
       <p className="eyebrow">Knowledge Platform</p>
-      <h1 id="login-title">Вход</h1>
-      <p className="login-intro">Войдите в защищённое рабочее пространство.</p>
+      <h1 id="login-title">{text.login.title}</h1>
+      <p className="login-intro">{text.login.intro}</p>
       <form onSubmit={submit}>
-        <label>Электронная почта<input name="email" type="email" autoComplete="username" required /></label>
-        <label>Пароль<input name="password" type="password" autoComplete="current-password" required /></label>
+        <label>{text.login.email}<input name="email" type="email" autoComplete="username" required /></label>
+        <label>{text.login.password}<input name="password" type="password" autoComplete="current-password" required /></label>
         {error && <p role="alert" className="form-error">
-          {error === 'credentials' ? 'Неверная почта или пароль' : 'Сервис временно недоступен. Попробуйте ещё раз.'}
+          {error === 'credentials' ? text.login.invalidCredentials : text.login.unavailable}
         </p>}
-        <button className="primary-button" disabled={pending} type="submit">{pending ? 'Входим…' : 'Войти'}</button>
+        <button className="primary-button" disabled={pending} type="submit">{pending ? text.login.pending : text.login.submit}</button>
       </form>
     </section>
   </main>

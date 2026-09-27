@@ -14,9 +14,18 @@ import { SpacesPage } from './admin/spaces'
 import { UsersPage } from './admin/users'
 import { LoginPage } from './auth/login-page'
 import { SessionProvider, useSession } from './auth/session'
+import { NotFound } from './components/not-found'
+import { OfflineBanner } from './components/offline-banner'
+import { I18nProvider, LanguageSwitch, useI18n } from './i18n'
 
-function Loading() { return <main className="loading" aria-label="Загрузка">Загрузка…</main> }
-function SessionUnavailable() { return <main className="loading" role="alert">Не удалось проверить сеанс. Попробуйте обновить страницу.</main> }
+function Loading() {
+  const { messages } = useI18n()
+  return <main className="loading" aria-label={messages.app.loadingLabel}>{messages.app.loading}</main>
+}
+function SessionUnavailable() {
+  const { messages } = useI18n()
+  return <main className="loading" role="alert">{messages.app.sessionUnavailable}</main>
+}
 
 function WorkspaceBoundary({ children }: { children: ReactNode }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
@@ -53,18 +62,22 @@ function AdminRoute() {
 
 export function App() {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
-  return <QueryClientProvider client={queryClient}><SessionProvider><BrowserRouter><Routes>
-    <Route path="/login" element={<LoginRoute />} />
-    <Route path="/app/*" element={<AppRoute />} />
-    <Route path="/admin" element={<AdminRoute />}>
-      <Route index element={<DashboardPage />} />
-      <Route path="users" element={<UsersPage />} />
-      <Route path="groups" element={<GroupsPage />} />
-      <Route path="spaces" element={<SpacesPage />} />
-      <Route path="audit" element={<AuditPage />} />
-      <Route path="settings" element={<SettingsPage />} />
-      <Route path="*" element={<Navigate to="/admin" replace />} />
-    </Route>
-    <Route path="*" element={<Navigate to="/app" replace />} />
-  </Routes></BrowserRouter></SessionProvider></QueryClientProvider>
+  return <I18nProvider>
+    <LanguageSwitch />
+    <OfflineBanner />
+    <QueryClientProvider client={queryClient}><SessionProvider><BrowserRouter><Routes>
+      <Route path="/login" element={<LoginRoute />} />
+      <Route path="/app/*" element={<AppRoute />} />
+      <Route path="/admin" element={<AdminRoute />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="users" element={<UsersPage />} />
+        <Route path="groups" element={<GroupsPage />} />
+        <Route path="spaces" element={<SpacesPage />} />
+        <Route path="audit" element={<AuditPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="*" element={<NotFound />} />
+      </Route>
+      <Route path="*" element={<NotFound />} />
+    </Routes></BrowserRouter></SessionProvider></QueryClientProvider>
+  </I18nProvider>
 }

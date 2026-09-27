@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { apiClient, unwrap } from '../api/client'
 import type { components } from '../api/generated'
 import { ErrorNotice, ModalDialog } from '../admin/shared'
-import { workspaceMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { pageKey, pageQuery, treeKey, treeQuery } from './queries'
 type Page = components['schemas']['Page']
 type Node = components['schemas']['PageTreeItem']
@@ -23,6 +23,7 @@ export function PageToolbar({
   spaces: readonly components['schemas']['Space'][]
   canCreate: boolean
 }) {
+  const { messages: text } = useI18n()
   const cache = useQueryClient(),
     navigate = useNavigate()
   const [action, setAction] = useState<Operation | null>(null),

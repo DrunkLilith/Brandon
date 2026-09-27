@@ -222,7 +222,7 @@ describe('spaces administration', () => {
     await waitFor(() => expect(updateAttempts).toBe(2))
 
     await user.click(deleteButton)
-    expect(await within(grantRow).findByRole('alert')).toHaveTextContent('Не удалось выполнить запрос')
+    expect(await within(grantRow).findByRole('alert')).toHaveTextContent('Сервис временно недоступен')
   })
 
   it('selects a remaining valid space after archiving the first space and a delayed refetch', async () => {

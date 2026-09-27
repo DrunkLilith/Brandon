@@ -1,28 +1,20 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react'
 
-import { ApiError } from '../api/client'
-import { adminMessages as text } from './messages'
-
-export function safeErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    if (error.status === 403) return text.errors.forbidden
-    if (error.status === 404) return text.errors.notFound
-    if (error.status === 409) return text.errors.conflict
-    if (error.status === 429) return text.errors.rateLimited
-  }
-  return text.errors.generic
-}
+import { ProblemAlert } from '../components/problem-alert'
+import { useI18n } from '../i18n'
 
 export function ErrorNotice({ error }: { error: unknown }) {
-  return <p className="notice error-notice" role="alert">{safeErrorMessage(error)}</p>
+  return <ProblemAlert error={error} />
 }
 
 export function LoadingBlock() {
+  const { messages: text } = useI18n()
   return <p className="notice" role="status">{text.loading}</p>
 }
 
 export function PageHeader({ title, children }: { title: string; children?: ReactNode }) {
+  const { messages: text } = useI18n()
   return <header className="admin-page-header"><div><p className="eyebrow">{text.section}</p><h1>{title}</h1></div>{children}</header>
 }
 
@@ -84,6 +76,7 @@ export function ConfirmDialog({ title, confirmLabel, pending, onCancel, onConfir
   onCancel(): void
   onConfirm(): void
 }) {
+  const { messages: text } = useI18n()
   return <ModalDialog title={title} onCancel={onCancel}>
     <p>{text.common.confirmationNotice}</p>
     <div className="dialog-actions">

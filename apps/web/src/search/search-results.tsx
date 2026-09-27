@@ -1,5 +1,5 @@
 import type { components } from '../api/generated'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 export function SearchResults({
   hits,
   onSelect,
@@ -7,6 +7,7 @@ export function SearchResults({
   hits: readonly components['schemas']['SearchHit'][]
   onSelect(id: string): void
 }) {
+  const { messages: text } = useI18n()
   return hits.length ? (
     <ul className="admin-list">
       {hits.map((hit) => (

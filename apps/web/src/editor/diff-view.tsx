@@ -1,6 +1,7 @@
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 // Linear space/time prefix/suffix comparison. The changed middle is intentionally coarse and bounded.
 export function DiffView({ before, after }: { before: string; after: string }) {
+  const { messages: text } = useI18n()
   const left = before.slice(0, 100000).split('\n'),
     right = after.slice(0, 100000).split('\n')
   let prefix = 0,

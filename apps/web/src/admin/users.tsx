@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { apiClient, unwrap, unwrapArray } from '../api/client'
 import type { components } from '../api/generated'
 import { sessionKey, useSession } from '../auth/session'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ConfirmDialog, ErrorNotice, LoadingBlock, ModalDialog, PageHeader } from './shared'
 
 type User = components['schemas']['User']
@@ -16,6 +16,7 @@ const usersKey = ['admin', 'users'] as const
 const invitationsKey = ['admin', 'invitations'] as const
 
 function UserRow({ user }: { user: User }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const { session } = useSession()
   const refreshOwnSession = async () => {
@@ -46,6 +47,7 @@ function UserRow({ user }: { user: User }) {
 }
 
 function InvitationDialog({ onClose }: { onClose(): void }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [email, setEmail] = useState('')
   const [workspaceRole, setWorkspaceRole] = useState<'admin' | 'member'>('member')
@@ -107,6 +109,7 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
 }
 
 function InvitationRow({ invitation }: { invitation: Invitation }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [confirm, setConfirm] = useState(false)
   const revoke = useMutation({
@@ -118,6 +121,7 @@ function InvitationRow({ invitation }: { invitation: Invitation }) {
 }
 
 export function UsersPage() {
+  const { messages: text } = useI18n()
   const [showInvitation, setShowInvitation] = useState(false)
   const users = useQuery({ queryKey: usersKey, queryFn: async () => unwrapArray(await apiClient.GET('/api/v1/users')) })
   const invitations = useQuery({ queryKey: invitationsKey, queryFn: async () => unwrapArray(await apiClient.GET('/api/v1/invitations')) })

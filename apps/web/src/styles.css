@@ -41,6 +41,10 @@ body {
 button, input, select { font: inherit; }
 button, a, input, select { outline-offset: 3px; }
 :focus-visible { outline: 3px solid #47a36b; }
+.language-switch { position:fixed; z-index:20; top:.75rem; right:.75rem; display:flex; gap:.25rem; padding:.2rem; border:1px solid #cbd5ce; border-radius:.65rem; background:rgba(255,255,255,.95); box-shadow:0 6px 20px rgba(29,55,39,.1); }
+.language-switch button { border:0; border-radius:.45rem; padding:.35rem .55rem; color:#34463b; background:transparent; cursor:pointer; }
+.language-switch button[aria-pressed="true"] { color:white; background:#1d6b42; }
+.offline-banner { position:sticky; z-index:19; top:0; padding:.65rem 1rem; color:#4d2b00; background:#fff1c2; border-bottom:1px solid #d6b963; text-align:center; font-weight:700; }
 .login-page { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; background: radial-gradient(circle at 75% 15%, #dcebe0, transparent 38%), #f4f6f2; }
 .login-card { width: min(100%, 27rem); padding: 2.4rem; border: 1px solid #d8ded9; border-radius: 1.4rem; background: rgba(255,255,255,.92); box-shadow: 0 24px 70px rgba(29,55,39,.12); }
 .brand-mark { display:grid; place-items:center; width:3rem; height:3rem; border-radius:.85rem; color:white; background:#1d6b42; font-weight:800; }

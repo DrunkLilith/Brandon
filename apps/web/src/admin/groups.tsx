@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react'
 
 import { apiClient, unwrap, unwrapArray } from '../api/client'
 import type { components } from '../api/generated'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 type Group = components['schemas']['Group']
@@ -12,6 +12,7 @@ const groupsKey = ['admin', 'groups'] as const
 const archivedGroupsKey = ['admin', 'groups', 'archived'] as const
 
 function GroupCard({ group, users }: { group: Group; users: readonly User[] }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [name, setName] = useState(group.name)
@@ -46,6 +47,7 @@ function GroupCard({ group, users }: { group: Group; users: readonly User[] }) {
 }
 
 export function GroupsPage() {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')

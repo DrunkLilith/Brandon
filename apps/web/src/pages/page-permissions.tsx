@@ -7,7 +7,7 @@ import {
 import { useState } from 'react'
 import { apiClient, unwrap, unwrapArray } from '../api/client'
 import { ErrorNotice, LoadingBlock } from '../admin/shared'
-import { workspaceMessages as text } from './messages'
+import { useI18n } from '../i18n'
 export function PagePermissions({
   pageId,
   spaceId,
@@ -15,6 +15,7 @@ export function PagePermissions({
   pageId: string
   spaceId: string
 }) {
+  const { messages: text } = useI18n()
   const cache = useQueryClient(),
     [subject, setSubject] = useState(''),
     [role, setRole] = useState<'viewer' | 'editor'>('viewer')

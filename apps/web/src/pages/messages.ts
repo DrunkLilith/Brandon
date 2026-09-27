@@ -30,6 +30,7 @@ export function getWorkspaceMessages(locale: AdminLocale) {
       title: pick('Название страницы', 'Page title'),
       raw: pick('Исходный Markdown', 'Raw Markdown'),
       rich: pick('Визуальный редактор', 'Rich editor'),
+      visualMarkdown: pick('Визуальный Markdown', 'Visual Markdown'),
       preview: pick('Предпросмотр', 'Preview'),
       save: pick('Сохранить версию', 'Save revision'),
       saving: pick('Сохранение на сервере…', 'Saving to server…'),
@@ -103,4 +104,3 @@ export function getWorkspaceMessages(locale: AdminLocale) {
     },
   }
 }
-export const workspaceMessages = getWorkspaceMessages('ru')

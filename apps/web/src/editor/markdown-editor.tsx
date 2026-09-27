@@ -1,6 +1,6 @@
 import { useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { MilkdownAdapter, type MarkdownHandle } from './milkdown-adapter'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 export function MarkdownEditor({
   ref,
   value,
@@ -16,6 +16,7 @@ export function MarkdownEditor({
   onUnmount?(value: string): void
   readOnly?: boolean
 }) {
+  const { messages: text } = useI18n()
   const [mode, setMode] = useState<'rich' | 'raw' | 'preview'>('rich')
   const rich = useRef<MarkdownHandle>(null)
   useImperativeHandle(ref, () => ({

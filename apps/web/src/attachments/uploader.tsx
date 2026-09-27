@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { ErrorNotice } from '../admin/shared'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 export function Uploader({ pageId }: { pageId: string }) {
+  const { messages: text } = useI18n()
   const cache = useQueryClient(),
     [file, setFile] = useState<File | null>(null),
     [invalid, setInvalid] = useState(false),

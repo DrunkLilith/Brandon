@@ -10,15 +10,16 @@ import {
 import { useSession } from '../auth/session'
 import { ApiError } from '../api/client'
 import { ErrorNotice, LoadingBlock } from '../admin/shared'
+import { useI18n } from '../i18n'
 import { PageTree } from '../pages/page-tree'
 import { PageView } from '../pages/page-view'
 import { PageToolbar } from '../pages/page-toolbar'
 import { pageQuery, spacesQuery, treeQuery } from '../pages/queries'
-import { workspaceMessages as text } from '../pages/messages'
 import { SearchDialog } from '../search/search-dialog'
 import { Topbar } from './topbar'
 
 export function AppShell() {
+  const { messages: text } = useI18n()
   const { session, logout } = useSession(),
     navigate = useNavigate(),
     [params] = useSearchParams()
@@ -72,7 +73,7 @@ export function AppShell() {
             ))}
           </select>
         </label>
-        <nav aria-label="Основная навигация">
+        <nav aria-label={text.app.navigation}>
           <NavLink to="/app" end>
             {text.workspace.overview}
           </NavLink>
@@ -97,7 +98,7 @@ export function AppShell() {
           space={space}
           page={page.data}
         />
-        <main className="workspace-content" aria-label="Рабочая область">
+        <main className="workspace-content" aria-label={text.app.workspaceLabel}>
           {spaces.isPending ? (
             <LoadingBlock />
           ) : spaces.isError ? (

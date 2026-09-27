@@ -3,10 +3,11 @@ import { useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { apiClient, unwrapArray } from '../api/client'
 import { ErrorNotice, LoadingBlock, ModalDialog } from '../admin/shared'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 import { pageQuery } from '../pages/queries'
 import { SearchResults } from './search-results'
 export function SearchDialog({ onClose }: { onClose(): void }) {
+  const { messages: text } = useI18n()
   const [params, setParams] = useSearchParams(),
     cache = useQueryClient(),
     navigate = useNavigate()

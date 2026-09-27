@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { apiClient, unwrap, unwrapArray } from '../api/client'
 import { ConfirmDialog, ErrorNotice, LoadingBlock } from '../admin/shared'
-import { workspaceMessages as text } from '../pages/messages'
+import { useI18n } from '../i18n'
 import { pageQuery } from '../pages/queries'
 import type { components } from '../api/generated'
 import { DiffView } from './diff-view'
@@ -15,6 +15,7 @@ export function HistoryPanel({
   markdown: string
   onRestored(page: components['schemas']['Page']): void
 }) {
+  const { messages: text } = useI18n()
   const cache = useQueryClient(),
     [selected, setSelected] = useState<number | null>(null),
     [restore, setRestore] = useState<number | null>(null)

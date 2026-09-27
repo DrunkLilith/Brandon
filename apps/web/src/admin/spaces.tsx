@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 
 import { apiClient, unwrap, unwrapArray } from '../api/client'
 import type { components } from '../api/generated'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 type Space = components['schemas']['Space']
@@ -15,6 +15,7 @@ const spacesKey = ['admin', 'spaces'] as const
 const archivedSpacesKey = ['admin', 'spaces', 'archived'] as const
 
 function SpaceEditor({ space }: { space: Space }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [name, setName] = useState(space.name)
   const [description, setDescription] = useState(space.description ?? '')
@@ -27,6 +28,7 @@ function SpaceEditor({ space }: { space: Space }) {
 }
 
 function SpaceAccess({ space }: { space: Space }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [subjectType, setSubjectType] = useState<SubjectType>('user')
   const [subjectId, setSubjectId] = useState('')
@@ -69,6 +71,7 @@ function SpaceAccess({ space }: { space: Space }) {
 }
 
 function GrantRow({ spaceId, grant, subjectLabel, grantsKey }: { spaceId: string; grant: SpaceGrant; subjectLabel: string; grantsKey: readonly string[] }) {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [draftRole, setDraftRole] = useState<GrantRole>(grant.role)
   useEffect(() => { setDraftRole(grant.role) }, [grant.role])
@@ -89,6 +92,7 @@ function GrantRow({ spaceId, grant, subjectLabel, grantsKey }: { spaceId: string
 }
 
 export function SpacesPage() {
+  const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const [name, setName] = useState('')

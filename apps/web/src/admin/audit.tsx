@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 import { apiClient, unwrap } from '../api/client'
-import { adminMessages as text } from './messages'
+import { useI18n } from '../i18n'
 import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 const filterNames = ['actor', 'type', 'target', 'targetType', 'from', 'to'] as const
@@ -15,6 +15,7 @@ function readFilters(params: URLSearchParams): Filters {
 }
 
 export function AuditPage() {
+  const { messages: text } = useI18n()
   const [params, setParams] = useSearchParams()
   const serialized = params.toString()
   const [filters, setFilters] = useState(() => readFilters(params))

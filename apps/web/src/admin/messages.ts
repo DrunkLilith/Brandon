@@ -90,5 +90,3 @@ export function getAdminMessages(locale: AdminLocale) {
     },
   }
 }
-
-export const adminMessages = getAdminMessages('ru')

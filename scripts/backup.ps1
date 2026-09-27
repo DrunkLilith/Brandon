@@ -42,7 +42,16 @@ if (-not $postgres -or -not $minio) { throw 'source project PostgreSQL and MinIO
 
 New-Item -ItemType Directory -Path (Join-Path $target 'postgres'),(Join-Path $target 'objects'),(Join-Path $target 'metadata') | Out-Null
 [IO.File]::WriteAllText((Join-Path $target 'bundle-version.txt'), "knowledge-platform-backup-v1`n", [Text.UTF8Encoding]::new($false))
-$backendWasRunning = -not [string]::IsNullOrWhiteSpace((& docker compose -f $ComposeFile -p $ProjectName ps -q backend))
+$previousConsoleError = [Console]::Error
+try {
+    [Console]::SetError([IO.TextWriter]::Null)
+    $backendContainer = (& docker compose -f $ComposeFile -p $ProjectName ps -q backend 2>$null)
+    $backendStateExitCode = $LASTEXITCODE
+} finally {
+    [Console]::SetError($previousConsoleError)
+}
+if ($backendStateExitCode -ne 0) { throw 'backend state could not be determined' }
+$backendWasRunning = -not [string]::IsNullOrWhiteSpace($backendContainer)
 function Restore-BackendAfterBackup {
     if (-not $backendWasRunning) { return }
     & docker compose -f $ComposeFile -p $ProjectName start backend | Out-Null
@@ -58,6 +67,8 @@ function Restore-BackendAfterBackup {
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     throw 'backend failed to return ready after backup'
 }
+$primaryFailure = $null
+$recoveryFailure = $null
 try {
     if ($backendWasRunning) { Invoke-Compose stop backend | Out-Null }
     $postgresMount = "$(Join-Path $target 'postgres'):/backup"
@@ -78,7 +89,20 @@ mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/obje
     [Array]::Sort($paths, [StringComparer]::Ordinal)
     [string[]]$lines = $paths | ForEach-Object { "$($entries[$_])  $_" }
     [IO.File]::WriteAllText((Join-Path $target 'manifest.sha256'), (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+} catch {
+    $primaryFailure = $_
 } finally {
-    Restore-BackendAfterBackup
+    try {
+        Restore-BackendAfterBackup
+    } catch {
+        $recoveryFailure = $_
+    }
 }
+if ($null -ne $primaryFailure) {
+    if ($null -ne $recoveryFailure) {
+        [Console]::Error.WriteLine("backend recovery after failed backup also failed: $($recoveryFailure.Exception.Message)")
+    }
+    throw $primaryFailure
+}
+if ($null -ne $recoveryFailure) { throw $recoveryFailure }
 Write-Output "backup completed: project=$ProjectName target=$target"

@@ -93,12 +93,23 @@ function Invoke-Compose {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
 }
 if (-not [string]::IsNullOrWhiteSpace((& docker compose -f $ComposeFile -p $ProjectName ps -aq))) { throw 'restore project already has containers' }
-$volumeKeys = @(& docker compose -f $ComposeFile -p $ProjectName config --volumes)
-if ($LASTEXITCODE -ne 0 -or $volumeKeys.Count -eq 0) { throw 'restore Compose file declares no volumes' }
-$expectedVolumes = foreach ($keyValue in $volumeKeys) {
-    $key = $keyValue.Trim()
-    if ($key -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') { throw 'restore Compose volume name is invalid' }
-    [pscustomobject]@{ Key = $key; Name = "${ProjectName}_$key" }
+$configLines = @(& docker compose -f $ComposeFile -p $ProjectName config --format json 2>$null)
+if ($LASTEXITCODE -ne 0 -or $configLines.Count -eq 0) { throw 'restore Compose volume configuration is invalid' }
+try {
+    $config = ($configLines -join "`n") | ConvertFrom-Json
+} catch {
+    throw 'restore Compose volume configuration is invalid'
+}
+$volumeProperties = @($config.volumes.PSObject.Properties)
+if ($null -eq $config.volumes -or $volumeProperties.Count -eq 0) { throw 'restore Compose file declares no volumes' }
+$resolvedNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$expectedVolumes = foreach ($property in $volumeProperties) {
+    $key = $property.Name
+    $name = $property.Value.name
+    if ($key -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$' -or $name -isnot [string] -or $name -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$' -or -not $resolvedNames.Add($name)) {
+        throw 'restore Compose volume configuration is invalid'
+    }
+    [pscustomobject]@{ Key = $key; Name = $name }
 }
 foreach ($volume in $expectedVolumes) {
     & docker volume inspect $volume.Name *> $null

@@ -85,18 +85,58 @@ cmp -s -- "$source_dir/bundle-version.txt" <(printf 'knowledge-platform-backup-v
 
 compose() { docker compose -f "$compose_file" -p "$project" "$@"; }
 [[ -z "$(compose ps -aq)" ]] || { echo 'restore project already has containers' >&2; exit 1; }
-mapfile -t restore_volume_keys < <(compose config --volumes)
-((${#restore_volume_keys[@]} > 0)) || { echo 'restore Compose file declares no volumes' >&2; exit 1; }
+parse_compose_volumes() {
+  local line key='' name='' in_volumes=false count=0
+  declare -A seen_keys=() seen_names=()
+  while IFS= read -r line; do
+    if ! $in_volumes; then
+      [[ "$line" != '  "volumes": {' ]] || in_volumes=true
+      continue
+    fi
+    if [[ -z "$key" ]]; then
+      if [[ "$line" == '  }' || "$line" == '  },' ]]; then
+        ((count > 0)) || return 1
+        return 0
+      fi
+      [[ "$line" =~ ^[[:space:]]{4}\"([a-zA-Z0-9][a-zA-Z0-9_.-]*)\":\ \{$ ]] || return 1
+      key="${BASH_REMATCH[1]}"
+      [[ -z "${seen_keys[$key]+present}" ]] || return 1
+      seen_keys["$key"]=1
+      continue
+    fi
+    if [[ -z "$name" ]]; then
+      [[ "$line" =~ ^[[:space:]]{6}\"name\":\ \"([a-zA-Z0-9][a-zA-Z0-9_.-]*)\",?$ ]] || return 1
+      name="${BASH_REMATCH[1]}"
+      [[ -z "${seen_names[$name]+present}" ]] || return 1
+      seen_names["$name"]=1
+      continue
+    fi
+    [[ "$line" == '    },' || "$line" == '    }' ]] || return 1
+    printf '%s\t%s\n' "$key" "$name"
+    key=''
+    name=''
+    ((count += 1))
+  done
+  return 1
+}
+if ! compose_config_json="$(compose config --format json 2>/dev/null)"; then
+  echo 'restore Compose volume configuration is invalid' >&2
+  exit 1
+fi
+if ! resolved_volumes="$(parse_compose_volumes <<<"$compose_config_json")"; then
+  echo 'restore Compose volume configuration is invalid' >&2
+  exit 1
+fi
 expected_volumes=()
-for key in "${restore_volume_keys[@]}"; do
-  [[ "$key" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || { echo 'restore Compose volume name is invalid' >&2; exit 1; }
-  volume="${project}_${key}"
-  expected_volumes+=("$volume:$key")
+while IFS=$'\t' read -r key volume; do
+  [[ -n "$key" && -n "$volume" ]] || { echo 'restore Compose volume configuration is invalid' >&2; exit 1; }
+  expected_volumes+=("$volume|$key")
   if docker volume inspect "$volume" >/dev/null 2>&1; then
     echo "restore project already has volume: $volume" >&2
     exit 1
   fi
-done
+done <<<"$resolved_volumes"
+((${#expected_volumes[@]} > 0)) || { echo 'restore Compose file declares no volumes' >&2; exit 1; }
 printf '{"project":"%s","source":"%s"}\n' "$project" "$source_dir" >"$target/restore-state.json"
 
 owned_volumes=()
@@ -104,8 +144,8 @@ refresh_owned_volumes() {
   local entry volume key labels
   owned_volumes=()
   for entry in "${expected_volumes[@]}"; do
-    volume="${entry%%:*}"
-    key="${entry#*:}"
+    volume="${entry%%|*}"
+    key="${entry#*|}"
     if docker volume inspect "$volume" >/dev/null 2>&1; then
       labels="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}|{{ index .Labels "com.docker.compose.volume" }}' "$volume")"
       [[ "$labels" == "$project|$key" ]] || return 1

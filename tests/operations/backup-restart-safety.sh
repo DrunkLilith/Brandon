@@ -20,12 +20,17 @@ joined=" $* "
 case "$joined" in
   *' ps -q postgres '*) printf 'postgres-id\n' ;;
   *' ps -q minio '*) printf 'minio-id\n' ;;
-  *' ps -q backend '*) printf 'backend-id\n' ;;
+  *' ps -q backend '*)
+    [[ "${FAKE_DOCKER_MODE:-}" != state-query-fail ]] || { echo 'BACKEND_STATE_QUERY_FAILURE' >&2; exit 42; }
+    printf 'backend-id\n'
+    ;;
   *' stop backend '*) ;;
   *' start backend '*)
     [[ "${FAKE_DOCKER_MODE:-}" != start-fail ]] || { echo 'simulated backend start failure' >&2; exit 1; }
+    [[ "${FAKE_DOCKER_MODE:-}" != primary-and-restart-fail ]] || { echo 'SECONDARY_RESTART_FAILURE' >&2; exit 1; }
     ;;
   *' run '*)
+    [[ "${FAKE_DOCKER_MODE:-}" != primary-and-restart-fail || "$joined" != *' postgres '* ]] || { echo 'PRIMARY_BACKUP_FAILURE' >&2; exit 17; }
     mount=''
     previous=''
     for argument in "$@"; do
@@ -73,4 +78,28 @@ run_failure_case() {
 
 run_failure_case start-fail 'backend failed to restart after backup'
 run_failure_case readiness-fail 'backend failed to return ready after backup'
+
+target="$root/primary-and-restart-fail"
+mkdir -- "$target"
+set +e
+output="$(PATH="$bin_dir:$PATH" FAKE_DOCKER_MODE=primary-and-restart-fail \
+  "$repo_root/scripts/backup.sh" --project kp-restart-test --target "$target" --compose-file "$compose_file" 2>&1)"
+status=$?
+set -e
+[[ $status -ne 0 && "$output" == *PRIMARY_BACKUP_FAILURE* && "$output" == *SECONDARY_RESTART_FAILURE* && "$output" != *'backup completed:'* ]] || {
+  printf 'backup did not preserve primary and recovery failures: status=%s output=%s\n' "$status" "$output" >&2
+  exit 1
+}
+
+target="$root/state-query-fail"
+mkdir -- "$target"
+set +e
+output="$(PATH="$bin_dir:$PATH" FAKE_DOCKER_MODE=state-query-fail \
+  "$repo_root/scripts/backup.sh" --project kp-restart-test --target "$target" --compose-file "$compose_file" 2>&1)"
+status=$?
+set -e
+[[ $status -ne 0 && "$output" == *'backend state could not be determined'* && "$output" != *BACKEND_STATE_QUERY_FAILURE* && "$output" != *'backup completed:'* && ! -e "$target/postgres/database.sql" && ! -e "$target/objects/object" ]] || {
+  printf 'backup did not fail closed on backend state query failure: status=%s output=%s\n' "$status" "$output" >&2
+  exit 1
+}
 printf 'backup restart safety passed\n'

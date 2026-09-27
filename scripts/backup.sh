@@ -37,7 +37,11 @@ mkdir -- "$target/postgres" "$target/objects" "$target/metadata"
 printf 'knowledge-platform-backup-v1\n' >"$target/bundle-version.txt"
 
 backend_was_running=false
-[[ -n "$(compose ps -q backend)" ]] && backend_was_running=true
+if ! backend_container="$(compose ps -q backend 2>/dev/null)"; then
+  echo 'backend state could not be determined' >&2
+  exit 1
+fi
+[[ -n "$backend_container" ]] && backend_was_running=true
 restart_backend() {
   $backend_was_running || return 0
   if ! compose start backend >/dev/null; then

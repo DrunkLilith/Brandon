@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import path from 'node:path'
 
 import {
   browserContextFor,
@@ -12,10 +15,12 @@ import {
 } from './support/fixtures'
 import { readRuntimeState } from './support/deployment'
 
-test('restricted subtree and related resources are non-enumerating across every surface', async () => {
+test('restricted subtree and related resources are non-enumerating across every surface', async ({ browser }) => {
   const workspace = await seedWorkspace()
   const marker = `restricted-${crypto.randomUUID()}`
   try {
+    const visibleTitle = `visible-${marker}`
+    await createPage(workspace.editor, workspace.spaceId, visibleTitle, `allowed ${marker}`)
     const restricted = await createPage(workspace.admin, workspace.spaceId, marker, `secret ${marker}`, { restricted: true })
     await pagePermission(workspace.admin, restricted.id, 'group', workspace.groupId, 'editor')
     const child = await createPage(workspace.editor, workspace.spaceId, `child ${marker}`, `child secret ${marker}`, { parentId: restricted.id })
@@ -53,13 +58,72 @@ test('restricted subtree and related resources are non-enumerating across every 
     }
     const search = await workspace.viewer.context.get(`/api/v1/search?q=${encodeURIComponent(marker)}`)
     expect(search.status()).toBe(200)
-    expect(await search.json()).toEqual([])
+    const searchResults = await search.json() as { pageId: string }[]
+    expect(searchResults.some((result) => result.pageId === restricted.id || result.pageId === child.id)).toBe(false)
+    expect(searchResults.some((result) => result.pageId !== restricted.id && result.pageId !== child.id)).toBe(true)
     const tree = await workspace.viewer.context.get(`/api/v1/pages?spaceId=${workspace.spaceId}`)
     expect((await tree.json() as { id: string }[]).some((page) => page.id === restricted.id || page.id === child.id)).toBe(false)
 
-    const raw = await workspace.viewer.context.get(`/knowledge/${attachment.id}`)
-    expect(raw.headers()['content-type']).toContain('text/html')
-    expect(await raw.text()).not.toContain(marker)
+    const viewerContext = await browserContextFor(browser, workspace.viewer)
+    try {
+      const viewerPage = await viewerContext.newPage()
+      await viewerPage.goto(`${readRuntimeState().baseUrl}/app/spaces/${workspace.spaceId}`)
+      await viewerPage.getByRole('button', { name: 'English' }).click()
+      await expect(viewerPage.getByRole('treeitem', { name: visibleTitle, exact: true })).toBeVisible()
+      await expect(viewerPage.getByRole('treeitem', { name: marker, exact: true })).toHaveCount(0)
+      await expect(viewerPage.getByRole('treeitem', { name: `child ${marker}`, exact: true })).toHaveCount(0)
+      await viewerPage.getByRole('button', { name: 'Search knowledge' }).click()
+      await viewerPage.getByLabel('Search query').fill(marker)
+      await viewerPage.getByRole('button', { name: 'Search', exact: true }).click()
+      await expect(viewerPage.getByRole('button', { name: visibleTitle, exact: true })).toBeVisible()
+      await expect(viewerPage.getByRole('button', { name: marker, exact: true })).toHaveCount(0)
+      await expect(viewerPage.getByRole('button', { name: `child ${marker}`, exact: true })).toHaveCount(0)
+    } finally {
+      await viewerContext.close()
+    }
+
+    const runtime = readRuntimeState()
+    const compose = (args: string[], encoding: BufferEncoding | null = 'utf8') => execFileSync('docker', [
+      'compose', '-f', 'deploy/compose.yaml', '-p', runtime.project, ...args,
+    ], { encoding, env: { ...process.env, ...runtime.composeEnvironment } })
+    const minioContainer = String(compose(['ps', '-q', 'minio'], 'utf8')).trim()
+    const minioPorts = execFileSync('docker', ['inspect', minioContainer, '--format', '{{json .NetworkSettings.Ports}}'], { encoding: 'utf8' })
+    expect((JSON.parse(minioPorts) as Record<string, unknown>)['9000/tcp'] ?? null).toBeNull()
+    expect(String(compose([
+      'exec', '-T', 'backend', 'curl', '--silent', '--output', '/dev/null', '--write-out', '%{http_code}',
+      'http://minio:9000/knowledge/',
+    ], 'utf8')).trim()).toBe('403')
+
+    const databaseBytes = compose([
+      'exec', '-T', 'postgres', '/bin/sh', '-ec',
+      'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=127.0.0.1 --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments',
+    ], null) as Buffer
+    const objectBytes = compose(['exec', '-T', 'minio', 'tar', '-C', '/data', '-cf', '-', '.'], null) as Buffer
+    for (const plaintext of [marker, `child ${marker}`, `private-${marker}.txt`]) {
+      expect(databaseBytes.includes(Buffer.from(plaintext))).toBe(false)
+      expect(objectBytes.includes(Buffer.from(plaintext))).toBe(false)
+    }
+
+    const backupDirectory = path.join(runtime.tempDirectory, 'plaintext-audit-backup')
+    mkdirSync(backupDirectory, { mode: 0o700 })
+    execFileSync('pwsh', [
+      '-NoProfile', '-File', 'scripts/backup.ps1',
+      '-ProjectName', runtime.project, '-TargetDirectory', backupDirectory,
+    ], { env: { ...process.env, ...runtime.composeEnvironment }, stdio: 'pipe' })
+    const files = (directory: string): string[] => readdirSync(directory).flatMap((name) => {
+      const candidate = path.join(directory, name)
+      return statSync(candidate).isDirectory() ? files(candidate) : [candidate]
+    })
+    try {
+      for (const file of files(backupDirectory)) {
+        const bytes = readFileSync(file)
+        for (const plaintext of [marker, `child ${marker}`, `private-${marker}.txt`]) {
+          expect(bytes.includes(Buffer.from(plaintext)), `${path.basename(file)} contains plaintext`).toBe(false)
+        }
+      }
+    } finally {
+      rmSync(backupDirectory, { recursive: true, force: true })
+    }
   } finally {
     await disposeWorkspace(workspace)
   }

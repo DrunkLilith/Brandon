@@ -9,6 +9,8 @@
     "e2e:typecheck": "tsc -p tests/e2e/tsconfig.json",
     "e2e:lint": "eslint tests/e2e playwright.config.ts --max-warnings 0",
     "e2e": "playwright test",
+    "licenses:check": "node scripts/check-npm-licenses.mjs",
+    "release:unit": "node --test tests/release/*.test.mjs && node --experimental-strip-types --test tests/e2e/support/deployment.test.ts",
     "test": "pnpm --recursive test",
     "typecheck": "pnpm --recursive typecheck"
   },

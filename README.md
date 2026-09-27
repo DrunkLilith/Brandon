@@ -62,6 +62,11 @@ Playwright browser and security suite. Every run creates collision-checked,
 randomly named projects and removes only the containers, volumes and temporary
 secret files that it created.
 
+Native Linux deployments keep each secret directory at `0700` while making the
+individual bind-mounted files `0644` for the non-root containers. Backup and
+restore helpers retain the invoking UID/GID and keep plaintext bundles private;
+see `docs/operations.md` for the required ownership and modes.
+
 Required local tools are Rust/Cargo 1.98.0, Node.js 24.19.0, pnpm 11.19.0,
 PowerShell 7, Docker with Compose, Git Bash on Windows (or Bash on Linux),
 `cargo-audit` 0.22.2, `cargo-deny` 0.20.2 and `gitleaks` 8.30.1. Install the

@@ -29,11 +29,21 @@ $userProfile = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile'
 if ($target -eq $root -or $target -eq $userProfile -or $target -eq $repoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar)) { throw 'backup target is an unsafe root directory' }
 if (Get-ChildItem -LiteralPath $target -Force | Select-Object -First 1) { throw 'backup target must be empty' }
 if (-not (Test-Path -LiteralPath $ComposeFile -PathType Leaf)) { throw "Compose file not found: $ComposeFile" }
+if ($IsLinux) {
+    & chmod 700 -- $target
+    if ($LASTEXITCODE -ne 0) { throw 'could not protect backup target permissions' }
+}
 
 function Invoke-Compose {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
     & docker compose -f $ComposeFile -p $ProjectName @Arguments
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
+}
+$nativeRun = @()
+if ($IsLinux) {
+    $hostUid = (& id -u).Trim(); $hostGid = (& id -g).Trim()
+    if ($LASTEXITCODE -ne 0 -or $hostUid -notmatch '^\d+$' -or $hostGid -notmatch '^\d+$') { throw 'could not resolve invoking Linux UID/GID' }
+    $nativeRun = @('--user', "${hostUid}:${hostGid}", '--tmpfs', "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$hostUid,gid=$hostGid")
 }
 
 $postgres = (& docker compose -f $ComposeFile -p $ProjectName ps -q postgres).Trim()
@@ -72,9 +82,10 @@ $recoveryFailure = $null
 try {
     if ($backendWasRunning) { Invoke-Compose stop backend | Out-Null }
     $postgresMount = "$(Join-Path $target 'postgres'):/backup"
-    Invoke-Compose run --rm -T --volume $postgresMount --entrypoint /bin/sh postgres -ec 'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
+    Invoke-Compose run --rm -T @nativeRun --volume $postgresMount --entrypoint /bin/sh postgres -ec 'umask 077; export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
     $bundleMount = "${target}:/backup"
-    Invoke-Compose run --rm -T --volume $bundleMount --entrypoint /bin/sh minio-init -ec @'
+    Invoke-Compose run --rm -T @nativeRun --volume $bundleMount --entrypoint /bin/sh minio-init -ec @'
+umask 077
 mc-credentials http://minio:9000 | mc alias import local >/dev/null
 mc mirror --overwrite local/knowledge /backup/objects
 mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/object-index.jsonl
@@ -89,6 +100,10 @@ mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/obje
     [Array]::Sort($paths, [StringComparer]::Ordinal)
     [string[]]$lines = $paths | ForEach-Object { "$($entries[$_])  $_" }
     [IO.File]::WriteAllText((Join-Path $target 'manifest.sha256'), (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+    if ($IsLinux) {
+        & chmod -R 'go-rwx' -- $target
+        if ($LASTEXITCODE -ne 0) { throw 'could not protect backup bundle permissions' }
+    }
 } catch {
     $primaryFailure = $_
 } finally {

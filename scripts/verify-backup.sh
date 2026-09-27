@@ -86,6 +86,8 @@ printf 'kp%s' "$suffix" >"$secret_directory/object_access_key"
 printf 'obj-%s' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" >"$secret_directory/object_secret_key"
 bootstrap_password="Bootstrap-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')!"
 printf '%s' "$bootstrap_password" >"$secret_directory/bootstrap_password"
+chmod 700 -- "$secret_directory"
+chmod 644 -- "$secret_directory"/*
 marker="backup-marker-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 attachment_marker="attachment-$marker"
 printf '%s\n' "$attachment_marker" >"$marker_file"

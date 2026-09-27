@@ -29,6 +29,8 @@ target="$(cd -- "$target" && pwd -P)"
 [[ "$target" != / && "$target" != "${HOME:-}" && "$target" != "$repo_root" ]] || { echo 'backup target is an unsafe root directory' >&2; exit 2; }
 [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || { echo 'backup target must be empty' >&2; exit 2; }
 [[ -f "$compose_file" ]] || { echo "Compose file not found: $compose_file" >&2; exit 2; }
+umask 077
+chmod 700 -- "$target"
 
 compose() { docker compose -f "$compose_file" -p "$project" "$@"; }
 [[ -n "$(compose ps -q postgres)" && -n "$(compose ps -q minio)" ]] || { echo 'source project PostgreSQL and MinIO must be running' >&2; exit 1; }
@@ -81,13 +83,18 @@ run_with_mount() {
     MSYS2_ARG_CONV_EXCL='*' docker compose -f "$compose_windows" -p "$project" run --rm -T \
       --volume "$host_windows:$container_path" "$@"
   else
-    compose run --rm -T --volume "$host_path:$container_path" "$@"
+    local host_uid host_gid
+    host_uid="$(id -u)"; host_gid="$(id -g)"
+    compose run --rm -T --user "$host_uid:$host_gid" \
+      --tmpfs "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$host_uid,gid=$host_gid" \
+      --volume "$host_path:$container_path" "$@"
   fi
 }
 
 run_with_mount "$target/postgres" /backup --entrypoint /bin/sh postgres -ec \
-  'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
+  'umask 077; export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
 run_with_mount "$target" /backup --entrypoint /bin/sh minio-init -ec '
+  umask 077
   mc-credentials http://minio:9000 | mc alias import local >/dev/null
   mc mirror --overwrite local/knowledge /backup/objects
   mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/object-index.jsonl
@@ -101,6 +108,7 @@ run_with_mount "$target" /backup --entrypoint /bin/sh minio-init -ec '
     printf '%s  %s\n' "$hash" "$relative"
   done < <(find . -type f ! -name manifest.sha256 -print0 | LC_ALL=C sort -z)
 ) >"$target/manifest.sha256"
+chmod -R go-rwx -- "$target"
 
 trap - EXIT
 restart_backend || exit 1

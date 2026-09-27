@@ -101,6 +101,11 @@ try {
     [IO.File]::WriteAllText((Join-Path $secretDirectory 'object_access_key'), $objectAccessKey)
     [IO.File]::WriteAllText((Join-Path $secretDirectory 'object_secret_key'), $objectSecretKey)
     [IO.File]::WriteAllText((Join-Path $secretDirectory 'bootstrap_password'), $bootstrapPassword)
+    if ($IsLinux) {
+        & chmod 700 -- $secretDirectory
+        & chmod 644 -- (Get-ChildItem -LiteralPath $secretDirectory -File).FullName
+        if ($LASTEXITCODE -ne 0) { throw 'could not establish native Linux secret permissions' }
+    }
     [IO.File]::WriteAllText($markerFile, $attachmentMarker, [Text.UTF8Encoding]::new($false))
 
     $env:KNOWLEDGE_MASTER_KEY_FILE = Join-Path $secretDirectory 'master_key'

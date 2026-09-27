@@ -35,6 +35,8 @@ safe_absolute_dir() {
 [[ "$storage_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || { echo 'storage timeout must be a positive integer' >&2; exit 2; }
 source_dir="$(safe_absolute_dir 'backup source' "$source_dir")"
 target="$(safe_absolute_dir 'restore target' "$target")"
+umask 077
+chmod 700 -- "$target"
 [[ "$source_dir" != "$target" ]] || { echo 'backup source and restore target must differ' >&2; exit 2; }
 [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || { echo 'restore target must be empty' >&2; exit 2; }
 [[ -f "$source_dir/manifest.sha256" ]] || { echo 'backup bundle is incomplete' >&2; exit 2; }
@@ -193,7 +195,11 @@ run_with_mount() {
     compose_windows="$(cygpath -w "$compose_file")"
     MSYS2_ARG_CONV_EXCL='*' docker compose -f "$compose_windows" -p "$project" run --rm -T --volume "$host_windows:$container_path" "$@"
   else
-    compose run --rm -T --volume "$host_path:$container_path" "$@"
+    local host_uid host_gid
+    host_uid="$(id -u)"; host_gid="$(id -g)"
+    compose run --rm -T --user "$host_uid:$host_gid" \
+      --tmpfs "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$host_uid,gid=$host_gid" \
+      --volume "$host_path:$container_path" "$@"
   fi
 }
 run_with_mount "$source_dir/postgres" /backup --entrypoint /bin/sh postgres -ec \

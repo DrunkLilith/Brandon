@@ -4,37 +4,7 @@ param()
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $repoRoot
-
-function Invoke-Native {
-    param(
-        [Parameter(Mandatory)][string]$Label,
-        [Parameter(Mandatory)][string]$FilePath,
-        [Parameter()][string[]]$ArgumentList = @()
-    )
-    Write-Host "==> $Label"
-    & $FilePath @ArgumentList
-    if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE" }
-}
-
-function Assert-ExactVersion {
-    param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string]$Expected,
-        [Parameter()][string[]]$Arguments = @('--version')
-    )
-    $command = Get-Command $Name -CommandType Application -ErrorAction Stop
-    $actual = (& $command.Source @Arguments 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw "$Name version probe failed" }
-    if ($actual -notmatch [Regex]::Escape($Expected)) {
-        throw "$Name $Expected is required; observed: $actual"
-    }
-}
-
-function Assert-CleanTree {
-    $status = (& git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
-    if ($status) { throw 'release gate requires a clean tracked and untracked worktree' }
-}
+. (Join-Path $PSScriptRoot 'release-check-utils.ps1')
 
 function Resolve-Bash {
     if ($IsWindows) {
@@ -105,7 +75,7 @@ try {
     Assert-CleanTree
     Assert-ExactVersion rustc '1.98.0'
     Assert-ExactVersion cargo '1.98.0'
-    Assert-ExactVersion node 'v24.19.0'
+    Assert-ExactVersion node '24.19.0'
     Assert-ExactVersion pnpm '11.19.0'
     Assert-ExactVersion cargo-audit '0.22.2'
     Assert-ExactVersion cargo-deny '0.20.2'
@@ -122,10 +92,15 @@ try {
     Invoke-Native 'Frontend production build' pnpm @('--filter', '@knowledge/web', 'build')
     Invoke-Native 'E2E lint' pnpm @('e2e:lint')
     Invoke-Native 'E2E typecheck' pnpm @('e2e:typecheck')
+    Invoke-Native 'Release policy unit regressions' pnpm @('release:unit')
+    Invoke-Native 'PowerShell release contract' pwsh @('-NoProfile', '-File', 'tests/operations/release-check-contract.ps1')
+    Invoke-Native 'Native Linux permission semantics' $bash @('tests/operations/linux-permissions.sh')
     Invoke-Native 'Generated OpenAPI drift' pnpm @('api:check')
     Invoke-Native 'Rust vulnerability audit' cargo @('audit')
     Invoke-Native 'Rust dependency, license and source policy' cargo @('deny', 'check', 'bans', 'licenses', 'sources', '--hide-inclusion-graph')
     Invoke-Native 'Production npm vulnerability audit' pnpm @('audit', '--prod')
+    Invoke-Native 'Production npm license policy' pnpm @('licenses:check')
+    Assert-FullGitHistory
     Invoke-Native 'Repository secret scan' gitleaks @('git', '--redact', '--no-banner', '--no-color', '--config', '.gitleaks.toml', '.')
 
     if ($IsWindows) {

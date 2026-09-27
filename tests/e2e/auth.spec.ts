@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 
 import { memberPassword } from './support/fixtures'
 import { readRuntimeState, writeRuntimeState } from './support/deployment'
@@ -16,7 +17,8 @@ async function invite(page: Page, email: string) {
 
 async function accept(page: Page, token: string, displayName: string) {
   const runtime = readRuntimeState()
-  await page.goto(`${runtime.baseUrl}/invite/${token}`)
+  const response = await page.goto(`${runtime.baseUrl}/invite/${token}`)
+  expect(response?.headers()['referrer-policy']).toBe('no-referrer')
   await page.getByRole('button', { name: 'English' }).click()
   await expect(page.getByRole('heading', { name: 'Accept invitation' })).toBeVisible()
   await expect(page.locator('main')).not.toContainText(token)
@@ -56,6 +58,12 @@ test('bootstrap admin provisions editor and viewer through the complete browser 
     const viewerToken = await invite(admin, viewerEmail)
     await accept(await editorContext.newPage(), editorToken, editorName)
     await accept(await viewerContext.newPage(), viewerToken, viewerName)
+    const webLogs = execFileSync('docker', [
+      'compose', '-f', 'deploy/compose.yaml', '-p', runtime.project,
+      'logs', '--no-color', 'web',
+    ], { encoding: 'utf8', env: { ...process.env, ...runtime.composeEnvironment } })
+    expect(webLogs).not.toContain(editorToken)
+    expect(webLogs).not.toContain(viewerToken)
 
     await admin.goto(`${runtime.baseUrl}/admin/groups`)
     await admin.getByLabel('Group name').fill(groupName)

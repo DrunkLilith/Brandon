@@ -22,8 +22,11 @@ sudo sh -c 'umask 077; openssl rand -base64 32 | tr -d "\r\n" > /srv/knowledge/s
 sudo sh -c 'umask 077; openssl rand -hex 32 > /srv/knowledge/secrets/database_password'
 sudo sh -c 'umask 077; printf "kpadmin%s" "$(openssl rand -hex 8)" > /srv/knowledge/secrets/object_access_key'
 sudo sh -c 'umask 077; openssl rand -hex 32 > /srv/knowledge/secrets/object_secret_key'
+sudo chmod 0644 /srv/knowledge/secrets/*
 cp deploy/.env.example deploy/.env
 ```
+
+Keep the directory `0700`; the files are deliberately `0644` so Docker can bind each file directly into the non-root service that needs it. The private parent directory prevents other host users from traversing to those files. Do not place the files in a shared or traversable directory.
 
 Edit `deploy/.env` to set the real HTTPS hostname and absolute secret-file paths. The `.env` file contains paths and public configuration only, never secret values. Then validate and build:
 
@@ -38,17 +41,19 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml -p knowledge run --
 Bootstrap exactly once without putting the password in shell history or process arguments:
 
 ```sh
-bootstrap_secret=$(mktemp /dev/shm/knowledge-bootstrap.XXXXXX)
-chmod 0600 "$bootstrap_secret"
-trap 'rm -f "$bootstrap_secret"' EXIT
+bootstrap_dir=$(mktemp -d /dev/shm/knowledge-bootstrap.XXXXXX)
+chmod 0700 "$bootstrap_dir"
+bootstrap_secret="$bootstrap_dir/password"
+trap 'rm -rf -- "$bootstrap_dir"' EXIT
 read -r -s -p 'Initial administrator password: ' bootstrap_password; printf '\n'
 printf '%s' "$bootstrap_password" >"$bootstrap_secret"
+chmod 0644 "$bootstrap_secret"
 unset bootstrap_password
 docker compose --env-file deploy/.env -f deploy/compose.yaml -p knowledge --profile tools run --rm -T \
   --volume "$bootstrap_secret:/run/secrets/bootstrap_password:ro" \
   --env KNOWLEDGE_BOOTSTRAP_PASSWORD_FILE=/run/secrets/bootstrap_password \
   bootstrap --email admin@example.com --workspace-name 'Knowledge' --display-name 'Administrator'
-rm -f "$bootstrap_secret"
+rm -rf -- "$bootstrap_dir"
 ```
 
 Start the application only after both explicit one-shot commands succeed:
@@ -98,6 +103,8 @@ install -d -m 0700 /srv/knowledge-backups/2026-09-27
 ```
 
 The bundle contains `postgres/database.sql`, encrypted objects under `objects/`, `metadata/object-index.jsonl`, `bundle-version.txt`, and an ordinal path-sorted `manifest.sha256`. It never contains or derives the master key. Store the master key separately. The manifest detects corruption and accidental replacement, but it is not a signature; protect or sign the bundle through the backup system and keep off-site copies.
+
+On native Linux, run backup and restore as the account that owns the private `0700` bundle directory. The scripts run bind-mounted helper containers with that account's UID/GID and enforce no group/other permissions on the resulting plaintext database dump and metadata. Do not relax the bundle directory to make a container write to it.
 
 If the backend was running, backup stops it for the database/object snapshot, restarts it, and waits boundedly for `/ready` through the container health check. A restart failure or readiness timeout makes the backup command fail even when the bundle files were written; investigate the backend before treating that bundle as an accepted backup.
 

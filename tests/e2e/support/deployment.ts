@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import os from 'node:os'
@@ -14,11 +14,20 @@ export interface RuntimeState {
   adminPassword: string
   composeEnvironment: Record<string, string>
   expectedVolumes: string[]
+  ownershipVolume?: string
+  ownershipToken?: string
+  dockerExecutable?: string
+  dockerArguments?: string[]
   seededUsers?: {
     admin: SeededUser
     editor: SeededUser
     viewer: SeededUser
   }
+}
+
+export interface StartDeploymentOptions {
+  dockerExecutable?: string
+  dockerArguments?: string[]
 }
 
 export interface SeededUser {
@@ -39,18 +48,32 @@ function composeFile() {
 }
 
 function compose(state: RuntimeState, args: string[], inherit = true) {
-  const output = execFileSync('docker', ['compose', '-f', composeFile(), '-p', state.project, ...args], {
+  const result = spawnSync(state.dockerExecutable ?? 'docker', [
+    ...(state.dockerArguments ?? []), 'compose', '-f', composeFile(), '-p', state.project, ...args,
+  ], {
     cwd: repoRoot(),
     env: { ...process.env, ...state.composeEnvironment },
     encoding: 'utf8',
-    stdio: inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 30 * 60_000,
   })
-  return output ?? ''
+  if (result.error) throw new Error(`docker compose could not start: ${result.error.name}`)
+  if (result.status !== 0) {
+    const nativeError = result.stderr ?? ''
+    if (/address already in use|port is already allocated|bind for .* failed/i.test(nativeError)) {
+      throw new Error('docker compose failed: host port is already allocated')
+    }
+    throw new Error(`docker compose failed with exit code ${result.status ?? 'unknown'}`)
+  }
+  if (inherit) {
+    if (result.stdout) process.stdout.write(result.stdout)
+    if (result.stderr) process.stderr.write(result.stderr)
+  }
+  return result.stdout ?? ''
 }
 
-function docker(args: string[]) {
-  return execFileSync('docker', args, {
+function docker(state: RuntimeState, args: string[]) {
+  return execFileSync(state.dockerExecutable ?? 'docker', [...(state.dockerArguments ?? []), ...args], {
     cwd: repoRoot(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -77,22 +100,37 @@ async function freePort() {
 
 function writeSecret(directory: string, name: string, value: string) {
   const target = path.join(directory, name)
-  writeFileSync(target, value, { encoding: 'utf8', mode: 0o600 })
-  chmodSync(target, 0o600)
+  writeFileSync(target, value, { encoding: 'utf8', mode: 0o644 })
+  chmodSync(target, 0o644)
   return target
 }
 
 function assertUnused(state: RuntimeState) {
-  const containers = docker(['ps', '-a', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.ID}}']).trim()
+  const containers = docker(state, ['ps', '-a', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.ID}}']).trim()
   if (containers) throw new Error(`refusing to reuse Compose project ${state.project}`)
-  for (const volume of state.expectedVolumes) {
+  for (const volume of [...state.expectedVolumes, state.ownershipVolume!]) {
     try {
-      docker(['volume', 'inspect', volume])
+      docker(state, ['volume', 'inspect', volume])
       throw new Error(`refusing to reuse Compose volume ${volume}`)
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('refusing')) throw error
     }
   }
+}
+
+function claimOwnership(state: RuntimeState) {
+  if (!state.ownershipVolume || !state.ownershipToken) throw new Error('missing E2E ownership marker')
+  docker(state, ['volume', 'create', '--label', `knowledge-platform.e2e-owner=${state.ownershipToken}`, state.ownershipVolume])
+  const actual = docker(state, [
+    'volume', 'inspect', '--format', '{{ index .Labels "knowledge-platform.e2e-owner" }}', state.ownershipVolume,
+  ]).trim()
+  if (actual !== state.ownershipToken) throw new Error('could not prove E2E resource ownership')
+}
+
+function cleanupTempDirectory(state: RuntimeState) {
+  const expected = path.join(os.tmpdir(), state.project)
+  if (path.resolve(state.tempDirectory) !== path.resolve(expected)) throw new Error('refusing cleanup outside the E2E temporary root')
+  rmSync(state.tempDirectory, { recursive: true, force: true })
 }
 
 async function waitUntilReady(baseUrl: string) {
@@ -111,7 +149,7 @@ async function waitUntilReady(baseUrl: string) {
   throw new Error(`production deployment did not become ready: ${String(lastFailure)}`)
 }
 
-async function startDeploymentAttempt(): Promise<RuntimeState> {
+async function startDeploymentAttempt(options: StartDeploymentOptions): Promise<RuntimeState> {
   const suffix = randomBytes(6).toString('hex')
   const project = `kp-e2e-${suffix}`
   if (!projectPattern.test(project)) throw new Error('generated unsafe E2E project name')
@@ -143,6 +181,10 @@ async function startDeploymentAttempt(): Promise<RuntimeState> {
     adminPassword,
     composeEnvironment,
     expectedVolumes: ['postgres_data', 'minio_data', 'caddy_data', 'caddy_config'].map((name) => `${project}_${name}`),
+    ownershipVolume: `${project}_e2e_owner`,
+    ownershipToken: randomBytes(24).toString('hex'),
+    ...(options.dockerExecutable ? { dockerExecutable: options.dockerExecutable } : {}),
+    ...(options.dockerArguments ? { dockerArguments: options.dockerArguments } : {}),
   }
   const stateFile = path.join(tempDirectory, 'runtime.json')
   writeFileSync(stateFile, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 })
@@ -151,6 +193,13 @@ async function startDeploymentAttempt(): Promise<RuntimeState> {
 
   try {
     assertUnused(state)
+  } catch (error) {
+    cleanupTempDirectory(state)
+    throw error
+  }
+
+  try {
+    claimOwnership(state)
     compose(state, ['config', '--quiet'])
     compose(state, ['build', 'backend', 'web', 'minio', 'minio-init'])
     compose(state, ['up', '--detach', 'postgres', 'minio'])
@@ -172,14 +221,14 @@ async function startDeploymentAttempt(): Promise<RuntimeState> {
   }
 }
 
-export async function startDeployment(): Promise<RuntimeState> {
+export async function startDeployment(options: StartDeploymentOptions = {}): Promise<RuntimeState> {
   let lastError: unknown
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      return await startDeploymentAttempt()
+      return await startDeploymentAttempt(options)
     } catch (error) {
       lastError = error
-      if (!String(error).includes('address already in use') || attempt === 3) throw error
+      if (!String(error).includes('host port is already allocated') || attempt === 3) throw error
     }
   }
   throw lastError
@@ -208,11 +257,23 @@ export function writeRuntimeState(state: RuntimeState) {
 
 export function cleanupDeployment(state: RuntimeState) {
   if (!projectPattern.test(state.project)) throw new Error('refusing cleanup for unsafe project name')
+  let ownsResources = false
   try {
-    compose(state, ['down', '--remove-orphans', '--volumes'], false)
+    if (state.ownershipVolume && state.ownershipToken) {
+      const actual = docker(state, [
+        'volume', 'inspect', '--format', '{{ index .Labels "knowledge-platform.e2e-owner" }}', state.ownershipVolume,
+      ]).trim()
+      ownsResources = actual === state.ownershipToken
+    }
+  } catch {
+    ownsResources = false
+  }
+  try {
+    if (ownsResources) {
+      compose(state, ['down', '--remove-orphans', '--volumes'], false)
+      docker(state, ['volume', 'rm', '--force', state.ownershipVolume!])
+    }
   } finally {
-    const expected = path.join(os.tmpdir(), state.project)
-    if (path.resolve(state.tempDirectory) !== path.resolve(expected)) throw new Error('refusing cleanup outside the E2E temporary root')
-    rmSync(state.tempDirectory, { recursive: true, force: true })
+    cleanupTempDirectory(state)
   }
 }

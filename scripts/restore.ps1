@@ -41,6 +41,10 @@ $source = Resolve-SafeDirectory 'backup source' $SourceDirectory
 $target = Resolve-SafeDirectory 'restore target' $TargetDirectory
 if ($source -eq $target) { throw 'backup source and restore target must differ' }
 if (Get-ChildItem -LiteralPath $target -Force | Select-Object -First 1) { throw 'restore target must be empty' }
+if ($IsLinux) {
+    & chmod 700 -- $target
+    if ($LASTEXITCODE -ne 0) { throw 'could not protect restore target permissions' }
+}
 if (-not (Test-Path -LiteralPath (Join-Path $source 'manifest.sha256') -PathType Leaf)) { throw 'backup bundle is incomplete' }
 
 $listed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -91,6 +95,12 @@ function Invoke-Compose {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
     & docker compose -f $ComposeFile -p $ProjectName @Arguments
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
+}
+$nativeRun = @()
+if ($IsLinux) {
+    $hostUid = (& id -u).Trim(); $hostGid = (& id -g).Trim()
+    if ($LASTEXITCODE -ne 0 -or $hostUid -notmatch '^\d+$' -or $hostGid -notmatch '^\d+$') { throw 'could not resolve invoking Linux UID/GID' }
+    $nativeRun = @('--user', "${hostUid}:${hostGid}", '--tmpfs', "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$hostUid,gid=$hostGid")
 }
 if (-not [string]::IsNullOrWhiteSpace((& docker compose -f $ComposeFile -p $ProjectName ps -aq))) { throw 'restore project already has containers' }
 $configLines = @(& docker compose -f $ComposeFile -p $ProjectName config --format json 2>$null)
@@ -147,9 +157,9 @@ try {
     if ($postgresHealth -ne 'healthy' -or $minioHealth -ne 'healthy') { throw 'restore storage did not become healthy' }
     Invoke-Compose run --rm -T minio-init
     $postgresMount = "$(Join-Path $source 'postgres'):/backup"
-    Invoke-Compose run --rm -T --volume $postgresMount --entrypoint /bin/sh postgres -ec 'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --host=postgres --username=knowledge --dbname=knowledge --file=/backup/database.sql'
+    Invoke-Compose run --rm -T @nativeRun --volume $postgresMount --entrypoint /bin/sh postgres -ec 'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --host=postgres --username=knowledge --dbname=knowledge --file=/backup/database.sql'
     $objectsMount = "$(Join-Path $source 'objects'):/backup-objects"
-    Invoke-Compose run --rm -T --volume $objectsMount --entrypoint /bin/sh minio-init -ec @'
+    Invoke-Compose run --rm -T @nativeRun --volume $objectsMount --entrypoint /bin/sh minio-init -ec @'
 mc-credentials http://minio:9000 | mc alias import local >/dev/null
 mc mirror --overwrite /backup-objects local/knowledge
 '@

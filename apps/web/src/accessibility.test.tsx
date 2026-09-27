@@ -58,6 +58,17 @@ function SimultaneousDialogHarness() {
   </I18nProvider>
 }
 
+function ReplacingDialogHarness() {
+  const [dialog, setDialog] = useState<'a' | 'b' | null>('a')
+  if (dialog === 'a') return <I18nProvider><ModalDialog key="a" title="Replacement A" onCancel={() => setDialog(null)}>
+    <button onClick={() => setDialog('b')}>Replace with B</button>
+  </ModalDialog></I18nProvider>
+  if (dialog === 'b') return <I18nProvider><ModalDialog key="b" title="Replacement B" onCancel={() => setDialog(null)}>
+    <button>B first</button>
+  </ModalDialog></I18nProvider>
+  return null
+}
+
 describe('runtime localization', () => {
   it('updates mounted UI immediately and survives a failed preference write', async () => {
     localStorage.setItem('knowledge.locale', 'corrupt')
@@ -291,6 +302,85 @@ describe('resilient accessible states', () => {
       expect(probe).toHaveAttribute('inert', 'kept')
       expect(probe).toHaveAttribute('aria-hidden', 'false')
       expect(listenerState()).toEqual([
+        { type: 'focusin', active: 0, peak: 1 },
+        { type: 'keydown', active: 0, peak: 1 },
+      ])
+    },
+  )
+
+  it.each([
+    ['without StrictMode', false],
+    ['with StrictMode', true],
+  ] as const)(
+    'restores the external opener after an atomic keyed A to B replacement %s',
+    async (_label, strict) => {
+      const probe = document.createElement('aside')
+      probe.dataset.modalBackgroundProbe = 'true'
+      probe.setAttribute('inert', 'kept')
+      probe.setAttribute('aria-hidden', 'false')
+      document.body.append(probe)
+      const opener = document.createElement('button')
+      opener.dataset.modalOpenerProbe = 'true'
+      opener.textContent = 'Replacement opener'
+      document.body.append(opener)
+      opener.focus()
+      expect(opener).toHaveFocus()
+
+      const backgroundFocus: EventTarget[] = []
+      const observeFocus = (event: FocusEvent) => {
+        if (event.target === opener || event.target === probe || event.target === document.body) {
+          backgroundFocus.push(event.target)
+        }
+      }
+      document.addEventListener('focusin', observeFocus)
+      const addListener = vi.spyOn(document, 'addEventListener')
+      const removeListener = vi.spyOn(document, 'removeEventListener')
+      const listenerState = () => {
+        const events = [
+          ...addListener.mock.calls.map((args, index) => ({ type: args[0], delta: 1, order: addListener.mock.invocationCallOrder[index] })),
+          ...removeListener.mock.calls.map((args, index) => ({ type: args[0], delta: -1, order: removeListener.mock.invocationCallOrder[index] })),
+        ].filter((event) => event.type === 'focusin' || event.type === 'keydown')
+          .sort((left, right) => left.order - right.order)
+        return (['focusin', 'keydown'] as const).map((type) => {
+          let active = 0, peak = 0
+          for (const event of events) {
+            if (event.type !== type) continue
+            active += event.delta
+            peak = Math.max(peak, active)
+          }
+          return { type, active, peak }
+        })
+      }
+
+      const view = strict
+        ? <StrictMode><ReplacingDialogHarness /></StrictMode>
+        : <ReplacingDialogHarness />
+      const user = userEvent.setup()
+      render(view)
+      await user.click(screen.getByRole('button', { name: 'Replace with B' }))
+
+      expect(screen.queryByRole('dialog', { name: 'Replacement A' })).not.toBeInTheDocument()
+      const dialogB = screen.getByRole('dialog', { name: 'Replacement B' })
+      expect(screen.getByRole('button', { name: 'B first' })).toHaveFocus()
+      expect(backgroundFocus).toEqual([])
+      expect(probe).toHaveAttribute('inert', '')
+      expect(probe).toHaveAttribute('aria-hidden', 'true')
+      expect(listenerState()).toEqual([
+        { type: 'focusin', active: 1, peak: 1 },
+        { type: 'keydown', active: 1, peak: 1 },
+      ])
+
+      fireEvent.keyDown(dialogB, { key: 'Escape' })
+      const finalListeners = listenerState()
+      addListener.mockRestore()
+      removeListener.mockRestore()
+      document.removeEventListener('focusin', observeFocus)
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(opener).toHaveFocus()
+      expect(probe).toHaveAttribute('inert', 'kept')
+      expect(probe).toHaveAttribute('aria-hidden', 'false')
+      expect(finalListeners).toEqual([
         { type: 'focusin', active: 0, peak: 1 },
         { type: 'keydown', active: 0, peak: 1 },
       ])

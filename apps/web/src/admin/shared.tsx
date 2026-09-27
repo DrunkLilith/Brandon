@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react'
 
 import { ProblemAlert } from '../components/problem-alert'
 import { useI18n } from '../i18n'
@@ -37,7 +37,9 @@ type ModalEntry = {
 }
 
 const modalStack: ModalEntry[] = []
+const pendingHandoffs = new Set<symbol>()
 let backgroundAttributes: AttributeSnapshot[] = []
+let backgroundOwned = false
 
 const snapshotAttributes = (element: HTMLElement): AttributeSnapshot => ({
   element,
@@ -117,6 +119,7 @@ const acquireBackground = () => {
   })
   backgroundAttributes = [...backgrounds].map(snapshotAttributes)
   backgrounds.forEach(isolate)
+  backgroundOwned = true
   document.addEventListener('focusin', onDocumentFocusIn, true)
   document.addEventListener('keydown', onDocumentKeyDown, true)
 }
@@ -126,12 +129,15 @@ const releaseBackground = () => {
   document.removeEventListener('keydown', onDocumentKeyDown, true)
   backgroundAttributes.forEach(restore)
   backgroundAttributes = []
+  backgroundOwned = false
 }
 
-const registerModal = (entry: ModalEntry) => {
+const registerModal = (entry: ModalEntry, handoff: symbol) => {
+  pendingHandoffs.delete(handoff)
   const previous = topModal()
-  if (!previous) acquireBackground()
-  else isolate(previous.backdrop)
+  if (!previous) {
+    if (!backgroundOwned) acquireBackground()
+  } else isolate(previous.backdrop)
   modalStack.push(entry)
   focusModal(entry)
   return () => {
@@ -142,11 +148,13 @@ const registerModal = (entry: ModalEntry) => {
     restore(entry.backdropAttributes)
     const active = topModal()
     if (!active) {
-      releaseBackground()
-      const target = entry.opener?.isConnected ? entry.opener
-        : entry.fallbackOpener?.isConnected ? entry.fallbackOpener
-          : null
-      target?.focus()
+      if (!entry.dialog.isConnected && pendingHandoffs.size === 0) {
+        releaseBackground()
+        const target = entry.opener?.isConnected ? entry.opener
+          : entry.fallbackOpener?.isConnected ? entry.fallbackOpener
+            : null
+        target?.focus()
+      }
     } else if (wasTop) {
       restore(active.backdropAttributes)
       if (entry.opener?.isConnected && active.dialog.contains(entry.opener)) entry.opener.focus()
@@ -155,7 +163,7 @@ const registerModal = (entry: ModalEntry) => {
   }
 }
 
-export const hasOpenModal = () => modalStack.length > 0
+export const hasOpenModal = () => modalStack.length > 0 || backgroundOwned
 
 export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
   title: string
@@ -166,23 +174,30 @@ export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
   const lifetimeOpener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  const lifetimeRootFallback = useRef(topModal()?.fallbackOpener ?? topModal()?.opener ?? lifetimeOpener.current)
+  const handoff = useRef(Symbol('modal-handoff'))
   const cancel = useRef(onCancel)
   cancel.current = onCancel
+  useLayoutEffect(() => {
+    if (topModal()) pendingHandoffs.add(handoff.current)
+    return () => {
+      pendingHandoffs.delete(handoff.current)
+    }
+  }, [])
   useEffect(() => {
     const opener = lifetimeOpener.current
     const dialog = dialogRef.current
     const backdrop = dialog?.closest<HTMLElement>('.modal-backdrop')
     if (!dialog || !backdrop) return
-    const parent = topModal()
     return registerModal({
       dialog,
       backdrop,
       backdropAttributes: snapshotAttributes(backdrop),
       opener,
-      fallbackOpener: parent?.fallbackOpener ?? parent?.opener ?? opener,
+      fallbackOpener: lifetimeRootFallback.current,
       initialFocus: () => initialFocusRef?.current ?? null,
       cancel: () => cancel.current(),
-    })
+    }, handoff.current)
   }, [initialFocusRef])
   return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
     <h2 id={titleId}>{title}</h2>

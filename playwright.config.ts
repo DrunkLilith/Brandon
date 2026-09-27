@@ -4,6 +4,7 @@ import { artifactDirectory } from './tests/e2e/support/artifacts'
 
 export default defineConfig({
   testDir: './tests/e2e',
+  testIgnore: '**/support/**/*.test.ts',
   fullyParallel: false,
   workers: 1,
   timeout: 120_000,

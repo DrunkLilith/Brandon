@@ -40,6 +40,48 @@ it('does not report an authoritative external replacement as a new user edit', a
   expect(change).not.toHaveBeenCalled()
 })
 
+it.each([false, true])(
+  'refreshes mounted editability when readOnly changes from %s without editing the document',
+  async (initial) => {
+    const editors = vi.spyOn(Editor, 'make')
+    const onChange = vi.fn(),
+      onDirty = vi.fn(),
+      onUnmount = vi.fn()
+    const props = { value: 'unchanged', onChange, onDirty, onUnmount }
+    const rendered = render(<MilkdownAdapter {...props} readOnly={initial} />)
+    await waitFor(() =>
+      expect(editors.mock.results[0]?.value.status).toBe(EditorStatus.Created),
+    )
+    const instance: Editor = editors.mock.results[0].value
+    const view = instance.action((ctx) => ctx.get(editorViewCtx))
+    const before = view.state
+    const serialize = instance.action((ctx) => {
+      const observed = vi.fn(ctx.get(serializerCtx))
+      ctx.set(serializerCtx, observed)
+      return observed
+    })
+    const persist = vi.spyOn(Storage.prototype, 'setItem')
+    expect(view.editable).toBe(!initial)
+    expect(view.dom).toHaveAttribute('contenteditable', String(!initial))
+    vi.useFakeTimers()
+    rendered.rerender(<MilkdownAdapter {...props} readOnly={!initial} />)
+    // The live callback already sees the new prop; the view must also refresh
+    // its cached flag and DOM, without waiting for a user transaction.
+    expect(view.props.editable?.(view.state)).toBe(initial)
+    expect.soft(view.editable).toBe(initial)
+    expect.soft(view.dom).toHaveAttribute('contenteditable', String(initial))
+    expect(view.state).toBe(before)
+    expect(view.state.doc.textContent).toBe('unchanged')
+    expect(view.state.selection).toBe(before.selection)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(serialize).not.toHaveBeenCalled()
+    expect(persist).not.toHaveBeenCalled()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onDirty).not.toHaveBeenCalled()
+    expect(onUnmount).not.toHaveBeenCalled()
+  },
+)
+
 it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
   'preserves the latest real rich-editor transaction on immediate %s',
   async (boundary) => {
@@ -63,6 +105,7 @@ it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
     })
     cache.setQueryData(pageKey('p'), page)
     let submitted: { markdown: string } | undefined
+    let finishSave!: () => void
     apiClient.invalidateCsrf()
     vi.stubGlobal('fetch', async (input: Request | string) => {
       const request =
@@ -70,6 +113,17 @@ it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
           ? new Request(new URL(input, location.origin))
           : input
       const path = new URL(request.url).pathname
+      if (boundary === 'save' && request.method === 'PATCH') {
+        submitted = await request.json()
+        return new Promise<Response>((resolve) => {
+          finishSave = () =>
+            resolve(
+              new Response(JSON.stringify({ id: 'p', version: 2 }), {
+                headers: { 'content-type': 'application/json' },
+              }),
+            )
+        })
+      }
       const body = path.endsWith('/csrf')
         ? { token: 'csrf' }
         : request.method === 'PATCH'
@@ -122,6 +176,21 @@ it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
     } else if (boundary === 'save') {
       fireEvent.click(screen.getByRole('button', { name: 'Сохранить версию' }))
       await waitFor(() => expect(submitted?.markdown).toBe('old NEW\n'))
+      expect(
+        screen.getByRole('button', { name: 'Сохранить версию' }),
+      ).toBeDisabled()
+      expect(
+        screen.getByRole('textbox', { name: 'Визуальный Markdown' }),
+      ).toHaveAttribute('contenteditable', 'false')
+      finishSave()
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Сохранить версию' }),
+        ).toBeEnabled(),
+      )
+      expect(
+        screen.getByRole('textbox', { name: 'Визуальный Markdown' }),
+      ).toHaveAttribute('contenteditable', 'true')
     } else {
       if (boundary === 'navigation')
         fireEvent.click(screen.getByRole('link', { name: 'Leave page' }))
@@ -164,6 +233,14 @@ it('coalesces a burst of real transactions without synchronous serialization or 
   expect(serialize).not.toHaveBeenCalled()
   expect(change).not.toHaveBeenCalled()
   expect(persist).not.toHaveBeenCalled()
+  const state = instance.action((ctx) => ctx.get(editorViewCtx).state)
+  rendered.rerender(<MilkdownAdapter value="old" onChange={change} readOnly />)
+  expect(
+    screen.getByRole('textbox', { name: 'Визуальный Markdown' }),
+  ).toHaveAttribute('contenteditable', 'false')
+  expect(instance.action((ctx) => ctx.get(editorViewCtx).state)).toBe(state)
+  expect(serialize).not.toHaveBeenCalled()
+  expect(change).not.toHaveBeenCalled()
   act(() => vi.advanceTimersByTime(1000))
   expect(serialize).toHaveBeenCalledTimes(1)
   expect(change).toHaveBeenCalledExactlyOnceWith('old A B C\n')

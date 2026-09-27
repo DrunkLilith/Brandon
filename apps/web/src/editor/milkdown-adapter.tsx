@@ -11,6 +11,7 @@ import { replaceAll } from '@milkdown/utils'
 import {
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type Ref,
@@ -148,6 +149,14 @@ export function MilkdownAdapter({
       void instance.destroy()
     }
   }, [])
+  useLayoutEffect(() => {
+    // ProseMirror caches editable and its DOM attribute on view updates.
+    // Refresh the same state before paint; do not dispatch a document edit.
+    editor.current?.action((ctx) => {
+      const view = ctx.get(editorViewCtx)
+      view.updateState(view.state)
+    })
+  }, [readOnly])
   useEffect(() => {
     if (editor.current && value !== emitted.current) {
       replaceValue(editor.current, value)

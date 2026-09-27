@@ -12,6 +12,7 @@ import { I18nProvider, LanguageSwitch, useI18n } from './i18n'
 
 afterEach(() => {
   cleanup()
+  document.querySelectorAll('[data-modal-background-probe]').forEach((element) => element.remove())
   localStorage.clear()
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   document.documentElement.lang = 'en'
@@ -22,6 +23,25 @@ function LocaleProbe() {
   const { messages, locale } = useI18n()
   const [draft, setDraft] = useState('')
   return <><LanguageSwitch /><p data-testid="locale">{locale}</p><p>{messages.login.title}</p><label>{messages.workspace.raw}<textarea value={draft} onChange={(event) => setDraft(event.target.value)} /></label></>
+}
+
+function StackedDialogHarness({ onCancelA, onCancelB }: {
+  onCancelA(): void
+  onCancelB(): void
+}) {
+  const [aOpen, setAOpen] = useState(false)
+  const [bOpen, setBOpen] = useState(false)
+  return <I18nProvider>
+    <button onClick={() => setAOpen(true)}>Open A</button>
+    {aOpen && <ModalDialog title="Dialog A" onCancel={() => { onCancelA(); setAOpen(false) }}>
+      <button onClick={() => setBOpen(true)}>Open B</button>
+      <button>A last</button>
+    </ModalDialog>}
+    {bOpen && <ModalDialog title="Dialog B" onCancel={() => { onCancelB(); setBOpen(false) }}>
+      <button>B first</button>
+      <button onClick={() => setAOpen(false)}>Unmount A first</button>
+    </ModalDialog>}
+  </I18nProvider>
 }
 
 describe('runtime localization', () => {
@@ -117,5 +137,83 @@ describe('resilient accessible states', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(opener).toHaveFocus()
     expect(englishSwitch.closest('div')).not.toHaveAttribute('inert')
+  })
+
+  it('gives stacked dialog ownership to the top entry and restores exact background state top-first', async () => {
+    const probe = document.createElement('aside')
+    probe.dataset.modalBackgroundProbe = 'true'
+    probe.setAttribute('inert', 'kept')
+    probe.setAttribute('aria-hidden', 'false')
+    document.body.append(probe)
+    const cancelA = vi.fn(), cancelB = vi.fn()
+    const user = userEvent.setup()
+    render(<StrictMode><StackedDialogHarness onCancelA={cancelA} onCancelB={cancelB} /></StrictMode>)
+    const opener = screen.getByRole('button', { name: 'Open A' })
+    await user.click(opener)
+    const openB = screen.getByRole('button', { name: 'Open B' })
+    await user.click(openB)
+
+    const dialogA = screen.getByRole('dialog', { name: 'Dialog A', hidden: true })
+    const dialogB = screen.getByRole('dialog', { name: 'Dialog B' })
+    const firstB = screen.getByRole('button', { name: 'B first' })
+    expect(firstB).toHaveFocus()
+    expect(dialogA.closest('.modal-backdrop')).toHaveAttribute('inert')
+    expect(dialogA.closest('.modal-backdrop')).toHaveAttribute('aria-hidden', 'true')
+    expect(dialogB.closest('.modal-backdrop')).not.toHaveAttribute('inert')
+    expect(probe).toHaveAttribute('aria-hidden', 'true')
+
+    await user.tab({ shift: true })
+    expect(screen.getByRole('button', { name: 'Unmount A first' })).toHaveFocus()
+    await user.tab()
+    expect(firstB).toHaveFocus()
+
+    openB.focus()
+    fireEvent.focusIn(openB)
+    expect(firstB).toHaveFocus()
+    fireEvent.keyDown(firstB, { key: 'Escape' })
+    expect(cancelB).toHaveBeenCalledOnce()
+    expect(cancelA).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog', { name: 'Dialog B' })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Dialog A' })).toBeVisible()
+    expect(openB).toHaveFocus()
+    expect(probe).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.keyDown(openB, { key: 'Escape' })
+    expect(cancelA).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+    expect(probe).toHaveAttribute('inert', 'kept')
+    expect(probe).toHaveAttribute('aria-hidden', 'false')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(cancelA).toHaveBeenCalledOnce()
+    expect(cancelB).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the top dialog and background isolated when a lower dialog unmounts first', async () => {
+    const probe = document.createElement('aside')
+    probe.dataset.modalBackgroundProbe = 'true'
+    document.body.append(probe)
+    const cancelA = vi.fn(), cancelB = vi.fn()
+    const user = userEvent.setup()
+    render(<StrictMode><StackedDialogHarness onCancelA={cancelA} onCancelB={cancelB} /></StrictMode>)
+    const opener = screen.getByRole('button', { name: 'Open A' })
+    await user.click(opener)
+    await user.click(screen.getByRole('button', { name: 'Open B' }))
+    await user.click(screen.getByRole('button', { name: 'Unmount A first' }))
+
+    expect(screen.queryByRole('dialog', { name: 'Dialog A', hidden: true })).not.toBeInTheDocument()
+    const dialogB = screen.getByRole('dialog', { name: 'Dialog B' })
+    expect(dialogB).toBeVisible()
+    expect(probe).toHaveAttribute('inert')
+    expect(probe).toHaveAttribute('aria-hidden', 'true')
+
+    fireEvent.keyDown(dialogB, { key: 'Escape' })
+    expect(cancelA).not.toHaveBeenCalled()
+    expect(cancelB).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(probe).not.toHaveAttribute('inert')
+    expect(probe).not.toHaveAttribute('aria-hidden')
+    expect(opener).toHaveFocus()
   })
 })

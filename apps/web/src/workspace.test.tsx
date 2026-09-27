@@ -381,6 +381,22 @@ it.each(['Control', 'Meta'])(
   },
 )
 
+it.each(['ctrlKey', 'metaKey'] as const)(
+  'does not open search with the %s shortcut over a production toolbar dialog',
+  async (modifier) => {
+    const { user } = setup()
+    await screen.findByLabelText('Название страницы')
+    await user.click(screen.getByRole('button', { name: 'Переименовать' }))
+    const toolbarDialog = screen.getByRole('dialog', { name: 'Переименовать' })
+
+    fireEvent.keyDown(window, { key: 'k', [modifier]: true })
+
+    expect(toolbarDialog).toBeVisible()
+    expect(screen.queryByRole('dialog', { name: 'Поиск по знаниям' })).not.toBeInTheDocument()
+    expect(within(toolbarDialog).getByLabelText('Новое название')).toHaveFocus()
+  },
+)
+
 it('validates upload, shows indeterminate progress and cancels the actual request', async () => {
   let signal: AbortSignal | undefined
   const { user } = setup((request) =>

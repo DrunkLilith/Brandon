@@ -20,6 +20,143 @@ export function PageHeader({ title, children }: { title: string; children?: Reac
 
 const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
 
+type AttributeSnapshot = {
+  element: HTMLElement
+  inert: string | null
+  hidden: string | null
+}
+
+type ModalEntry = {
+  dialog: HTMLElement
+  backdrop: HTMLElement
+  backdropAttributes: AttributeSnapshot
+  opener: HTMLElement | null
+  fallbackOpener: HTMLElement | null
+  initialFocus(): HTMLElement | null
+  cancel(): void
+}
+
+const modalStack: ModalEntry[] = []
+let backgroundAttributes: AttributeSnapshot[] = []
+
+const snapshotAttributes = (element: HTMLElement): AttributeSnapshot => ({
+  element,
+  inert: element.getAttribute('inert'),
+  hidden: element.getAttribute('aria-hidden'),
+})
+
+const isolate = (element: HTMLElement) => {
+  element.setAttribute('inert', '')
+  element.setAttribute('aria-hidden', 'true')
+}
+
+const restore = ({ element, inert, hidden }: AttributeSnapshot) => {
+  if (inert === null) element.removeAttribute('inert')
+  else element.setAttribute('inert', inert)
+  if (hidden === null) element.removeAttribute('aria-hidden')
+  else element.setAttribute('aria-hidden', hidden)
+}
+
+const topModal = () => modalStack[modalStack.length - 1]
+
+const focusModal = (entry: ModalEntry) => {
+  const preferred = entry.initialFocus()
+  const target = preferred && entry.dialog.contains(preferred)
+    ? preferred
+    : entry.dialog.querySelector<HTMLElement>(focusableSelector) ?? entry.dialog
+  target.focus()
+}
+
+const onDocumentFocusIn = (event: FocusEvent) => {
+  const active = topModal()
+  if (active && (!(event.target instanceof Node) || !active.dialog.contains(event.target))) {
+    focusModal(active)
+  }
+}
+
+const onDocumentKeyDown = (event: KeyboardEvent) => {
+  const active = topModal()
+  if (!active) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    active.cancel()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = [...active.dialog.querySelectorAll<HTMLElement>(focusableSelector)]
+  if (!focusable.length) {
+    event.preventDefault()
+    active.dialog.focus()
+    return
+  }
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (!active.dialog.contains(document.activeElement)) {
+    event.preventDefault()
+    const target = event.shiftKey ? last : first
+    target.focus()
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+const acquireBackground = () => {
+  const backgrounds = new Set<HTMLElement>(
+    [...document.body.children]
+      .filter((element): element is HTMLElement =>
+        element instanceof HTMLElement && !element.classList.contains('modal-backdrop'),
+      ),
+  )
+  document.querySelectorAll<HTMLElement>('.language-switch, .admin-shell').forEach((element) => {
+    if (!element.closest('.modal-backdrop')) backgrounds.add(element)
+  })
+  backgroundAttributes = [...backgrounds].map(snapshotAttributes)
+  backgrounds.forEach(isolate)
+  document.addEventListener('focusin', onDocumentFocusIn, true)
+  document.addEventListener('keydown', onDocumentKeyDown, true)
+}
+
+const releaseBackground = () => {
+  document.removeEventListener('focusin', onDocumentFocusIn, true)
+  document.removeEventListener('keydown', onDocumentKeyDown, true)
+  backgroundAttributes.forEach(restore)
+  backgroundAttributes = []
+}
+
+const registerModal = (entry: ModalEntry) => {
+  const previous = topModal()
+  if (!previous) acquireBackground()
+  else isolate(previous.backdrop)
+  modalStack.push(entry)
+  focusModal(entry)
+  return () => {
+    const index = modalStack.indexOf(entry)
+    if (index < 0) return
+    const wasTop = index === modalStack.length - 1
+    modalStack.splice(index, 1)
+    restore(entry.backdropAttributes)
+    const active = topModal()
+    if (!active) {
+      releaseBackground()
+      const target = entry.opener?.isConnected ? entry.opener
+        : entry.fallbackOpener?.isConnected ? entry.fallbackOpener
+          : null
+      target?.focus()
+    } else if (wasTop) {
+      restore(active.backdropAttributes)
+      if (entry.opener?.isConnected && active.dialog.contains(entry.opener)) entry.opener.focus()
+      else focusModal(active)
+    }
+  }
+}
+
+export const hasOpenModal = () => modalStack.length > 0
+
 export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
   title: string
   children: ReactNode
@@ -35,71 +172,16 @@ export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
     const dialog = dialogRef.current
     const backdrop = dialog?.closest<HTMLElement>('.modal-backdrop')
     if (!dialog || !backdrop) return
-
-    const backgrounds = new Set<HTMLElement>(
-      [...document.body.children]
-        .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop),
-    )
-    document.querySelectorAll<HTMLElement>('.language-switch, .admin-shell').forEach((element) => {
-      if (!backdrop.contains(element)) backgrounds.add(element)
+    const parent = topModal()
+    return registerModal({
+      dialog,
+      backdrop,
+      backdropAttributes: snapshotAttributes(backdrop),
+      opener,
+      fallbackOpener: parent?.fallbackOpener ?? parent?.opener ?? opener,
+      initialFocus: () => initialFocusRef?.current ?? null,
+      cancel: () => cancel.current(),
     })
-    const previousAttributes = [...backgrounds].map((element) => ({
-      element,
-      inert: element.getAttribute('inert'),
-      hidden: element.getAttribute('aria-hidden'),
-    }))
-    for (const background of backgrounds) {
-      background.setAttribute('inert', '')
-      background.setAttribute('aria-hidden', 'true')
-    }
-
-    const focusInitial = () => {
-      const initial = initialFocusRef?.current ?? dialog.querySelector<HTMLElement>(focusableSelector) ?? dialog
-      initial.focus()
-    }
-    const onFocusIn = (event: FocusEvent) => {
-      if (!(event.target instanceof Node) || !dialog.contains(event.target)) focusInitial()
-    }
-    const onDocumentKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        cancel.current()
-        return
-      }
-      if (event.key !== 'Tab') return
-      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)]
-      if (!focusable.length) {
-        event.preventDefault()
-        dialog.focus()
-        return
-      }
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (!dialog.contains(document.activeElement)) {
-        event.preventDefault()
-        ;(event.shiftKey ? last : first).focus()
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault()
-        first.focus()
-      }
-    }
-    document.addEventListener('focusin', onFocusIn, true)
-    document.addEventListener('keydown', onDocumentKeyDown, true)
-    focusInitial()
-    return () => {
-      document.removeEventListener('focusin', onFocusIn, true)
-      document.removeEventListener('keydown', onDocumentKeyDown, true)
-      for (const { element, inert, hidden } of previousAttributes) {
-        if (inert === null) element.removeAttribute('inert')
-        else element.setAttribute('inert', inert)
-        if (hidden === null) element.removeAttribute('aria-hidden')
-        else element.setAttribute('aria-hidden', hidden)
-      }
-      opener?.focus()
-    }
   }, [initialFocusRef])
   return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
     <h2 id={titleId}>{title}</h2>

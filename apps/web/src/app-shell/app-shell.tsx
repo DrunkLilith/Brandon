@@ -9,7 +9,7 @@ import {
 } from 'react-router-dom'
 import { useSession } from '../auth/session'
 import { ApiError } from '../api/client'
-import { ErrorNotice, LoadingBlock } from '../admin/shared'
+import { ErrorNotice, hasOpenModal, LoadingBlock } from '../admin/shared'
 import { useI18n } from '../i18n'
 import { PageTree } from '../pages/page-tree'
 import { PageView } from '../pages/page-view'
@@ -37,6 +37,7 @@ export function AppShell() {
     const shortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
+        if (hasOpenModal()) return
         setSearchOpen(true)
       }
     }

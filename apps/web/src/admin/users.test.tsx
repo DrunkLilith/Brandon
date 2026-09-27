@@ -22,6 +22,31 @@ afterEach(() => {
 })
 
 describe('users and invitations administration', () => {
+  it('requires an explicit confirmation before deleting a member', async () => {
+    window.history.replaceState({}, '', '/admin/users')
+    let deleted = false
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(new URL(String(input), window.location.origin), init)
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return json({ sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAdmin: true })
+      if (path === '/api/v1/auth/csrf') return json({ token: 'csrf' })
+      if (path === '/api/v1/invitations') return json([])
+      if (path === '/api/v1/users') return json(deleted ? [] : [{ id: 'member', email: 'member@example.com', displayName: 'Участник', status: 'active', workspaceRole: 'member' }])
+      if (path === '/api/v1/users/member' && request.method === 'DELETE') { deleted = true; return new Response(null, { status: 204 }) }
+      throw new Error('Unexpected request')
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Удалить участника Участник' }))
+    expect(deleted).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Отмена' }))
+    expect(deleted).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Удалить участника Участник' }))
+    await user.click(screen.getByRole('button', { name: 'Подтвердить удаление участника' }))
+    await waitFor(() => expect(screen.queryByText('member@example.com')).not.toBeInTheDocument())
+    expect(deleted).toBe(true)
+  })
+
   it('validates an invitation and reveals its token only after a successful explicit-expiry submission', async () => {
     window.history.replaceState({}, '', '/admin/users')
     const invitationRequests: Request[] = []

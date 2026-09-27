@@ -10,6 +10,10 @@ import {
 import { useSession } from '../auth/session'
 import { ApiError } from '../api/client'
 import { ErrorNotice, hasOpenModal, LoadingBlock } from '../admin/shared'
+import { SpaceAccess, SpaceEditor } from '../admin/spaces'
+import { SpaceArchive } from '../pages/space-archive'
+import { PageArchive } from '../pages/page-archive'
+import { SpaceExports } from '../pages/space-exports'
 import { useI18n } from '../i18n'
 import { PageTree } from '../pages/page-tree'
 import { PageView } from '../pages/page-view'
@@ -29,6 +33,8 @@ export function AppShell() {
   const spaceId = pageMatch?.params.spaceId ?? spaceMatch?.params.spaceId ?? '',
     pageId = pageMatch?.params.pageId
   const [searchOpen, setSearchOpen] = useState(!!params.get('q'))
+  const [manageSpace, setManageSpace] = useState(false)
+  useEffect(() => { setManageSpace(false) }, [spaceId])
   const spaces = useQuery(spacesQuery),
     tree = useQuery({ ...treeQuery(spaceId), enabled: !!spaceId }),
     page = useQuery({ ...pageQuery(pageId ?? ''), enabled: !!pageId })
@@ -129,9 +135,15 @@ export function AppShell() {
               ) : (
                 <p>{text.workspace.noSpaces}</p>
               )}
+              <SpaceArchive />
             </section>
           ) : (
             <>
+              {space && ['admin', 'owner'].includes(space.effectiveRole) && <>
+                <button type="button" aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>{text.workspace.manageSpace}</button>
+                <PageArchive key={spaceId} spaceId={spaceId} />
+                {manageSpace && <><SpaceEditor space={space} /><SpaceAccess space={space} /><SpaceExports key={spaceId} spaceId={spaceId} /></>}
+              </>}
               <PageToolbar
                 spaceId={spaceId}
                 page={page.data}
@@ -147,6 +159,8 @@ export function AppShell() {
                   pageId={pageId}
                   spaceId={spaceId}
                   workspaceId={session.workspaceId}
+                  userId={session.userId}
+                  canRecover={!!space && ['admin', 'owner'].includes(space.effectiveRole)}
                 />
               ) : (
                 <p>{text.workspace.choose}</p>

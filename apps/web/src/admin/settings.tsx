@@ -3,9 +3,24 @@ import { useEffect, useState, type FormEvent } from 'react'
 
 import { apiClient, unwrap } from '../api/client'
 import { useI18n } from '../i18n'
-import { ErrorNotice, LoadingBlock, PageHeader } from './shared'
+import { ConfirmDialog, ErrorNotice, LoadingBlock, PageHeader } from './shared'
 
 const settingsKey = ['admin', 'settings'] as const
+
+function KeyRotation() {
+  const {messages:text}=useI18n()
+  const client=useQueryClient()
+  const [inspected,setInspected]=useState(false),[confirm,setConfirm]=useState(false)
+  const key=['admin','key-rotation']
+  const status=useQuery({queryKey:key,enabled:inspected,queryFn:async()=>unwrap(await apiClient.GET('/api/v1/admin/key-rotations')),refetchInterval:query=>query.state.data?.state!=='complete'?2000:false})
+  const start=useMutation({mutationFn:async()=>unwrap(await apiClient.POST('/api/v1/admin/key-rotations')),onSuccess:data=>{setConfirm(false);client.setQueryData(key,data)}})
+  return <section className="admin-panel"><h2>{text.settings.rotation}</h2><p>{text.settings.rotationNotice}</p>
+    <button type="button" onClick={()=>{setInspected(true);setConfirm(true)}} disabled={status.data?.state!=='complete'&&status.isSuccess}>{text.settings.rotation}</button>
+    {status.isFetching&&<LoadingBlock/>}{status.isError&&<ErrorNotice error={status.error}/>}{start.isError&&<ErrorNotice error={start.error}/>}
+    {status.data&&<p role="status">{text.settings.rotationState(status.data.state)} · {text.workspace.version(status.data.currentVersion)} · {status.data.processed}</p>}
+    {confirm&&<ConfirmDialog title={text.settings.rotation} confirmLabel={text.settings.confirmRotation} pending={start.isPending||!status.isSuccess||status.data.state!=='complete'} onCancel={()=>setConfirm(false)} onConfirm={()=>start.mutate()}/>}
+  </section>
+}
 
 export function SettingsPage() {
   const { messages: text } = useI18n()
@@ -41,5 +56,6 @@ export function SettingsPage() {
       <button type="submit" disabled={update.isPending}>{update.isPending ? text.settings.saving : text.settings.save}</button>
     </form>}</section>
     <section className="admin-panel"><h2>{text.settings.security}</h2><p className="notice">{text.settings.sessionHint}</p></section>
+    <KeyRotation />
   </section>
 }

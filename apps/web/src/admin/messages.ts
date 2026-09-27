@@ -40,6 +40,8 @@ export function getAdminMessages(locale: AdminLocale) {
       health: (healthy: boolean) => healthy ? pick('доступно', 'available') : pick('недоступно', 'unavailable'),
     },
     users: {
+      deleteMember: pick('Удалить участника', 'Delete member'), deleteFor: (name: string) => `${pick('Удалить участника', 'Delete member')} ${name}`,
+      deleteTitle: pick('Удалить участника без возможности восстановления?', 'Permanently deactivate this member?'), confirmDelete: pick('Подтвердить удаление участника', 'Confirm member deletion'),
       invite: pick('Пригласить пользователя', 'Invite user'), members: pick('Участники', 'Members'), invitations: pick('Приглашения', 'Invitations'),
       user: pick('Пользователь', 'User'), status: pick('Статус', 'Status'), role: pick('Роль', 'Role'), actions: pick('Действия', 'Actions'),
       statusFor: (name: string) => `${pick('Статус', 'Status')} ${name}`, roleFor: (name: string) => `${pick('Роль', 'Role')} ${name}`,
@@ -70,6 +72,8 @@ export function getAdminMessages(locale: AdminLocale) {
       archive: pick('Архив пространств', 'Space archive'), loadMoreArchived: pick('Показать ещё архивные пространства', 'Load more archived spaces'),
     },
     dashboard: {
+      maintenanceFailures: pick('Ошибок обслуживания', 'Maintenance failures'),
+      maintenanceHelp: pick('Проверьте состояние хранилища и журнал операций по идентификатору; задачи повторяются автоматически.', 'Check storage health and correlate the operations log with this ID; tasks retry automatically.'),
       system: pick('Состояние системы', 'System status'), database: pick('База данных', 'Database'), masterKey: pick('Главный ключ', 'Master key'), migrations: pick('Миграции', 'Migrations'), objectStorage: pick('Хранилище объектов', 'Object storage'),
       operations: pick('Операции', 'Operations'), operationsUnavailable: pick('Данные об операциях недоступны.', 'Operations data is unavailable.'), queuedJobs: pick('Задач в очереди', 'Queued jobs'), activeExports: pick('Активных экспортов', 'Active exports'),
       readiness: pick('Готовность', 'Readiness'), readinessUnavailable: pick('Готовность сервиса недоступна.', 'Service readiness is unavailable.'), ready: pick('Сервис готов.', 'Service is ready.'), notReady: pick('Сервис не готов.', 'Service is not ready.'),
@@ -80,6 +84,9 @@ export function getAdminMessages(locale: AdminLocale) {
       from: pick('С даты', 'From'), to: pick('По дату', 'To'), apply: pick('Применить фильтры', 'Apply filters'), events: pick('События', 'Events'), next: pick('Следующая страница', 'Next page'), idPlaceholder: 'UUID', fromPlaceholder: '2026-09-01T00:00:00Z', toPlaceholder: '2026-09-30T23:59:59Z',
     },
     settings: {
+      rotation: pick('Ротация ключа пространства', 'Rotate workspace key'), confirmRotation: pick('Подтвердить ротацию', 'Confirm key rotation'),
+      rotationNotice: pick('Создаётся новая версия ключа шифрования. Фоновая миграция возобновляется после сбоя; поиск недоступен до пересборки индекса. Сначала проверьте резервную копию и сохранность главного ключа.', 'Creates a new data-encryption key. Background migration resumes after interruption; search is unavailable until the index is rebuilt. Verify your backup and master-key recovery first.'),
+      rotationState: (state: string) => ({ migrating: pick('Миграция шифротекста', 'Migrating ciphertext'), rebuilding: pick('Пересборка индекса', 'Rebuilding search index'), complete: pick('Ротация завершена', 'Rotation complete') })[state] ?? state,
       invalidRecovery: pick('Срок восстановления вложений должен быть от 1 до 3650 дней.', 'Attachment recovery must be between 1 and 3650 days.'), invalidRetention: pick('Срок хранения экспорта должен быть от 1 до 720 часов.', 'Export retention must be between 1 and 720 hours.'),
       storage: pick('Хранение и восстановление', 'Storage and recovery'), recoveryDays: pick('Срок восстановления вложений, дней', 'Attachment recovery, days'), retentionHours: pick('Срок хранения экспорта, часов', 'Export retention, hours'),
       saved: pick('Настройки сохранены.', 'Settings saved.'), saving: pick('Сохранение…', 'Saving…'), save: pick('Сохранить настройки', 'Save settings'), security: pick('Безопасность', 'Security'),

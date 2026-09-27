@@ -16,6 +16,7 @@ import {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { PageView } from '../pages/page-view'
+import { draftKey } from './draft-store'
 import { pageKey } from '../pages/queries'
 import { apiClient } from '../api/client'
 import { I18nProvider, LanguageSwitch } from '../i18n'
@@ -82,7 +83,7 @@ it('relocalizes an already-visible local-draft status both ways without losing t
   const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   cache.setQueryData(pageKey('p'), page)
   vi.stubGlobal('fetch', async () => new Response('[]', { headers: { 'content-type': 'application/json' } }))
-  render(<I18nProvider><LanguageSwitch /><QueryClientProvider client={cache}><PageView pageId="p" spaceId="s" workspaceId="w" /></QueryClientProvider></I18nProvider>)
+  render(<I18nProvider><LanguageSwitch /><QueryClientProvider client={cache}><PageView pageId="p" spaceId="s" workspaceId="w" userId="u" /></QueryClientProvider></I18nProvider>)
   const title = screen.getByLabelText('Название страницы')
   fireEvent.change(title, { target: { value: 'Unsaved title' } })
   expect(screen.getByText('Черновик сохранён в браузере')).toBeVisible()
@@ -198,7 +199,7 @@ it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
           <Routes>
             <Route
               path="/"
-              element={<PageView pageId="p" spaceId="s" workspaceId="w" />}
+              element={<PageView pageId="p" spaceId="s" workspaceId="w" userId="u" />}
             />
             <Route path="/away" element={<p>Away</p>} />
           </Routes>
@@ -254,7 +255,7 @@ it.each(['raw', 'preview', 'save', 'navigation', 'unmount'] as const)(
         fireEvent.click(screen.getByRole('link', { name: 'Leave page' }))
       else rendered.unmount()
       expect(
-        JSON.parse(localStorage.getItem('w:p:1') ?? 'null')?.markdown,
+        JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u')) ?? 'null')?.markdown,
       ).toBe('old NEW\n')
     }
     expect(serialize).toHaveBeenCalledTimes(1)
@@ -369,7 +370,7 @@ it('marks rich edits dirty before debounce so a newer background read cannot rep
   )
   render(
     <QueryClientProvider client={cache}>
-      <PageView pageId="p" spaceId="s" workspaceId="w" />
+      <PageView pageId="p" spaceId="s" workspaceId="w" userId="u" />
     </QueryClientProvider>,
   )
   await waitFor(() =>
@@ -393,7 +394,7 @@ it('marks rich edits dirty before debounce so a newer background read cannot rep
   })
   fireEvent.click(screen.getByRole('button', { name: 'Исходный Markdown' }))
   expect(screen.getByLabelText('Markdown')).toHaveValue('old NEW\n')
-  expect(JSON.parse(localStorage.getItem('w:p:1') ?? 'null')?.markdown).toBe(
+  expect(JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u')) ?? 'null')?.markdown).toBe(
     'old NEW\n',
   )
 })
@@ -444,7 +445,7 @@ it('keeps the mounted in-memory draft through a background 503 and retry when st
   })
   render(
     <QueryClientProvider client={cache}>
-      <PageView pageId="p" spaceId="s" workspaceId="w" />
+      <PageView pageId="p" spaceId="s" workspaceId="w" userId="u" />
     </QueryClientProvider>,
   )
   const title = screen.getByLabelText('Название страницы')

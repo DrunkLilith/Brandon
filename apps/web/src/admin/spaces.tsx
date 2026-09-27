@@ -14,7 +14,7 @@ type SpaceGrant = components['schemas']['SpaceGrant']
 const spacesKey = ['admin', 'spaces'] as const
 const archivedSpacesKey = ['admin', 'spaces', 'archived'] as const
 
-function SpaceEditor({ space }: { space: Space }) {
+export function SpaceEditor({ space }: { space: Space }) {
   const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [name, setName] = useState(space.name)
@@ -22,12 +22,12 @@ function SpaceEditor({ space }: { space: Space }) {
   useEffect(() => { setName(space.name); setDescription(space.description ?? '') }, [space])
   const update = useMutation({
     mutationFn: async () => unwrap(await apiClient.PATCH('/api/v1/spaces/{id}', { params: { path: { id: space.id } }, body: { name: name.trim(), description: description.trim() || null } })),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: spacesKey }),
+    onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: spacesKey }); await queryClient.invalidateQueries({ queryKey: ['workspace', 'spaces'] }) },
   })
   return <details className="resource-editor"><summary>{text.spaces.edit}</summary><div className="inline-form"><label>{text.spaces.selectedName}<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>{text.spaces.selectedDescription}<input value={description} onChange={(event) => setDescription(event.target.value)} /></label><button type="button" onClick={() => update.mutate()} disabled={!name.trim() || update.isPending}>{text.spaces.save}</button></div>{update.isError && <ErrorNotice error={update.error} />}</details>
 }
 
-function SpaceAccess({ space }: { space: Space }) {
+export function SpaceAccess({ space }: { space: Space }) {
   const { messages: text } = useI18n()
   const queryClient = useQueryClient()
   const [subjectType, setSubjectType] = useState<SubjectType>('user')

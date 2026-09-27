@@ -23,6 +23,7 @@ button:disabled { opacity:.55; cursor:default; }
 .tree-row { display:flex; align-items:center; gap:.3rem; overflow:hidden; white-space:nowrap; cursor:pointer; border-radius:.35rem; }
 .tree-row span { overflow:hidden; text-overflow:ellipsis; }
 .tree-row[aria-selected=true] { background:#dce9df; font-weight:700; }
+.tree-row:focus { outline:2px solid #276047; outline-offset:-2px; }
 .tree-row button { border:0; background:transparent; }
 .markdown-rich { padding:1rem; background:white; border:1px solid #dce2dd; border-radius:.7rem; margin:.8rem 0; overflow-wrap:anywhere; }
 .markdown-rich .ProseMirror { min-height:18rem; outline:none; }
@@ -139,7 +140,7 @@ kbd { padding:.08rem .4rem; border:1px solid #ced7d0; border-radius:.3rem; backg
 @media (max-width: 760px) {
   .app-shell { grid-template-columns:1fr; }
   .sidebar { border-right:0; border-bottom:1px solid #dce2dd; }
-  .page-tree { display:none; }
+  .page-tree { display:block; max-height:40vh; min-height:4rem; overflow:auto; }
   .topbar { grid-template-columns:1fr auto; }
   .breadcrumbs { display:none; }
   .search-button { min-width:0; }

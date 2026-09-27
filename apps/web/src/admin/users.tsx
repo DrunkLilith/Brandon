@@ -29,6 +29,11 @@ function UserRow({ user }: { user: User }) {
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: usersKey }); await refreshOwnSession() },
   })
   const [confirmSessions, setConfirmSessions] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const remove = useMutation({
+    mutationFn: async () => unwrap(await apiClient.DELETE('/api/v1/users/{id}', { params: { path: { id: user.id } } })),
+    onSuccess: async () => { setConfirmDelete(false); await queryClient.invalidateQueries({ queryKey: usersKey }); await refreshOwnSession() },
+  })
   const revokeSessions = useMutation({
     mutationFn: async () => unwrap(await apiClient.POST('/api/v1/users/{id}/revoke-sessions', { params: { path: { id: user.id } } })),
     onSuccess: async () => { setConfirmSessions(false); await refreshOwnSession() },
@@ -38,11 +43,13 @@ function UserRow({ user }: { user: User }) {
       <th scope="row"><strong>{user.displayName}</strong><span>{user.email ?? text.common.hiddenEmail}</span></th>
       <td><label><span className="sr-only">{text.users.statusFor(user.displayName)}</span><select value={status} onChange={(event) => setStatus(event.target.value as 'active' | 'suspended')}><option value="active">{text.labels.userStatus.active}</option><option value="suspended">{text.labels.userStatus.suspended}</option></select></label></td>
       <td><label><span className="sr-only">{text.users.roleFor(user.displayName)}</span><select value={role} onChange={(event) => setRole(event.target.value as 'admin' | 'member')}><option value="member">{text.labels.role.member}</option><option value="admin">{text.labels.role.admin}</option></select></label></td>
-      <td className="row-actions"><button type="button" onClick={() => update.mutate()} disabled={update.isPending}>{text.common.save}</button><button type="button" onClick={() => setConfirmSessions(true)} aria-label={text.users.revokeSessionsFor(user.displayName)}>{text.users.revokeSessions}</button></td>
+      <td className="row-actions"><button type="button" onClick={() => update.mutate()} disabled={update.isPending}>{text.common.save}</button><button type="button" onClick={() => setConfirmSessions(true)} aria-label={text.users.revokeSessionsFor(user.displayName)}>{text.users.revokeSessions}</button><button type="button" onClick={() => setConfirmDelete(true)} aria-label={text.users.deleteFor(user.displayName)}>{text.users.deleteMember}</button></td>
     </tr>
     {update.isError && <tr><td colSpan={4}><ErrorNotice error={update.error} /></td></tr>}
     {revokeSessions.isError && <tr><td colSpan={4}><ErrorNotice error={revokeSessions.error} /></td></tr>}
     {confirmSessions && <tr className="dialog-row"><td colSpan={4}><ConfirmDialog title={text.users.revokeSessionsTitle} confirmLabel={text.users.confirmRevokeSessions} pending={revokeSessions.isPending} onCancel={() => setConfirmSessions(false)} onConfirm={() => revokeSessions.mutate()} /></td></tr>}
+    {remove.isError && <tr><td colSpan={4}><ErrorNotice error={remove.error} /></td></tr>}
+    {confirmDelete && <tr className="dialog-row"><td colSpan={4}><ConfirmDialog title={text.users.deleteTitle} confirmLabel={text.users.confirmDelete} pending={remove.isPending} onCancel={() => setConfirmDelete(false)} onConfirm={() => remove.mutate()} /></td></tr>}
   </>
 }
 

@@ -117,7 +117,7 @@ describe('admin dashboard', () => {
       const request = requestOf(input, init)
       const path = new URL(request.url).pathname
       if (path === '/api/v1/auth/session') return json(session)
-      if (path === '/api/v1/admin/status') return json({ activeExports: 1, components: { database: true, masterKey: true, migrations: true, objectStorage: false }, migrationState: 'current', queuedJobs: 2, version: '1.0.0' })
+      if (path === '/api/v1/admin/status') return json({ activeExports: 1, components: { database: true, masterKey: true, migrations: true, objectStorage: false }, migrationState: 'current', queuedJobs: 2, version: '1.0.0', maintenance: { failures: 1, lastFailure: { code: 'operation_failed', phase: 'retention', correlationId: 'job-correlation', at: '2026-09-24T12:00:00Z' } } })
       if (path === '/api/v1/health/ready') return json({ type: 'x', title: 'Unavailable', status: 503, code: 'not_ready', detail: 's3://bucket/private database-url=secret' }, 503)
       if (path === '/api/v1/exports') return json({ exports: [{ id: 'export-1', spaceId: 'space-1', status: 'ready', expiresAt: '2026-09-25T00:00:00Z', createdAt: '2026-09-24T00:00:00Z' }], nextCursor: null })
       throw new Error(`Unexpected request: ${request.method} ${path}`)
@@ -127,6 +127,8 @@ describe('admin dashboard', () => {
     expect(await screen.findByText('Хранилище объектов: недоступно')).toBeVisible()
     expect(screen.getByText('Задач в очереди: 2')).toBeVisible()
     expect(screen.getByText('Активных экспортов: 1')).toBeVisible()
+    expect(screen.getByText('Ошибок обслуживания: 1')).toBeVisible()
+    expect(screen.getByText(/job-correlation/)).toBeVisible()
     expect(screen.getByText('Готовность сервиса недоступна.')).toBeVisible()
     expect(screen.queryByText(/s3:\/\/bucket|database-url=secret/)).not.toBeInTheDocument()
     expect(consoleError).not.toHaveBeenCalled()

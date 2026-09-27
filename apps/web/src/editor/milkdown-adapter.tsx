@@ -91,6 +91,12 @@ export function MilkdownAdapter({
   }
   useEffect(() => {
     let disposed = false
+    const persist = () => flushCurrent.current()
+    const onVisibility = () => { if (document.visibilityState === 'hidden') persist() }
+    window.addEventListener('pagehide', persist)
+    window.addEventListener('beforeunload', persist)
+    window.addEventListener('knowledge:flush-drafts', persist)
+    document.addEventListener('visibilitychange', onVisibility)
     const instance = Editor.make()
       .config((ctx) => {
         ctx.set(rootCtx, root.current)
@@ -149,6 +155,10 @@ export function MilkdownAdapter({
         if (!disposed) setError(reason)
       })
     return () => {
+      window.removeEventListener('pagehide', persist)
+      window.removeEventListener('beforeunload', persist)
+      window.removeEventListener('knowledge:flush-drafts', persist)
+      document.removeEventListener('visibilitychange', onVisibility)
       // Persist the last edit without updating an unmounting React component.
       flushCurrent.current(false)
       disposed = true

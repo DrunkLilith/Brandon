@@ -9,6 +9,7 @@ import {
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { App } from './app'
+import { draftKey } from './editor/draft-store'
 import { apiClient } from './api/client'
 
 // The adapter is the only non-network boundary replaced; canonical Markdown and all workspace behavior stay real.
@@ -70,6 +71,20 @@ const problem = (status = 409) =>
     status,
   )
 type Handler = (request: Request) => Promise<Response> | Response | undefined
+
+it('discovers an authorized backlink and opens its page',async()=>{
+  setup((request)=>{
+    const url=new URL(request.url)
+    if(url.pathname==='/api/v1/pages/p/backlinks') return json([{id:'source'}])
+    if(url.pathname==='/api/v1/pages/source') return json({...page,id:'source',title:'Источник ссылки'})
+  })
+  await userEvent.click(await screen.findByRole('button',{name:'Обратные ссылки'}))
+  const link=await screen.findByRole('link',{name:'Источник ссылки'})
+  expect(link).toHaveAttribute('href','/app/spaces/s/pages/source')
+  await userEvent.click(link)
+  expect(await screen.findByLabelText('Название страницы')).toHaveValue('Источник ссылки')
+})
+
 function setup(
   handler: Handler = () => undefined,
   nodes = tree,
@@ -208,7 +223,7 @@ it.each([
 
 it('recovers versioned drafts, shares raw/rich Markdown and clears only acknowledged draft', async () => {
   localStorage.setItem(
-    'w:p:1',
+    draftKey('w', 'p', 1, 'u'),
     JSON.stringify({
       title: 'Черновик',
       markdown: 'Локальный текст',
@@ -216,7 +231,7 @@ it('recovers versioned drafts, shares raw/rich Markdown and clears only acknowle
       restricted: true,
     }),
   )
-  localStorage.setItem('w:p:99', 'other')
+  localStorage.setItem(draftKey('w', 'p', 99, 'u'), 'other')
   let submitted: unknown
   const { user } = setup((request) =>
     request.method === 'PATCH'
@@ -235,12 +250,12 @@ it('recovers versioned drafts, shares raw/rich Markdown and clears only acknowle
   expect(screen.getByLabelText('Визуальный Markdown')).toHaveValue(
     'Локальный текст новый',
   )
-  expect(JSON.parse(localStorage.getItem('w:p:1')!).markdown).toBe(
+  expect(JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u'))!).markdown).toBe(
     'Локальный текст новый',
   )
   await user.click(screen.getByRole('button', { name: 'Сохранить версию' }))
-  await waitFor(() => expect(localStorage.getItem('w:p:1')).toBeNull())
-  expect(localStorage.getItem('w:p:99')).toBe('other')
+  await waitFor(() => expect(localStorage.getItem(draftKey('w', 'p', 1, 'u'))).toBeNull())
+  expect(localStorage.getItem(draftKey('w', 'p', 99, 'u'))).toBe('other')
   expect(submitted).toMatchObject({
     expectedVersion: 1,
     title: 'Черновик',
@@ -266,7 +281,7 @@ it('retains exact submitted text on conflict and exposes base/current metadata',
   expect(await within(dialog).findByText(/Текущая версия: 4/)).toBeVisible()
   expect(within(dialog).getByText(/Базовая версия: 1/)).toBeVisible()
   expect(screen.getByLabelText('Markdown')).toHaveValue('# Текст мой текст')
-  expect(JSON.parse(localStorage.getItem('w:p:1')!).markdown).toBe(
+  expect(JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u'))!).markdown).toBe(
     '# Текст мой текст',
   )
 })
@@ -735,10 +750,10 @@ it('does not delete a newer same-version draft written while a save is in flight
     properties: {},
     restricted: true,
   }
-  localStorage.setItem('w:p:1', JSON.stringify(newer))
+  localStorage.setItem(draftKey('w', 'p', 1, 'u'), JSON.stringify(newer))
   finish(json({ id: 'p', version: 2 }))
   await screen.findByText('Версия 2')
-  expect(JSON.parse(localStorage.getItem('w:p:1')!)).toEqual(newer)
+  expect(JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u'))!)).toEqual(newer)
 })
 
 it('keeps unsaved text in memory when storage fails and a toolbar mutation refreshes the page', async () => {
@@ -830,7 +845,7 @@ it('loads the current server version only after explicit conflict reload confirm
     'Серверная версия',
   )
   expect(screen.getByText('Версия 4')).toBeVisible()
-  expect(JSON.parse(localStorage.getItem('w:p:1')!).title).toBe('Начало моё')
+  expect(JSON.parse(localStorage.getItem(draftKey('w', 'p', 1, 'u'))!).title).toBe('Начало моё')
 })
 
 it('restores all search filters from browser history and keeps snippets as text', async () => {

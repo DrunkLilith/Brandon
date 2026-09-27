@@ -2,10 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, apiClient, unwrap } from '../api/client'
 import type { components } from '../api/generated'
-import { ErrorNotice, LoadingBlock } from '../admin/shared'
+import { ErrorNotice, LoadingBlock, ModalDialog } from '../admin/shared'
 import { AttachmentList } from '../attachments/attachment-list'
 import {
   draftKey,
+  discoverDrafts,
   readDraft,
   writeDraft,
   type Draft,
@@ -15,6 +16,7 @@ import type { MarkdownHandle } from '../editor/milkdown-adapter'
 import { ConflictDialog } from '../editor/conflict-dialog'
 import { HistoryPanel } from '../editor/history-panel'
 import { PagePermissions } from './page-permissions'
+import { Backlinks } from './backlinks'
 import { useI18n } from '../i18n'
 import { pageKey, pageQuery } from './queries'
 type Page = components['schemas']['Page']
@@ -22,11 +24,15 @@ type Page = components['schemas']['Page']
 export function PageView({
   pageId,
   workspaceId,
+  userId,
   spaceId,
+  canRecover = false,
 }: {
   pageId: string
   workspaceId: string
+  userId: string
   spaceId: string
+  canRecover?: boolean
 }) {
   const query = useQuery(pageQuery(pageId))
   if (query.isPending) return <LoadingBlock />
@@ -47,31 +53,35 @@ export function PageView({
   return (
     <>
       {query.isError && <ErrorNotice error={query.error} />}
-      <PageEditor key={pageId} initial={query.data} workspaceId={workspaceId} />
+      <PageEditor key={`${userId}:${pageId}`} initial={query.data} workspaceId={workspaceId} userId={userId} canRecover={canRecover} />
     </>
   )
 }
 function PageEditor({
   initial,
   workspaceId,
+  userId,
+  canRecover,
 }: {
   initial: Page
   workspaceId: string
+  userId: string
+  canRecover: boolean
 }) {
   const { messages: text } = useI18n()
   const cache = useQueryClient(),
     [base, setBase] = useState(initial)
   const [draft, setDraft] = useState<Draft>(
     () =>
-      readDraft(draftKey(workspaceId, initial.id, initial.version)) ?? initial,
+      readDraft(draftKey(workspaceId, initial.id, initial.version, userId)) ?? initial,
   )
   const [dirty, setDirty] = useState(
     () =>
-      readDraft(draftKey(workspaceId, initial.id, initial.version)) !== null,
+      readDraft(draftKey(workspaceId, initial.id, initial.version, userId)) !== null,
   )
   const [status, setStatus] = useState<'local' | 'saved' | null>(null),
     [localError, setLocalError] = useState(false),
-    [panel, setPanel] = useState<'history' | 'permissions' | null>(null),
+    [panel, setPanel] = useState<'history' | 'permissions' | 'backlinks' | null>(null),
     [properties, setProperties] = useState(() =>
       JSON.stringify(draft.properties, null, 2),
     )
@@ -81,7 +91,21 @@ function PageEditor({
     current?: Page
     error?: unknown
   } | null>(null)
-  const key = draftKey(workspaceId, base.id, base.version)
+  const key = draftKey(workspaceId, base.id, base.version, userId)
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
+  const [recoverable, setRecoverable] = useState<ReturnType<typeof discoverDrafts>>(() => {
+    try { return discoverDrafts(workspaceId, initial.id, userId).filter((item) => item.key !== key) }
+    catch { return [] }
+  })
+  useEffect(() => {
+    const refresh = () => {
+      try { setRecoverable(discoverDrafts(workspaceId, initial.id, userId).filter((item) => item.key !== key)) }
+      catch { setLocalError(true) }
+    }
+    window.addEventListener('storage', refresh)
+    window.addEventListener('focus', refresh)
+    return () => { window.removeEventListener('storage', refresh); window.removeEventListener('focus', refresh) }
+  }, [workspaceId, initial.id, userId, key])
   const editor = useRef<MarkdownHandle>(null)
   const change = (next: Draft) => {
     setDirty(true)
@@ -170,6 +194,25 @@ function PageEditor({
   })
   return (
     <article className="page-workspace">
+      {recoverable.length > 0 && <button onClick={() => { editor.current?.flush(); setRecoveryOpen(true) }}>{text.workspace.recoverDrafts}</button>}
+      {recoveryOpen && <ModalDialog title={text.workspace.recoverDrafts} onCancel={() => setRecoveryOpen(false)}>
+        <p>{text.workspace.recoveryHelp}</p>
+        <h3>{text.workspace.current(initial.version)}</h3><pre>{initial.markdown}</pre>
+        {recoverable.map((item) => <section key={item.key}>
+          <h3>{text.workspace.base(item.version)} · {item.draft.title}</h3>
+          <pre>{item.draft.markdown}</pre><pre>{JSON.stringify(item.draft.properties, null, 2)}</pre>
+          <button disabled={!base.capabilities.edit} onClick={() => {
+            setBase({ ...initial, version: item.version })
+            setDraft(item.draft)
+            setProperties(JSON.stringify(item.draft.properties, null, 2))
+            setDirty(true)
+            try { writeDraft(draftKey(workspaceId, base.id, item.version, userId), item.draft) }
+            catch { setLocalError(true) }
+            setRecoveryOpen(false)
+          }}>{text.workspace.continueEditing}</button>
+        </section>)}
+        <button onClick={() => setRecoveryOpen(false)}>{text.common.cancel}</button>
+      </ModalDialog>}
       <label>
         {text.workspace.title}
         <input
@@ -255,6 +298,7 @@ function PageEditor({
         >
           {text.workspace.history}
         </button>
+        <button onClick={()=>setPanel(panel==='backlinks'?null:'backlinks')}>{text.workspace.backlinks}</button>
         {base.restricted && base.capabilities.managePermissions && (
           <button
             onClick={() =>
@@ -278,7 +322,8 @@ function PageEditor({
       {panel === 'permissions' && (
         <PagePermissions pageId={base.id} spaceId={base.spaceId} />
       )}
-      <AttachmentList pageId={base.id} editable={base.capabilities.edit} />
+      {panel === 'backlinks' && <Backlinks pageId={base.id}/>}
+      <AttachmentList pageId={base.id} editable={base.capabilities.edit} recoverable={canRecover && base.capabilities.edit} />
       {conflict && (
         <ConflictDialog
           {...conflict}
@@ -288,7 +333,7 @@ function PageEditor({
             setBase(current)
             setConflict(null)
             try {
-              writeDraft(draftKey(workspaceId, base.id, current.version), draft)
+              writeDraft(draftKey(workspaceId, base.id, current.version, userId), draft)
             } catch {
               setLocalError(true)
             }

@@ -16,6 +16,18 @@ import {
 import { readRuntimeState } from './support/deployment'
 import { assertPhysicalPostgresStorageHasNoPlaintext } from './support/storage-audit'
 
+test('production proxy does not log search queries referrers or sensitive paths', async ({ request }) => {
+  const runtime = readRuntimeState()
+  const marker = crypto.randomUUID()
+  for (const pathname of [`/app?q=${marker}`, `/app/spaces/${marker}`, `/missing-${marker}`]) {
+    await request.get(`${runtime.baseUrl}${pathname}`, { headers: { Referer: `${runtime.baseUrl}/app?q=${marker}` } })
+  }
+  const logs = execFileSync('docker', [
+    'compose', '-f', 'deploy/compose.yaml', '-p', runtime.project, 'logs', '--no-color', 'web', 'caddy',
+  ], { encoding: 'utf8', env: { ...process.env, ...runtime.composeEnvironment } })
+  expect(logs.includes(marker), 'proxy emitted confidential request data').toBe(false)
+})
+
 test('restricted subtree and related resources are non-enumerating across every surface', async ({ browser }) => {
   const workspace = await seedWorkspace()
   const marker = `restricted-${crypto.randomUUID()}`

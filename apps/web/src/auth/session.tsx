@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, type ReactNode } from 'react'
 
 import { ApiError, apiClient, unwrap } from '../api/client'
 import type { components } from '../api/generated'
@@ -32,14 +32,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     },
   })
 
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key !== 'knowledge.auth.changed') return
+      window.dispatchEvent(new Event('knowledge:flush-drafts'))
+      queryClient.removeQueries({ predicate: (entry) => entry.queryKey[0] !== 'session' })
+      void queryClient.invalidateQueries({ queryKey: sessionKey })
+    }
+    window.addEventListener('storage', changed)
+    return () => window.removeEventListener('storage', changed)
+  }, [queryClient])
+  const resetIdentity = () => {
+    window.dispatchEvent(new Event('knowledge:flush-drafts'))
+    queryClient.removeQueries({ predicate: (entry) => entry.queryKey[0] !== 'session' })
+    try { localStorage.setItem('knowledge.auth.changed', crypto.randomUUID()) } catch { /* Storage can be unavailable. */ }
+  }
+
   const login = async (email: string, password: string) => {
     const session = unwrap(await apiClient.POST('/api/v1/auth/login', { body: { email, password } }))
     apiClient.invalidateCsrf()
+    resetIdentity()
     queryClient.setQueryData(sessionKey, session)
   }
   const logout = async () => {
+    window.dispatchEvent(new Event('knowledge:flush-drafts'))
     unwrap(await apiClient.POST('/api/v1/auth/logout'))
     apiClient.invalidateCsrf()
+    resetIdentity()
     queryClient.setQueryData(sessionKey, null)
   }
 

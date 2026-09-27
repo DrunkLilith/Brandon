@@ -65,7 +65,7 @@ wait_public_ready() {
 
 json_field() {
   local field="$1"
-  sed -n "s/.*\"$field\":\"\([^\"]*\)\".*/\1/p"
+  node "$repo_root/scripts/json-field.mjs" "$field"
 }
 
 run_powershell_backup() {

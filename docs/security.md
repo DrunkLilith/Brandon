@@ -11,13 +11,15 @@ It does not protect against host root, backend process-memory inspection, a mali
 ## Secret custody
 
 - Generate the 256-bit master key independently and store it in an operator-controlled secret system, never in Git, `.env`, PostgreSQL, MinIO, logs, an image layer, or a backup bundle.
-- Keep database and object-store credentials in separate mode-0600 files. Compose receives only absolute file paths.
+- Keep secrets in a private mode-0700 parent directory. The tested direct-file Compose mounts use mode-0644 files so non-root containers can read their individual mounts; host users cannot traverse the parent. Never put these files in a shared/traversable directory. Compose receives only absolute paths. A different secret manager may enforce its own container-readable ownership/modes.
 - MinIO client jobs read those mounted files through the bundled credential encoder, import JSON over standard input, and keep the resulting client configuration only on the container tmpfs. Credentials are not placed in `mc` arguments or persistent environment variables.
 - Do not set both a direct secret variable and its `_FILE` form. Startup rejects ambiguous, empty, multiline, NUL-containing, or unreadable secrets without logging values.
 - Bootstrap accepts an interactive or temporary file secret only. Never pass the password as an argument.
 - Restrict backup operators, restore operators, and key custodians separately where staffing permits. A backup becomes plaintext-readable only when combined with the key and a trusted backend.
 
-Master-key rewrapping/rotation is not exposed as an operator command in v1. Do not replace the master-key file in place: old workspace keys would become unreadable. Preserve the original key and plan a separately reviewed rotation procedure. Database and MinIO credential rotation also requires coordinated downtime and service-specific validation; changing only the application file is not a complete rotation.
+Workspace rotation generates a fresh data-encryption key and migrates mutable ciphertext, revisions and objects in bounded background batches. New writes use the current generation immediately; authenticated reads retain previous generations during migration. Search returns a temporary unavailable response until the deterministic blind-index rebuild completes. Immutable audit ciphertext/hash-chain entries are never rewritten: their old generations remain wrapped solely for historical reads and existing identity/idempotency HMAC compatibility. Rotating content does not retroactively protect old backups or already-disclosed plaintext, audit metadata, or stable identity HMACs.
+
+Master rotation separately rewraps every retained generation, without content re-encryption. Use the resumable `rewrap-keys` procedure in [operations.md](operations.md); never overwrite the old secret in place or discard it during a partially completed rewrap. Database and MinIO credential rotation still requires coordinated downtime and service-specific validation; changing only the application file is not a complete rotation.
 
 ## Network and host hardening
 

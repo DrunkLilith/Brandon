@@ -84,7 +84,37 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml -p knowledge up -d 
 
 If migration fails, keep the application stopped, retain logs, and restore the verified pre-upgrade backup into a separate installation. Reverting an image is safe only when release notes explicitly declare the migrated schema backward-compatible. There is no general destructive/down-migration command; never use `down --volumes` as rollback.
 
-## Backup
+## Workspace and master-key rotation
+
+Before either rotation, make and verify a backup and preserve the matching master-key version separately. Allow free object-storage capacity for one additional encrypted object while migration is active. A compromised key also requires incident response: old backups and immutable audit history cannot be made secret retroactively.
+
+For workspace rotation, open **Administration → Settings → Rotate workspace key**, read the interruption/search notice and confirm. Only a freshly authorized workspace administrator can start or inspect it. The status reports current/previous generations, migration/rebuild phase and processed units. New writes use a fresh random DEK immediately. The scheduler migrates at most 16 encrypted fields or one object (64 KiB authenticated frames, five-minute copy deadline) per batch, then indexes 16 pages per batch. Search is temporarily unavailable until completion; page and attachment reads continue with versioned decryption. One fenced ten-minute lease prevents competing workers from publishing twice. Process interruption leaves durable checkpoints and multipart/old-object cleanup records; restarting the same configured backend resumes automatically. Do not manually delete keys, objects or lease rows. A second start while busy returns conflict.
+
+Audit events are append-only: old audit ciphertext and hashes remain unchanged and their encrypted key generations are retained. Revision migration may change only encryption envelope fields under a fenced migration transaction; identity, authorship, version, content hashes and semantic fields cannot change. The reserved optional session-client and revision-reason envelope domains are `workspace:<workspace>:session:<session>:client-metadata` and `workspace:<workspace>:page:<page>:revision:<version>:change-reason`; normal v1 writes leave them null. Mutable content, attachments, exports and the search key rotate; this is not wrapper-only workspace rotation.
+
+Master rewrap is a separate offline operator workflow. Stop backend/public traffic, keep storage running, generate a fresh protected file alongside the old one, and set the non-secret `.env` values `KNOWLEDGE_MASTER_KEY_FILE=/srv/knowledge/secrets/master_key_v2` and `KNOWLEDGE_MASTER_KEY_VERSION=2` (use your actual monotonically increasing versions). Keep the old file as `master_key_v1`; never put either value in arguments or environment variables.
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.yaml -p knowledge stop caddy backend
+sudo sh -c 'umask 077; openssl rand -base64 32 | tr -d "\r\n" > /srv/knowledge/secrets/master_key_v2'
+sudo chmod 0644 /srv/knowledge/secrets/master_key_v2
+# Update only the paths/version in deploy/.env before the following command.
+docker compose --env-file deploy/.env -f deploy/compose.yaml -p knowledge run --rm -T --no-deps \
+  --entrypoint /usr/local/bin/rewrap-keys \
+  --env KNOWLEDGE_PREVIOUS_MASTER_KEY_VERSION=1 \
+  --env KNOWLEDGE_PREVIOUS_MASTER_KEY_FILE=/run/secrets/previous_master_key \
+  --volume /srv/knowledge/secrets/master_key_v1:/run/secrets/previous_master_key:ro backend
+```
+
+The command commits at most 16 retained generations and prints only `{"rewrapped":N}`. Repeat the same command until it succeeds with zero. Each generation and its audit event commit atomically, including the legacy current-wrapper pointer. After a crash or partial failure, keep both files/versions and repeat; do not run an old-only backend against partially rewrapped data. Once zero is verified, start backend using the new primary secret/version, check `/ready` and authorized historical content/audit reads, then restore public traffic. The previous mount is not needed for the final backend, but retain the previous key separately for historical backups. A missing/wrong retained master generation fails readiness. No content, secret, raw provider error or SQL appears in command diagnostics.
+
+## Retention and maintenance health
+
+Archive recovery ends exactly when `archivedAt + recoveryDays <= database clock_timestamp()`. Listing and restore share that cutoff; expiration never waits for the purge worker. Purge uses reclaimable leases and bounded batches (16 parent/object rows, 100 dependent rows per parent). It removes objects before final metadata, drains child/revision/grant/link rows safely, and appends a `retention.purged` event per final entity. Active object locks are skipped and failures retry idempotently. Export objects in finally expired spaces are deleted even if their own download deadline is later.
+
+Administration status shows process-local maintenance failure count and the last fixed phase/code, timestamp and correlation UUID; structured stderr events use the same fields, never raw errors. Counters reset on process restart; correlate with the retained structured log stream and immutable operation audit. Check database/key/object-store readiness and storage capacity, then allow the scheduler to retry; do not erase staging records to hide failures. Shutdown cancels scheduler claims and drains active HTTP requests for at most 15 seconds (Compose allows 20); interrupted work resumes via leases/checkpoints after restart.
+
+## Backup procedure
 
 Create an existing, empty, absolute target directory on separate protected storage. The scripts canonicalize the path and reject roots, home, the repository, glob-like paths, and Windows reparse points. They stop a running backend during the logical PostgreSQL dump and MinIO mirror, then restore its prior running state.
 

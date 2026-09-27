@@ -52,6 +52,7 @@ function Invoke-RustTests {
         if ($LASTEXITCODE -ne 0 -or $mapping -notmatch ':(\d+)$') { throw 'could not resolve isolated Rust test database port' }
         $env:DATABASE_URL = "postgres://knowledge:$password@127.0.0.1:$($Matches[1])/postgres"
         Invoke-Native 'Rust tests' cargo @('test', '--workspace')
+        Invoke-Native 'Seeded bounded security properties' pnpm @('property:check')
     } finally {
         $env:DATABASE_URL = $previousDatabaseUrl
         $owned = (& docker ps -a --filter "name=^/$container`$" --filter 'label=knowledge-platform.release-owned=true' --format '{{.Names}}' | Out-String).Trim()

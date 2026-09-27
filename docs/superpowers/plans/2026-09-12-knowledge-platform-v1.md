@@ -847,19 +847,19 @@ Commit: `feat(web): deliver Markdown knowledge workspace`
 - Produces: runtime RU/EN language switch with persisted preference.
 - Produces: common rendering for offline, 403/404, 409 and 5xx states.
 
-- [ ] **Step 1: Write RED locale completeness test**
+- [x] **Step 1: Write RED locale completeness test**
 
 Test flattens `en` and `ru` dictionaries and asserts identical key sets and no blank values.
 
-- [ ] **Step 2: Implement i18n provider and replace literal product UI strings**
+- [x] **Step 2: Implement i18n provider and replace literal product UI strings**
 
-- [ ] **Step 3: Write RED keyboard/focus/failure-state tests**
+- [x] **Step 3: Write RED keyboard/focus/failure-state tests**
 
 Dialogs trap/restore focus; errors use alerts; tree/editor/search are reachable without pointer; offline draft remains available.
 
-- [ ] **Step 4: Implement shared states and accessibility fixes**
+- [x] **Step 4: Implement shared states and accessibility fixes**
 
-- [ ] **Step 5: Run browser unit checks and commit**
+- [x] **Step 5: Run browser unit checks and commit**
 
 Run: `pnpm --filter @knowledge/web test --run && pnpm --filter @knowledge/web build`  
 Expected: PASS.  

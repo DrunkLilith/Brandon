@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
+use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, WorkspaceKey};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -15,7 +15,10 @@ use crate::{
     audit::{AuditEvent, append_audit_event},
     middleware::RequestId,
     problem::ApiProblem,
-    routes::users::{decrypt_text, load_workspace_key, lock_and_revalidate_admin, require_admin},
+    routes::users::{
+        audit_disclosure, decrypt_text, load_workspace_key, lock_and_revalidate_admin,
+        require_admin,
+    },
     state::AppState,
 };
 
@@ -117,7 +120,7 @@ async fn create_group(
         "INSERT INTO groups (
             id, workspace_id, name_ciphertext, name_nonce, name_key_version,
             description_ciphertext, description_nonce, description_key_version, created_by
-         ) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)",
+         ) VALUES ($1, $2, $3, $4, workspace_current_key_version($2), $5, $6, $7, $8)",
     )
     .bind(group_id)
     .bind(current.workspace_id)
@@ -133,7 +136,11 @@ async fn create_group(
             .as_ref()
             .map(|value| value.nonce.as_slice()),
     )
-    .bind(description_envelope.as_ref().map(|_| 1_i32))
+    .bind(
+        description_envelope
+            .as_ref()
+            .map(|_| workspace_key.version().0 as i32),
+    )
     .bind(current.user_id)
     .execute(&mut *transaction)
     .await
@@ -167,30 +174,45 @@ async fn create_group(
 
 async fn list_groups(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     require_admin(current)?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_and_revalidate_admin(&mut transaction, current).await?;
     let ids: Vec<Uuid> =
         sqlx::query_scalar("SELECT id FROM groups WHERE workspace_id = $1 ORDER BY created_at, id")
             .bind(current.workspace_id)
-            .fetch_all(runtime.store.pool())
+            .fetch_all(&mut *transaction)
             .await
             .map_err(|_| ApiProblem::internal())?;
     let mut groups = Vec::with_capacity(ids.len());
     for id in ids {
         groups.push(
-            load_group(
-                runtime.store.pool(),
-                &workspace_key,
-                current.workspace_id,
-                id,
-            )
-            .await?
-            .ok_or_else(ApiProblem::internal)?,
+            load_group(&mut transaction, &workspace_key, current.workspace_id, id)
+                .await?
+                .ok_or_else(ApiProblem::internal)?,
         );
     }
+    audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "group.admin_access",
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
     let mut response = Json(groups).into_response();
     prevent_caching(&mut response);
     Ok(response)
@@ -198,20 +220,40 @@ async fn list_groups(
 
 async fn get_group(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(group_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     require_admin(current)?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_and_revalidate_admin(&mut transaction, current).await?;
     let group = load_group(
-        runtime.store.pool(),
+        &mut transaction,
         &workspace_key,
         current.workspace_id,
         group_id,
     )
     .await?
     .ok_or_else(ApiProblem::not_found)?;
+    audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "group.admin_access",
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
     let mut response = Json(group).into_response();
     prevent_caching(&mut response);
     Ok(response)
@@ -290,7 +332,7 @@ async fn update_group(
         .transpose()?;
     sqlx::query(
         "UPDATE groups
-            SET name_ciphertext = $3, name_nonce = $4, name_key_version = 1,
+            SET name_ciphertext = $3, name_nonce = $4, name_key_version = workspace_current_key_version($1),
                 description_ciphertext = $5, description_nonce = $6,
                 description_key_version = $7, updated_at = now()
           WHERE workspace_id = $1 AND id = $2",
@@ -309,7 +351,7 @@ async fn update_group(
             .as_ref()
             .map(|value| value.nonce.as_slice()),
     )
-    .bind(description_envelope.as_ref().map(|_| 1_i32))
+    .bind(description_envelope.as_ref().map(|_| workspace_key.version().0 as i32))
     .execute(&mut *transaction)
     .await
     .map_err(|_| ApiProblem::internal())?;
@@ -567,7 +609,7 @@ async fn ensure_active_group(
 }
 
 async fn load_group(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::PgConnection,
     workspace_key: &WorkspaceKey,
     workspace_id: Uuid,
     group_id: Uuid,
@@ -579,7 +621,7 @@ async fn load_group(
     )
     .bind(workspace_id)
     .bind(group_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await
     .map_err(|_| ApiProblem::internal())?;
     let Some(row) = row else {
@@ -599,7 +641,7 @@ async fn load_group(
         row.4,
         row.5,
     )?;
-    let member_ids = group_member_ids(pool, workspace_id, group_id).await?;
+    let member_ids = group_member_ids(connection, workspace_id, group_id).await?;
     Ok(Some(GroupResponse {
         id: group_id,
         name,
@@ -634,7 +676,7 @@ fn encrypt_text(
     value: &str,
 ) -> Result<EncryptedEnvelope, ApiProblem> {
     EnvelopeCipher::new(
-        KeyVersion(1),
+        workspace_key.version(),
         workspace_key
             .derive(KeyPurpose::Content)
             .map_err(|_| ApiProblem::internal())?,

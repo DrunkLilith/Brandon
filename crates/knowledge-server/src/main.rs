@@ -1,7 +1,5 @@
-use knowledge_crypto::MasterKey;
 use knowledge_server::{
-    build_router,
-    config::{DatabaseConfig, S3Config, ServerConfig, load_required_secret},
+    config::{DatabaseConfig, S3Config, ServerConfig, load_master_key},
     state::AppState,
 };
 use knowledge_store::{DatabaseSettings, Store};
@@ -16,8 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<u32>()
         .map_err(|_| "invalid attachment retention configuration")?;
     let database = DatabaseConfig::from_env()?;
-    let encoded_master_key = load_required_secret("KNOWLEDGE_MASTER_KEY")?;
-    let master_key = MasterKey::from_base64(&encoded_master_key)?;
+    let master_key = load_master_key()?;
     let public_origin = std::env::var("KNOWLEDGE_PUBLIC_ORIGIN")
         .map_err(|_| "KNOWLEDGE_PUBLIC_ORIGIN must be set")?;
     let trusted_proxy_cidrs = std::env::var("KNOWLEDGE_TRUSTED_PROXY_CIDRS").unwrap_or_default();
@@ -26,13 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState::new(store, master_key, &public_origin, &trusted_proxy_cidrs)?
         .with_object_store(objects)
         .with_attachment_retention(attachment_retention_days)?;
-    let scheduler = tokio::spawn(knowledge_server::operations::run_scheduler(state.clone()));
-    let result = axum::serve(
-        listener,
-        build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await;
-    scheduler.abort();
-    result?;
+    knowledge_server::shutdown::serve_until(listener, state, knowledge_server::shutdown::signal())
+        .await?;
     Ok(())
 }

@@ -11,6 +11,8 @@ pub struct WorkspaceKeyRecord {
     pub ciphertext: Vec<u8>,
     pub nonce: [u8; 12],
     pub key_version: i32,
+    pub current_version: i32,
+    pub previous: Vec<(i32, Vec<u8>, Vec<u8>, i32)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,6 +21,8 @@ pub struct LoginUser {
     pub workspace_id: Uuid,
     pub password_hash: String,
     pub role: String,
+    pub auth_generation: i64,
+    pub membership_generation: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -195,45 +199,47 @@ impl UserRepository {
         .fetch_optional(pool)
         .await?;
 
-        row.map(|(workspace_id, ciphertext, nonce, key_version)| {
-            let nonce = nonce
-                .try_into()
-                .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
-            Ok(WorkspaceKeyRecord {
-                workspace_id,
-                ciphertext,
-                nonce,
-                key_version,
-            })
-        })
-        .transpose()
+        if let Some((id, _, _, _)) = row {
+            Self::workspace_key(pool, id).await
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn workspace_key(
         pool: &PgPool,
         workspace_id: Uuid,
     ) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
-        let row: Option<(Uuid, Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
-            "SELECT id, wrapped_key_ciphertext, wrapped_key_nonce, wrapped_key_version
-               FROM workspaces
-              WHERE id = $1",
+        type KeyGenerationRow = (Uuid, Vec<u8>, Vec<u8>, i32, i32, i32, Vec<u8>, Vec<u8>, i32);
+        let rows:Vec<KeyGenerationRow>=sqlx::query_as(
+            "SELECT w.id,w.wrapped_key_ciphertext,w.wrapped_key_nonce,w.wrapped_key_version,w.current_key_version,k.version,k.ciphertext,k.nonce,k.master_version FROM workspaces w JOIN workspace_key_generations k ON k.workspace_id=w.id WHERE w.id=$1 ORDER BY k.version",
         )
         .bind(workspace_id)
-        .fetch_optional(pool)
+        .fetch_all(pool)
         .await?;
 
-        row.map(|(workspace_id, ciphertext, nonce, key_version)| {
-            let nonce = nonce
-                .try_into()
-                .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
-            Ok(WorkspaceKeyRecord {
-                workspace_id,
-                ciphertext,
-                nonce,
-                key_version,
-            })
-        })
-        .transpose()
+        let first = rows.first().cloned();
+        first
+            .map(
+                |(workspace_id, ciphertext, nonce, key_version, current_version, _, _, _, _)| {
+                    let nonce = nonce
+                        .try_into()
+                        .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
+                    Ok(WorkspaceKeyRecord {
+                        workspace_id,
+                        ciphertext,
+                        nonce,
+                        key_version,
+                        current_version,
+                        previous: rows
+                            .into_iter()
+                            .filter(|r| r.5 != current_version)
+                            .map(|r| (r.5, r.6, r.7, r.8))
+                            .collect(),
+                    })
+                },
+            )
+            .transpose()
     }
 
     pub async fn active_login_user(
@@ -241,8 +247,8 @@ impl UserRepository {
         workspace_id: Uuid,
         email_hmac: &[u8; 32],
     ) -> Result<Option<LoginUser>, StoreError> {
-        let row = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-            "SELECT u.id, u.workspace_id, u.password_hash, wm.role
+        let row = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64, i64)>(
+            "SELECT u.id, u.workspace_id, u.password_hash, wm.role, u.auth_generation, wm.auth_generation
                FROM users u
                JOIN workspace_members wm
                  ON wm.workspace_id = u.workspace_id AND wm.user_id = u.id
@@ -257,14 +263,23 @@ impl UserRepository {
         .fetch_optional(pool)
         .await?;
 
-        Ok(
-            row.map(|(user_id, workspace_id, password_hash, role)| LoginUser {
+        Ok(row.map(
+            |(
                 user_id,
                 workspace_id,
                 password_hash,
                 role,
-            }),
-        )
+                auth_generation,
+                membership_generation,
+            )| LoginUser {
+                user_id,
+                workspace_id,
+                password_hash,
+                role,
+                auth_generation,
+                membership_generation,
+            },
+        ))
     }
 
     pub async fn create_session(

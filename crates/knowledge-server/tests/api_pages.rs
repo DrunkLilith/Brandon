@@ -19,6 +19,104 @@ use uuid::Uuid;
 const PASSWORD: &str = "correct horse battery staple";
 const ORIGIN: &str = "https://knowledge.local";
 
+#[sqlx::test]
+async fn malformed_extractors_return_redacted_problem_details(pool: PgPool) {
+    let app = app(pool).await;
+    let (cookie, _) = login(&app).await;
+    for route in [
+        "/api/v1/pages/not-a-uuid",
+        "/api/v1/pages?spaceId=not-a-uuid",
+        "/api/v1/search?from=private-input",
+    ] {
+        let response = send(&app, "GET", route, json!({}), Some(&cookie), None).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+        assert!(response.headers().contains_key("x-request-id"));
+        let problem = body(response).await;
+        assert_eq!(problem["code"], "validation_failed");
+        assert!(!problem.to_string().contains("private-input"));
+    }
+}
+
+#[sqlx::test]
+async fn bounded_properties_tree_moves_preserve_acyclic_parentage(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login(&app).await;
+    let space = create_space(&app, &cookie, &csrf, "Seeded tree").await;
+    let mut ids = Vec::new();
+    for index in 0..8 {
+        let page = create_page(
+            &app,
+            &cookie,
+            &csrf,
+            space,
+            None,
+            &format!("Node {index}"),
+            "bounded corpus",
+        )
+        .await;
+        ids.push(page["id"].as_str().unwrap().parse::<Uuid>().unwrap());
+    }
+    let mut parents = [None; 8];
+    let mut seed = 0x51eed_u64;
+    for case in 0..64 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let node = (seed % 8) as usize;
+        let parent = (((seed >> 8) % 9) as usize).checked_sub(1);
+        let mut ancestor = parent;
+        let mut cycle = false;
+        for _ in 0..8 {
+            let Some(index) = ancestor else { break };
+            if index == node {
+                cycle = true;
+                break;
+            }
+            ancestor = parents[index];
+        }
+        let response = send(
+            &app,
+            "POST",
+            &format!("/api/v1/pages/{}/move", ids[node]),
+            json!({"spaceId":space,"parentId":parent.map(|index|ids[index]),"beforeId":null}),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            if cycle {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::NO_CONTENT
+            },
+            "seed 0x51eed case {case}"
+        );
+        if !cycle {
+            parents[node] = parent;
+        }
+        let actual: Vec<(Uuid, Option<Uuid>)> =
+            sqlx::query_as("SELECT id,parent_id FROM pages WHERE space_id=$1 ORDER BY id")
+                .bind(space)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actual.len(), 8);
+        for (id, parent) in actual {
+            let index = ids.iter().position(|candidate| *candidate == id).unwrap();
+            assert_eq!(
+                parent,
+                parents[index].map(|index| ids[index]),
+                "seed 0x51eed case {case}"
+            );
+        }
+    }
+}
+
 async fn app(pool: PgPool) -> Router {
     MIGRATOR.run(&pool).await.unwrap();
     let store = Store::from_pool(pool);
@@ -188,6 +286,102 @@ async fn create_page(
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     body(response).await
+}
+
+#[sqlx::test]
+async fn archived_page_discovery_is_paginated_authorized_and_retention_bounded(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login(&app).await;
+    let space = create_space(&app, &cookie, &csrf, "Archive").await;
+    let owner = create_user(&app, &cookie, &csrf, "owner@example.com").await;
+    let grant = send(
+        &app,
+        "POST",
+        &format!("/api/v1/spaces/{space}/grants"),
+        json!({"subjectType":"user","subjectId":owner,"role":"owner"}),
+        Some(&cookie),
+        Some(&csrf),
+    )
+    .await;
+    assert_eq!(grant.status(), StatusCode::CREATED);
+    let mut ids = Vec::new();
+    for index in 0..4 {
+        let page = create_page(
+            &app,
+            &cookie,
+            &csrf,
+            space,
+            None,
+            &format!("Archived {index}"),
+            "retained",
+        )
+        .await;
+        let id: Uuid = page["id"].as_str().unwrap().parse().unwrap();
+        ids.push(id);
+        assert_eq!(
+            send(
+                &app,
+                "DELETE",
+                &format!("/api/v1/pages/{id}"),
+                json!({}),
+                Some(&cookie),
+                Some(&csrf)
+            )
+            .await
+            .status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    sqlx::query("UPDATE pages SET restricted=true WHERE id=$1")
+        .bind(ids[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE pages SET archived_at=now()-interval '31 days' WHERE id=$1")
+        .bind(ids[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (owner_cookie, _) = login_as(&app, "owner@example.com").await;
+    let url = format!("/api/v1/spaces/{space}/archived-pages?limit=1");
+    let first = send(&app, "GET", &url, json!({}), Some(&owner_cookie), None).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = body(first).await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let cursor = first["nextCursor"].as_str().unwrap();
+    let second = body(
+        send(
+            &app,
+            "GET",
+            &format!("{url}&after={cursor}"),
+            json!({}),
+            Some(&owner_cookie),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert!(second["nextCursor"].is_null());
+    let mut found = vec![
+        first["items"][0]["id"].as_str().unwrap().to_owned(),
+        second["items"][0]["id"].as_str().unwrap().to_owned(),
+    ];
+    found.sort();
+    let mut expected = vec![ids[2].to_string(), ids[3].to_string()];
+    expected.sort();
+    assert_eq!(found, expected);
+    sqlx::query("UPDATE space_grants SET role='viewer' WHERE user_id=$1")
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(&app, "GET", &url, json!({}), Some(&owner_cookie), None)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[sqlx::test]

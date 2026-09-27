@@ -89,7 +89,10 @@ async fn create(
     ) {
         return Err(ApiProblem::not_found());
     }
-    if let Some(row)=sqlx::query_as::<_,(Uuid,Uuid,String,Option<chrono::DateTime<chrono::Utc>>,chrono::DateTime<chrono::Utc>)>("SELECT id,space_id,status,expires_at,created_at FROM exports WHERE workspace_id=$1 AND requested_by=$2 AND request_key=$3").bind(current.workspace_id).bind(current.user_id).bind(request_key).fetch_optional(&mut *tx).await.map_err(internal)? {tx.commit().await.map_err(internal)?;return Ok((StatusCode::ACCEPTED,Json(ExportResponse{id:row.0,space_id:row.1,status:row.2,expires_at:row.3,created_at:row.4})).into_response());}
+    if let Some(row)=sqlx::query_as::<_,(Uuid,Uuid,String,Option<chrono::DateTime<chrono::Utc>>,chrono::DateTime<chrono::Utc>)>("SELECT id,space_id,status,expires_at,created_at FROM exports WHERE workspace_id=$1 AND requested_by=$2 AND request_key=$3").bind(current.workspace_id).bind(current.user_id).bind(request_key).fetch_optional(&mut *tx).await.map_err(internal)? {
+        if row.1!=input.space_id {return Err(ApiProblem::conflict("Idempotency key belongs to a different request"));}
+        tx.commit().await.map_err(internal)?;return Ok((StatusCode::ACCEPTED,Json(ExportResponse{id:row.0,space_id:row.1,status:row.2,expires_at:row.3,created_at:row.4})).into_response());
+    }
     let bucket = rate_limit_bucket(b"export-actor", current.user_id.as_bytes());
     if !UserRepository::consume_rate_limit_attempt(runtime.store.pool(), &[bucket], 10)
         .await
@@ -108,7 +111,7 @@ async fn create(
     };
     let encrypted =
         encrypt_job_payload(&key, current.workspace_id, job, &payload).map_err(internal)?;
-    sqlx::query("INSERT INTO jobs(id,workspace_id,job_type,payload_ciphertext,payload_nonce,payload_key_version,status) VALUES($1,$2,'export',$3,$4,1,'queued')").bind(job).bind(current.workspace_id).bind(encrypted.0).bind(encrypted.1.as_slice()).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("INSERT INTO jobs(id,workspace_id,job_type,payload_ciphertext,payload_nonce,payload_key_version,status) VALUES($1,$2,'export',$3,$4,$5,'queued')").bind(job).bind(current.workspace_id).bind(encrypted.0).bind(encrypted.1.as_slice()).bind(key.version().0 as i32).execute(&mut *tx).await.map_err(internal)?;
     let created:chrono::DateTime<chrono::Utc>=sqlx::query_scalar("INSERT INTO exports(id,workspace_id,space_id,requested_by,job_id,status,request_key) VALUES($1,$2,$3,$4,$5,'queued',$6) RETURNING created_at").bind(export).bind(current.workspace_id).bind(input.space_id).bind(current.user_id).bind(job).bind(request_key).fetch_one(&mut *tx).await.map_err(internal)?;
     append_audit_event(
         &mut tx,
@@ -318,7 +321,11 @@ async fn download(
         return Err(ApiProblem::internal());
     }
     let stream_cipher = AttachmentStream::new_export(
-        key.derive(KeyPurpose::Attachment).map_err(internal)?,
+        key.derive_for(
+            KeyPurpose::Attachment,
+            KeyVersion(u32::try_from(row.4).map_err(internal)?),
+        )
+        .map_err(internal)?,
         KeyVersion(u32::try_from(row.4).map_err(internal)?),
         current.workspace_id.as_bytes(),
         id.as_bytes(),

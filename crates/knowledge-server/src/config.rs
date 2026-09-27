@@ -9,6 +9,36 @@ use std::{
 
 const DEFAULT_LISTEN_ADDRESS: &str = "0.0.0.0:3000";
 
+/// Rotation secrets use the same protected-file loader as the primary key.
+/// Versions are non-secret metadata. Keep both keys configured during rewrap.
+pub fn load_master_key() -> Result<knowledge_crypto::MasterKey, &'static str> {
+    let encoded = load_required_secret("KNOWLEDGE_MASTER_KEY")
+        .map_err(|_| "KNOWLEDGE_MASTER_KEY_FILE configuration is invalid")?;
+    let current = knowledge_crypto::MasterKey::from_base64(&encoded)
+        .map_err(|_| "master key configuration is invalid")?;
+    let version = std::env::var("KNOWLEDGE_MASTER_KEY_VERSION")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .map_err(|_| "master key version is invalid")?;
+    let previous = if let Ok(old_version) = std::env::var("KNOWLEDGE_PREVIOUS_MASTER_KEY_VERSION") {
+        let old_version = old_version
+            .parse()
+            .map_err(|_| "previous master key version is invalid")?;
+        let old = load_required_secret("KNOWLEDGE_PREVIOUS_MASTER_KEY")
+            .map_err(|_| "previous master key configuration is invalid")?;
+        Some((
+            old_version,
+            knowledge_crypto::MasterKey::from_base64(&old)
+                .map_err(|_| "previous master key configuration is invalid")?,
+        ))
+    } else {
+        None
+    };
+    current
+        .with_versions(version, previous)
+        .map_err(|_| "master key versions are invalid")
+}
+
 /// Explicit production storage credentials; intentionally has no Debug impl.
 pub struct S3Config {
     endpoint: String,

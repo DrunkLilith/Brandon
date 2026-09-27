@@ -82,6 +82,21 @@ async fn search(
     }
 
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    crate::audit::lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    crate::routes::spaces::revalidate_session(&mut transaction, current).await?;
+    let rotating: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM key_rotations WHERE workspace_id=$1 AND state<>'complete')",
+    )
+    .bind(current.workspace_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(internal)?;
+    if rotating {
+        return Err(ApiProblem::unavailable());
+    }
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let indexer = BlindIndexer::new(workspace_key.derive(KeyPurpose::Search).map_err(internal)?);
     let words = BlindIndexer::words("und", &query.q);
@@ -96,8 +111,6 @@ async fn search(
     }
     let query_tokens = query_tokens(&indexer, &words);
 
-    let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
-    crate::routes::spaces::revalidate_session(&mut transaction, current).await?;
     let candidates = BlindSearchRepository::candidates(
         &mut transaction,
         current.workspace_id,

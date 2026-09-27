@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ipnet::IpNet;
 use knowledge_crypto::{MasterKey, PasswordService};
@@ -20,6 +20,44 @@ pub(crate) struct RuntimeState {
     pub objects: Option<Arc<dyn ObjectStore>>,
     pub object_streams: Arc<tokio::sync::Semaphore>,
     pub attachment_retention_days: u32,
+    pub maintenance: Mutex<MaintenanceHealth>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MaintenanceHealth {
+    pub failures: u64,
+    pub last_failure: Option<OperationFailure>,
+}
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OperationFailure {
+    phase: &'static str,
+    code: &'static str,
+    correlation_id: uuid::Uuid,
+    at: chrono::DateTime<chrono::Utc>,
+}
+impl RuntimeState {
+    pub fn operation_failed(&self, phase: &'static str, correlation_id: uuid::Uuid) {
+        let failure = OperationFailure {
+            phase,
+            code: "operation_failed",
+            correlation_id,
+            at: chrono::Utc::now(),
+        };
+        // Only fixed phase/error codes and opaque correlation IDs are permitted.
+        // Never attach database/provider errors, payloads, paths or credentials.
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"operation.failed","failure":failure})
+        );
+        let mut health = self
+            .maintenance
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        health.failures = health.failures.saturating_add(1);
+        health.last_failure = Some(failure);
+    }
 }
 
 impl AppState {
@@ -59,6 +97,7 @@ impl AppState {
                 objects: None,
                 object_streams: Arc::new(tokio::sync::Semaphore::new(object_stream_slots)),
                 attachment_retention_days: 30,
+                maintenance: Mutex::new(MaintenanceHealth::default()),
             })),
         })
     }

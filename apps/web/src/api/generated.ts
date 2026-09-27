@@ -1,4 +1,20 @@
 export type paths = {
+    readonly "/api/v1/admin/key-rotations": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["getKeyRotation"];
+        readonly put?: never;
+        readonly post: operations["startKeyRotation"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/v1/admin/settings": {
         readonly parameters: {
             readonly query?: never;
@@ -575,6 +591,22 @@ export type paths = {
         readonly patch: operations["updateSpace"];
         readonly trace?: never;
     };
+    readonly "/api/v1/spaces/{id}/archived-pages": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get: operations["listArchivedPages"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/v1/spaces/{id}/restore": {
         readonly parameters: {
             readonly query?: never;
@@ -681,7 +713,7 @@ export type paths = {
         readonly get?: never;
         readonly put?: never;
         readonly post?: never;
-        readonly delete?: never;
+        readonly delete: operations["deleteUser"];
         readonly options?: never;
         readonly head?: never;
         readonly patch: operations["updateUser"];
@@ -715,6 +747,7 @@ export type components = {
                 readonly migrations: boolean;
                 readonly objectStorage: boolean;
             };
+            readonly maintenance: components["schemas"]["MaintenanceHealth"];
             /** @enum {string} */
             readonly migrationState: "current" | "pending";
             readonly queuedJobs: number;
@@ -836,6 +869,13 @@ export type components = {
             /** @enum {string} */
             readonly workspaceRole: "admin" | "member";
         };
+        readonly KeyRotation: {
+            readonly currentVersion: number;
+            readonly previousVersion: number | null;
+            readonly processed: number;
+            /** @enum {string} */
+            readonly state: "migrating" | "rebuilding" | "complete";
+        };
         readonly Liveness: {
             /** @enum {string} */
             readonly status: "ok";
@@ -846,6 +886,10 @@ export type components = {
             /** Format: password */
             readonly password: string;
         };
+        readonly MaintenanceHealth: {
+            readonly failures: number;
+            readonly lastFailure: components["schemas"]["OperationFailure"] | null;
+        };
         readonly OpenApiDocument: {
             readonly components: Record<string, never>;
             readonly info: Record<string, never>;
@@ -853,6 +897,15 @@ export type components = {
             readonly paths: Record<string, never>;
         } & {
             readonly [key: string]: unknown;
+        };
+        readonly OperationFailure: {
+            /** Format: date-time */
+            readonly at: string;
+            /** @enum {string} */
+            readonly code: "operation_failed";
+            /** Format: uuid */
+            readonly correlationId: string;
+            readonly phase: string;
         };
         readonly Page: {
             readonly capabilities: components["schemas"]["PageCapabilities"];
@@ -1104,6 +1157,138 @@ export type components = {
 };
 export type $defs = Record<string, never>;
 export interface operations {
+    readonly getKeyRotation: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Success */
+            readonly 200: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KeyRotation"];
+                };
+            };
+            /** @description Authentication required */
+            readonly 401: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            readonly 403: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error */
+            readonly 500: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service unavailable */
+            readonly 503: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    readonly startKeyRotation: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Success */
+            readonly 202: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KeyRotation"];
+                };
+            };
+            /** @description Authentication required */
+            readonly 401: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            readonly 403: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error */
+            readonly 500: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service unavailable */
+            readonly 503: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     readonly getSettings: {
         readonly parameters: {
             readonly query?: never;
@@ -1394,6 +1579,16 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -1475,6 +1670,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -1548,6 +1753,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -2121,6 +2336,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -2349,6 +2574,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -2431,6 +2666,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -2496,6 +2741,16 @@ export interface operations {
             };
             /** @description Not found */
             readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -2577,6 +2832,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -2755,6 +3020,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -3118,6 +3393,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -3309,6 +3594,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -3467,6 +3762,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -3540,6 +3845,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -3915,6 +4230,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -4065,6 +4390,16 @@ export interface operations {
             };
             /** @description Not found */
             readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -4253,6 +4588,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -4423,6 +4768,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -4489,6 +4844,16 @@ export interface operations {
             };
             /** @description Not found */
             readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -4570,6 +4935,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -4854,6 +5229,16 @@ export interface operations {
                     readonly "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Internal error */
             readonly 500: {
                 headers: {
@@ -4927,6 +5312,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -5054,6 +5449,92 @@ export interface operations {
             };
         };
     };
+    readonly listArchivedPages: {
+        readonly parameters: {
+            readonly query?: {
+                readonly after?: string;
+                readonly limit?: number;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Success */
+            readonly 200: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ArchivedList"];
+                };
+            };
+            /** @description Authentication required */
+            readonly 401: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            readonly 403: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error */
+            readonly 500: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service unavailable */
+            readonly 503: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     readonly restoreSpace: {
         readonly parameters: {
             readonly query?: never;
@@ -5105,6 +5586,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -5264,6 +5755,16 @@ export interface operations {
             };
             /** @description Not found */
             readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -5443,6 +5944,16 @@ export interface operations {
             };
             /** @description Conflict */
             readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;
@@ -5706,6 +6217,97 @@ export interface operations {
             };
         };
     };
+    readonly deleteUser: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Success */
+            readonly 204: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication required */
+            readonly 401: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            readonly 403: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            readonly 409: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Internal error */
+            readonly 500: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Service unavailable */
+            readonly 503: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     readonly updateUser: {
         readonly parameters: {
             readonly query?: never;
@@ -5844,6 +6446,16 @@ export interface operations {
             };
             /** @description Not found */
             readonly 404: {
+                headers: {
+                    readonly "X-Request-ID": string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Validation failed */
+            readonly 422: {
                 headers: {
                     readonly "X-Request-ID": string;
                     readonly [name: string]: unknown;

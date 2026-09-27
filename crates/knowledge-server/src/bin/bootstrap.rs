@@ -1,9 +1,8 @@
 use std::env;
 
-use knowledge_crypto::MasterKey;
 use knowledge_server::{
     bootstrap::{BootstrapInput, BootstrapService},
-    config::{DatabaseConfig, load_required_secret},
+    config::{DatabaseConfig, load_master_key, load_required_secret},
 };
 use knowledge_store::{DatabaseSettings, Store};
 
@@ -18,8 +17,7 @@ struct Arguments {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments(env::args().skip(1))?;
     let database = DatabaseConfig::from_env()?;
-    let encoded_master_key = load_required_secret("KNOWLEDGE_MASTER_KEY")?;
-    let master_key = MasterKey::from_base64(&encoded_master_key)?;
+    let master_key = load_master_key()?;
     let password = if env::var_os("KNOWLEDGE_BOOTSTRAP_PASSWORD_FILE").is_some() {
         load_required_secret("KNOWLEDGE_BOOTSTRAP_PASSWORD")?.to_string()
     } else {

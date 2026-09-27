@@ -42,7 +42,10 @@ api_router! {
         post => accept_invitation => ("acceptInvitation", Public, 201),
     ],
     "/api/v1/users" => [get => list_users => ("listUsers", Session, 200)],
-    "/api/v1/users/{id}" => [patch => update_user => ("updateUser", Mutation, 200)],
+    "/api/v1/users/{id}" => [
+        patch => update_user => ("updateUser", Mutation, 200),
+        delete => delete_user => ("deleteUser", Mutation, 204),
+    ],
     "/api/v1/users/{id}/revoke-sessions" => [
         post => revoke_user_sessions => ("revokeUserSessions", Mutation, 204),
     ],
@@ -185,7 +188,7 @@ async fn create_invitation(
     let workspace_key = unwrap_workspace_key(&runtime.master_key, &key_record)
         .map_err(|_| ApiProblem::internal())?;
     let search_key = workspace_key
-        .derive(KeyPurpose::Search)
+        .derive_identity()
         .map_err(|_| ApiProblem::internal())?;
     let email_hmac = search_key.authenticate(email.as_bytes());
     let mut fingerprint_input =
@@ -203,7 +206,7 @@ async fn create_invitation(
     ];
     let invitation_id = Uuid::now_v7();
     let email_cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        workspace_key.version(),
         workspace_key
             .derive(KeyPurpose::Content)
             .map_err(|_| ApiProblem::internal())?,
@@ -257,7 +260,13 @@ async fn create_invitation(
         }
         let nonce: [u8; 12] = nonce.try_into().map_err(|_| ApiProblem::internal())?;
         let version = u32::try_from(version).map_err(|_| ApiProblem::internal())?;
-        let decrypted = email_cipher
+        let replay_cipher = EnvelopeCipher::new(
+            KeyVersion(version),
+            workspace_key
+                .derive_for(KeyPurpose::Content, KeyVersion(version))
+                .map_err(|_| ApiProblem::internal())?,
+        );
+        let decrypted = replay_cipher
             .decrypt(
                 token_aad.as_bytes(),
                 &EncryptedEnvelope {
@@ -333,7 +342,7 @@ async fn create_invitation(
         "INSERT INTO invitations (
             id, workspace_id, email_hmac, email_ciphertext, email_nonce, email_key_version,
             workspace_role, token_hash, invited_by, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
+         ) VALUES ($1, $2, $3, $4, $5, workspace_current_key_version($2), $6, $7, $8, $9)
          RETURNING expires_at",
     )
     .bind(invitation_id)
@@ -362,7 +371,7 @@ async fn create_invitation(
         "INSERT INTO invitation_idempotency (
             workspace_id,actor_user_id,idempotency_key,fingerprint,invitation_id,
             token_ciphertext,token_nonce,token_key_version
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,1)",
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,workspace_current_key_version($1))",
     )
     .bind(current.workspace_id)
     .bind(current.user_id)
@@ -519,7 +528,7 @@ async fn accept_invitation(
     let workspace_key = unwrap_workspace_key(&runtime.master_key, &key_record)
         .map_err(|_| ApiProblem::internal())?;
     let content_key = workspace_key
-        .derive(KeyPurpose::Content)
+        .derive_for(KeyPurpose::Content, KeyVersion(key_version as u32))
         .map_err(|_| ApiProblem::internal())?;
     let invitation_cipher = EnvelopeCipher::new(KeyVersion(key_version as u32), content_key);
     let email_aad = format!("workspace:{workspace_id}:invitation:{invitation_id}:email");
@@ -538,7 +547,7 @@ async fn accept_invitation(
         std::str::from_utf8(decrypted_email.expose()).map_err(|_| ApiProblem::internal())?;
     let user_id = Uuid::now_v7();
     let user_cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        workspace_key.version(),
         workspace_key
             .derive(KeyPurpose::Content)
             .map_err(|_| ApiProblem::internal())?,
@@ -564,7 +573,7 @@ async fn accept_invitation(
             id, workspace_id, email_hmac, email_ciphertext, email_nonce, email_key_version,
             display_name_ciphertext, display_name_nonce, display_name_key_version,
             password_hash, status
-         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, 1, $8, 'active')",
+         ) VALUES ($1, $2, $3, $4, $5, workspace_current_key_version($2), $6, $7, workspace_current_key_version($2), $8, 'active')",
     )
     .bind(user_id)
     .bind(workspace_id)
@@ -633,11 +642,19 @@ async fn accept_invitation(
 
 async fn list_invitations(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     require_admin(current)?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_and_revalidate_admin(&mut transaction, current).await?;
     let rows = sqlx::query_as::<
         _,
         (
@@ -658,7 +675,7 @@ async fn list_invitations(
           ORDER BY created_at DESC, id DESC",
     )
     .bind(current.workspace_id)
-    .fetch_all(runtime.store.pool())
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|_| ApiProblem::internal())?;
     let mut invitations = Vec::with_capacity(rows.len());
@@ -689,6 +706,18 @@ async fn list_invitations(
             expires_at,
         });
     }
+    audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "invitation.admin_access",
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
     let mut response = Json(invitations).into_response();
     prevent_caching(&mut response);
     Ok(response)
@@ -749,11 +778,19 @@ async fn revoke_invitation(
 
 async fn list_users(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     require_admin(current)?;
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_and_revalidate_admin(&mut transaction, current).await?;
     let rows = sqlx::query_as::<
         _,
         (
@@ -778,7 +815,7 @@ async fn list_users(
           ORDER BY u.created_at, u.id",
     )
     .bind(current.workspace_id)
-    .fetch_all(runtime.store.pool())
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|_| ApiProblem::internal())?;
     let mut users = Vec::with_capacity(rows.len());
@@ -816,6 +853,18 @@ async fn list_users(
             status,
         });
     }
+    audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "user.admin_access",
+    )
+    .await?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
     let mut response = Json(users).into_response();
     prevent_caching(&mut response);
     Ok(response)
@@ -951,6 +1000,85 @@ async fn update_user(
     .into_response())
 }
 
+async fn delete_user(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    current: CurrentUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Response, ApiProblem> {
+    require_admin(current)?;
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut transaction = runtime
+        .store
+        .pool()
+        .begin()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    lock_and_revalidate_admin(&mut transaction, current).await?;
+    let target: Option<(String, String)> = sqlx::query_as(
+        "SELECT u.status, wm.role FROM users u JOIN workspace_members wm
+         ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+         WHERE u.workspace_id=$1 AND u.id=$2 AND u.deleted_at IS NULL FOR UPDATE OF u,wm",
+    )
+    .bind(current.workspace_id)
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    let Some((status, role)) = target else {
+        return Err(ApiProblem::not_found());
+    };
+    if status == "active" && role == "admin" {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM users u JOIN workspace_members wm
+             ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+             WHERE u.workspace_id=$1 AND u.status='active' AND u.deleted_at IS NULL AND wm.status='active' AND wm.role='admin'",
+        ).bind(current.workspace_id).fetch_one(&mut *transaction).await.map_err(|_| ApiProblem::internal())?;
+        if count <= 1 {
+            return Err(ApiProblem::conflict(
+                "A workspace must keep at least one active administrator",
+            ));
+        }
+    }
+    // Keep the identity row for immutable revision/audit attribution, but remove
+    // credentials and access. A deleted identity can never be reactivated.
+    UserRepository::revoke_all_sessions(&mut transaction, current.workspace_id, user_id)
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    sqlx::query("UPDATE users SET status='deleted',deleted_at=now(),password_hash=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2")
+        .bind(current.workspace_id).bind(user_id).execute(&mut *transaction).await.map_err(|_| ApiProblem::internal())?;
+    sqlx::query(
+        "UPDATE workspace_members SET status='suspended' WHERE workspace_id=$1 AND user_id=$2",
+    )
+    .bind(current.workspace_id)
+    .bind(user_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    append_audit_event(
+        &mut transaction,
+        &key,
+        AuditEvent {
+            workspace_id: current.workspace_id,
+            actor_user_id: Some(current.user_id),
+            session_id: Some(current.session_id),
+            event_type: "user.deleted",
+            target_type: "user",
+            target_id: Some(user_id),
+            request_id: request_id.as_uuid(),
+            metadata: json!({}),
+        },
+    )
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn revoke_user_sessions(
     State(state): State<AppState>,
     Extension(request_id): Extension<RequestId>,
@@ -1006,6 +1134,60 @@ pub(crate) async fn load_workspace_key(
         .map_err(|_| ApiProblem::internal())?
         .ok_or_else(ApiProblem::internal)?;
     unwrap_workspace_key(&runtime.master_key, &record).map_err(|_| ApiProblem::internal())
+}
+
+/// A disclosure shares the workspace serialization boundary with all ACL and
+/// session mutations. Never use the extractor's role after waiting on it.
+pub(crate) async fn lock_and_refresh_current(
+    transaction: &mut Transaction<'_, Postgres>,
+    current: CurrentUser,
+) -> Result<CurrentUser, ApiProblem> {
+    lock_workspace(transaction, current.workspace_id).await?;
+    let admin: Option<bool> = sqlx::query_scalar(
+        "SELECT wm.role='admin' FROM users u
+         JOIN workspace_members wm ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+         JOIN sessions s ON s.workspace_id=u.workspace_id AND s.user_id=u.id
+         WHERE u.workspace_id=$1 AND u.id=$2 AND s.id=$3
+           AND u.status='active' AND u.deleted_at IS NULL AND wm.status='active'
+           AND s.revoked_at IS NULL AND s.expires_at>now()",
+    )
+    .bind(current.workspace_id)
+    .bind(current.user_id)
+    .bind(current.session_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    let mut current = current;
+    current.workspace_admin = admin.ok_or_else(ApiProblem::unauthorized)?;
+    Ok(current)
+}
+
+pub(crate) async fn audit_disclosure(
+    transaction: &mut Transaction<'_, Postgres>,
+    key: &WorkspaceKey,
+    current: CurrentUser,
+    request_id: RequestId,
+    event_type: &'static str,
+) -> Result<(), ApiProblem> {
+    if current.workspace_admin {
+        append_audit_event(
+            transaction,
+            key,
+            AuditEvent {
+                workspace_id: current.workspace_id,
+                actor_user_id: Some(current.user_id),
+                session_id: Some(current.session_id),
+                event_type,
+                target_type: "workspace",
+                target_id: Some(current.workspace_id),
+                request_id: request_id.as_uuid(),
+                metadata: json!({}),
+            },
+        )
+        .await
+        .map_err(|_| ApiProblem::internal())?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn lock_and_revalidate_admin(
@@ -1085,7 +1267,7 @@ pub(crate) fn decrypt_text(
     let cipher = EnvelopeCipher::new(
         KeyVersion(key_version),
         workspace_key
-            .derive(KeyPurpose::Content)
+            .derive_for(KeyPurpose::Content, KeyVersion(key_version))
             .map_err(|_| ApiProblem::internal())?,
     );
     let decrypted = cipher

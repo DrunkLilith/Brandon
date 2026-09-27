@@ -154,7 +154,7 @@ fn upload_fingerprint(
     request: Option<Uuid>,
 ) -> Result<Hmac<Sha256>, ApiProblem> {
     let child_key = Zeroizing::new(
-        key.derive(KeyPurpose::Attachment)
+        key.derive_for(KeyPurpose::Attachment, KeyVersion(1))
             .map_err(internal)?
             .authenticate(b"knowledge/upload-fingerprint-key/v1"),
     );
@@ -281,7 +281,8 @@ pub(crate) fn decrypt_text(
     };
     let cipher = EnvelopeCipher::new(
         version,
-        key.derive(KeyPurpose::Attachment).map_err(internal)?,
+        key.derive_for(KeyPurpose::Attachment, version)
+            .map_err(internal)?,
     );
     String::from_utf8(
         cipher
@@ -367,7 +368,7 @@ async fn upload(
                 charge_body_attempt(&state, current).await?;
                 let stream = AttachmentStream::new(
                     key.derive(KeyPurpose::Attachment).map_err(internal)?,
-                    KeyVersion(1),
+                    key.version(),
                     current.workspace_id.as_bytes(),
                     attachment.as_bytes(),
                     input.size,
@@ -468,7 +469,7 @@ async fn upload(
     reserve.commit().await.map_err(internal)?;
     let stream = AttachmentStream::new(
         key.derive(KeyPurpose::Attachment).map_err(internal)?,
-        KeyVersion(1),
+        key.version(),
         current.workspace_id.as_bytes(),
         id.as_bytes(),
         input.size,
@@ -521,7 +522,7 @@ async fn upload(
         .map_err(internal)?
         .map_err(internal)?;
     let cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        key.version(),
         key.derive(KeyPurpose::Attachment).map_err(internal)?,
     );
     let name_envelope = cipher
@@ -542,7 +543,7 @@ async fn upload(
         .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
     authorize(&mut tx, current, page, Capability::UploadAttachment, false).await?;
-    sqlx::query("INSERT INTO attachments(id,workspace_id,page_id,original_name_ciphertext,original_name_nonce,original_name_key_version,mime_ciphertext,mime_nonce,mime_key_version,object_key,plaintext_size,ciphertext_size,checksum,key_version,stream_header,created_by) VALUES($1,$2,$3,$4,$5,1,$6,$7,1,$8,$9,$10,$11,1,$12,$13)").bind(id).bind(current.workspace_id).bind(page).bind(name_envelope.ciphertext).bind(name_envelope.nonce.as_slice()).bind(mime_envelope.ciphertext).bind(mime_envelope.nonce.as_slice()).bind(object).bind(input.size as i64).bind(stream.ciphertext_size() as i64).bind(checksum.as_slice()).bind(stream.header()).bind(current.user_id).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("INSERT INTO attachments(id,workspace_id,page_id,original_name_ciphertext,original_name_nonce,original_name_key_version,mime_ciphertext,mime_nonce,mime_key_version,object_key,plaintext_size,ciphertext_size,checksum,key_version,stream_header,created_by) VALUES($1,$2,$3,$4,$5,$14,$6,$7,$14,$8,$9,$10,$11,$14,$12,$13)").bind(id).bind(current.workspace_id).bind(page).bind(name_envelope.ciphertext).bind(name_envelope.nonce.as_slice()).bind(mime_envelope.ciphertext).bind(mime_envelope.nonce.as_slice()).bind(object).bind(input.size as i64).bind(stream.ciphertext_size() as i64).bind(checksum.as_slice()).bind(stream.header()).bind(current.user_id).bind(key.version().0 as i32).execute(&mut *tx).await.map_err(internal)?;
     audit(&mut tx, &key, current, request, id, "attachment.uploaded").await?;
     if let Some(request_key) = request_key {
         sqlx::query("UPDATE attachment_upload_requests SET attachment_id=$4,fingerprint=$5 WHERE workspace_id=$1 AND user_id=$2 AND request_key=$3").bind(current.workspace_id).bind(current.user_id).bind(request_key).bind(id).bind(fingerprint.finalize().into_bytes().as_slice()).execute(&mut *tx).await.map_err(internal)?;
@@ -738,7 +739,7 @@ async fn list(
         query.archived,
     )
     .await?;
-    let rows:Vec<StoredAttachment>=sqlx::query_as(select_attachment!("WHERE workspace_id=$1 AND page_id=$2 AND (archived_at IS NOT NULL)=$3 AND ($4::uuid IS NULL OR id>$4) ORDER BY id LIMIT 100")).bind(current.workspace_id).bind(page).bind(query.archived).bind(query.after).fetch_all(&mut *tx).await.map_err(internal)?;
+    let rows:Vec<StoredAttachment>=sqlx::query_as(select_attachment!("WHERE workspace_id=$1 AND page_id=$2 AND (archived_at IS NOT NULL)=$3 AND NOT retention_expired(workspace_id,archived_at) AND ($4::uuid IS NULL OR id>$4) ORDER BY id LIMIT 100")).bind(current.workspace_id).bind(page).bind(query.archived).bind(query.after).fetch_all(&mut *tx).await.map_err(internal)?;
     if administrative {
         audit_access(&mut tx, &key, current, request, ("page", page), "list").await?;
     }
@@ -778,13 +779,29 @@ async fn download(
         .objects
         .clone()
         .ok_or_else(ApiProblem::unavailable)?;
-    let key = load_workspace_key(&state, current.workspace_id).await?;
+    // Download bodies retain the same object fence used by retention/rotation.
+    // Acquire before workspace authority checks, without exhausting pool slots.
+    let stream_permit = runtime
+        .object_streams
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiProblem::unavailable())?;
+    let object:Uuid=sqlx::query_scalar("SELECT object_key FROM attachments WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL")
+        .bind(current.workspace_id).bind(id).fetch_optional(runtime.store.pool()).await.map_err(internal)?.ok_or_else(ApiProblem::not_found)?;
+    let object_guard = tokio::time::timeout(OP_TIMEOUT, lock_object(runtime.store.pool(), object))
+        .await
+        .map_err(internal)?
+        .map_err(internal)?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_workspace_for_audit(&mut tx, current.workspace_id)
         .await
         .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
+    let key = load_workspace_key(&state, current.workspace_id).await?;
     let row = load(&mut tx, current.workspace_id, id, false).await?;
+    if row.object_key != object {
+        return Err(ApiProblem::not_found());
+    }
     let administrative = authorize(
         &mut tx,
         current,
@@ -808,7 +825,8 @@ async fn download(
     let version = u32::try_from(row.key_version).map_err(internal)?;
     let size = u64::try_from(row.plaintext_size).map_err(internal)?;
     let stream = AttachmentStream::new(
-        key.derive(KeyPurpose::Attachment).map_err(internal)?,
+        key.derive_for(KeyPurpose::Attachment, KeyVersion(version))
+            .map_err(internal)?,
         KeyVersion(version),
         current.workspace_id.as_bytes(),
         id.as_bytes(),
@@ -857,8 +875,8 @@ async fn download(
     let first = start / STREAM_CHUNK_SIZE as u64;
     let last = end.div_ceil(STREAM_CHUNK_SIZE as u64);
     let body = Body::from_stream(futures_util::stream::try_unfold(
-        (objects, stream, first),
-        move |(objects, stream, index)| async move {
+        (objects, stream, first, object_guard, stream_permit),
+        move |(objects, stream, index, guard, permit)| async move {
             if index >= last {
                 return Ok::<_, std::io::Error>(None);
             }
@@ -871,7 +889,10 @@ async fn download(
             let bytes = stream
                 .decrypt_chunk(index, &frame)
                 .map_err(|_| std::io::Error::other("authenticated stream failed"))?;
-            Ok(Some((Bytes::from(bytes), (objects, stream, index + 1))))
+            Ok(Some((
+                Bytes::from(bytes),
+                (objects, stream, index + 1, guard, permit),
+            )))
         },
     ));
     // ASCII fallback is deliberate: no header injection, path components or
@@ -1012,7 +1033,7 @@ async fn mutate(
         let retention_days =
             persisted_retention.unwrap_or(runtime.attachment_retention_days as i32);
         let retained: bool = sqlx::query_scalar(
-            "SELECT archived_at > now()-make_interval(days => $2) FROM attachments WHERE id=$1",
+            "SELECT archived_at > clock_timestamp()-make_interval(days => $2) FROM attachments WHERE id=$1",
         )
         .bind(id)
         .bind(retention_days)

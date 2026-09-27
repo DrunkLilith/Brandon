@@ -10,6 +10,7 @@ pub mod middleware;
 pub mod openapi;
 pub mod operations;
 pub mod problem;
+pub mod shutdown;
 pub mod state;
 
 mod routes;

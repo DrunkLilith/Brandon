@@ -1,4 +1,4 @@
-use knowledge_crypto::{CryptoError, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
+use knowledge_crypto::{CryptoError, EnvelopeCipher, KeyPurpose, WorkspaceKey};
 use knowledge_store::{
     StoreError,
     audit::{AuditMetadataError, AuditWriter, NewAuditEvent, SafeAuditMetadata},
@@ -43,6 +43,13 @@ pub(crate) async fn append_audit_event(
     event: AuditEvent<'_>,
 ) -> Result<(), ServerAuditError> {
     lock_workspace_for_audit(transaction, event.workspace_id).await?;
+    let current: i32 = sqlx::query_scalar("SELECT current_key_version FROM workspaces WHERE id=$1")
+        .bind(event.workspace_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+    if current != workspace_key.version().0 as i32 {
+        return Err(CryptoError::UnsupportedKeyVersion.into());
+    }
     let previous_hash = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT candidate.event_hash
            FROM audit_events candidate
@@ -64,7 +71,10 @@ pub(crate) async fn append_audit_event(
     let id = Uuid::now_v7();
     let metadata = SafeAuditMetadata::new(event.metadata.clone())?;
     let serialized_metadata = serde_json::to_vec(metadata.as_value())?;
-    let cipher = EnvelopeCipher::new(KeyVersion(1), workspace_key.derive(KeyPurpose::Content)?);
+    let cipher = EnvelopeCipher::new(
+        workspace_key.version(),
+        workspace_key.derive(KeyPurpose::Content)?,
+    );
     let aad = format!("workspace:{}:audit:{id}:metadata", event.workspace_id);
     let encrypted_metadata = cipher.encrypt(aad.as_bytes(), &serialized_metadata)?;
     let event_hash = event_hash(
@@ -87,7 +97,7 @@ pub(crate) async fn append_audit_event(
             request_id: event.request_id,
             metadata_ciphertext: encrypted_metadata.ciphertext,
             metadata_nonce: encrypted_metadata.nonce,
-            metadata_key_version: 1,
+            metadata_key_version: workspace_key.version().0 as i32,
             previous_hash,
             event_hash,
         },
@@ -141,6 +151,7 @@ fn event_hash(
 mod tests {
     use super::*;
     use chrono::Utc;
+    use knowledge_crypto::KeyVersion;
     use knowledge_store::audit::{AuditCheckpoint, AuditRecord, verify_chain};
 
     #[test]

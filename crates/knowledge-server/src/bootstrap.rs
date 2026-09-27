@@ -93,10 +93,10 @@ impl BootstrapService {
 
         let workspace_id = WorkspaceId::new();
         let user_id = UserId::new();
-        let wrapped_key = Keyring::new_workspace(master_key, KEY_VERSION)?;
+        let wrapped_key = Keyring::new_workspace(master_key, master_key.version())?;
         let workspace_key = Keyring::unwrap(master_key, &wrapped_key)?;
         let content_key = workspace_key.derive(KeyPurpose::Content)?;
-        let search_key = workspace_key.derive(KeyPurpose::Search)?;
+        let search_key = workspace_key.derive_identity()?;
         let content_cipher = EnvelopeCipher::new(KEY_VERSION, content_key);
 
         let workspace_name_aad = format!("workspace:{workspace_id}:name");
@@ -123,7 +123,7 @@ impl BootstrapService {
         .bind(KEY_VERSION.0 as i32)
         .bind(wrapped_key.ciphertext)
         .bind(wrapped_key.nonce.as_slice())
-        .bind(KEY_VERSION.0 as i32)
+        .bind(wrapped_key.key_version.0 as i32)
         .execute(&mut *transaction)
         .await?;
 

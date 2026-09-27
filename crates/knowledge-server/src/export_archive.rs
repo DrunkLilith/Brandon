@@ -385,10 +385,19 @@ pub struct ArchiveEncryptor {
 impl ArchiveEncryptor {
     #[must_use]
     pub fn new(key: PurposeKey, workspace: Uuid, export: Uuid, declared_size: u64) -> Self {
+        Self::with_version(key, KeyVersion(1), workspace, export, declared_size)
+    }
+    pub fn with_version(
+        key: PurposeKey,
+        version: KeyVersion,
+        workspace: Uuid,
+        export: Uuid,
+        declared_size: u64,
+    ) -> Self {
         Self {
             stream: AttachmentStream::new_export(
                 key,
-                KeyVersion(1),
+                version,
                 workspace.as_bytes(),
                 export.as_bytes(),
                 declared_size,

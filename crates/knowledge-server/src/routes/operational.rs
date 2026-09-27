@@ -41,6 +41,74 @@ api_router! {
     "/api/v1/spaces/archived" => [get => archived_spaces => ("listArchivedSpaces", Session, 200)],
     "/api/v1/spaces/{id}/restore" => [post => restore_space => ("restoreSpace", Mutation, 204)],
     "/api/v1/spaces/{id}/subjects" => [get => subjects => ("listSubjects", Session, 200)],
+    "/api/v1/spaces/{id}/archived-pages" => [get => archived_pages => ("listArchivedPages", Session, 200)],
+    "/api/v1/admin/key-rotations" => [
+        get => key_rotation_status => ("getKeyRotation", Session, 200),
+        post => start_key_rotation => ("startKeyRotation", Mutation, 202),
+    ],
+}
+
+async fn key_rotation_status(
+    State(state): State<AppState>,
+    Extension(request): Extension<RequestId>,
+    current: CurrentUser,
+) -> Result<Response, ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_and_revalidate_admin(&mut tx, current).await?;
+    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let row:Option<(i32,i32,String,i64)>=sqlx::query_as("SELECT current_version,previous_version,state,processed FROM key_rotations WHERE workspace_id=$1").bind(current.workspace_id).fetch_optional(&mut *tx).await.map_err(internal)?;
+    super::users::audit_disclosure(&mut tx, &key, current, request, "key.admin_access").await?;
+    tx.commit().await.map_err(internal)?;
+    let (version, previous, phase, processed) =
+        row.unwrap_or((key.version().0 as i32, 0, "complete".into(), 0));
+    Ok(no_store(Json(json!({"currentVersion":version,"previousVersion":if previous==0 {None} else {Some(previous)},"state":phase,"processed":processed})).into_response()))
+}
+async fn start_key_rotation(
+    State(state): State<AppState>,
+    Extension(request): Extension<RequestId>,
+    current: CurrentUser,
+) -> Result<Response, ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
+    lock_and_revalidate_admin(&mut tx, current).await?;
+    let busy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM key_rotations WHERE workspace_id=$1 AND state<>'complete')",
+    )
+    .bind(current.workspace_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal)?;
+    if busy {
+        return Err(ApiProblem::conflict("A key rotation is already running"));
+    }
+    let old = load_workspace_key(&state, current.workspace_id).await?;
+    let key = old.rotated().map_err(internal)?;
+    let wrapped =
+        knowledge_crypto::Keyring::wrap(&runtime.master_key, &key, runtime.master_key.version())
+            .map_err(internal)?;
+    sqlx::query("UPDATE workspaces SET current_key_version=$2,wrapped_key_ciphertext=$3,wrapped_key_nonce=$4,wrapped_key_version=$5 WHERE id=$1")
+        .bind(current.workspace_id).bind(key.version().0 as i32).bind(wrapped.ciphertext).bind(wrapped.nonce.as_slice()).bind(wrapped.key_version.0 as i32).execute(&mut *tx).await.map_err(internal)?;
+    sqlx::query("INSERT INTO key_rotations(workspace_id,current_version,previous_version,state) VALUES($1,$2,$3,'migrating') ON CONFLICT(workspace_id) DO UPDATE SET current_version=EXCLUDED.current_version,previous_version=EXCLUDED.previous_version,state='migrating',after_page=NULL,processed=0,lease_owner=NULL,lease_expires_at=NULL,updated_at=now()")
+        .bind(current.workspace_id).bind(key.version().0 as i32).bind(old.version().0 as i32).execute(&mut *tx).await.map_err(internal)?;
+    append_audit_event(
+        &mut tx,
+        &key,
+        AuditEvent {
+            workspace_id: current.workspace_id,
+            actor_user_id: Some(current.user_id),
+            session_id: Some(current.session_id),
+            event_type: "key.rotation_started",
+            target_type: "workspace",
+            target_id: Some(current.workspace_id),
+            request_id: request.as_uuid(),
+            metadata: json!({"operation":"key_rotation"}),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    Ok(no_store((StatusCode::ACCEPTED,Json(json!({"currentVersion":key.version().0,"previousVersion":old.version().0,"state":"migrating","processed":0}))).into_response()))
 }
 
 #[derive(Serialize)]
@@ -59,12 +127,16 @@ struct SettingsUpdate {
 
 async fn settings(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_and_revalidate_admin(&mut tx, current).await?;
     let value = read_settings(&mut tx, current.workspace_id).await?;
+    let key = load_workspace_key(&state, current.workspace_id).await?;
+    super::users::audit_disclosure(&mut tx, &key, current, request_id, "settings.admin_access")
+        .await?;
     tx.commit().await.map_err(internal)?;
     Ok(no_store(Json(value).into_response()))
 }
@@ -213,7 +285,8 @@ async fn status(
             },
             "migrationState":migration_state,
             "queuedJobs":queued_jobs,
-            "activeExports":active_exports
+            "activeExports":active_exports,
+            "maintenance":runtime.maintenance.lock().unwrap_or_else(|error|error.into_inner()).clone()
         }))
         .into_response(),
     ))
@@ -233,6 +306,78 @@ type ArchivedEnvelopeRow = (Uuid, Vec<u8>, Vec<u8>, i32, DateTime<Utc>);
 struct UuidListQuery {
     after: Option<Uuid>,
     limit: Option<usize>,
+}
+
+async fn archived_pages(
+    State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
+    current: CurrentUser,
+    Path(space_id): Path<Uuid>,
+    query: Result<Query<UuidListQuery>, QueryRejection>,
+) -> Result<Response, ApiProblem> {
+    let Query(query) = query.map_err(|_| ApiProblem::validation("query", "is invalid"))?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=100).contains(&limit) {
+        return Err(ApiProblem::validation("limit", "must be between 1 and 100"));
+    }
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut tx, current).await?;
+    let access = resolve_access(&mut tx, current.user_id, space_id).await?;
+    authorize(&access, Capability::ManageSpace)?;
+    // Page allowlists can only reduce an owner's capability. No non-admin can
+    // manage a restricted boundary, even with an editor allowlist entry. Filter
+    // it in SQL before the cap so hidden pages cannot starve or leak via cursors.
+    let rows:Vec<ArchivedEnvelopeRow>=sqlx::query_as(
+        "SELECT p.id,p.title_ciphertext,p.title_nonce,p.title_key_version,p.archived_at
+         FROM pages p WHERE p.workspace_id=$1 AND p.space_id=$2 AND p.archived_at IS NOT NULL
+           AND NOT retention_expired($1,p.archived_at) AND ($3::uuid IS NULL OR p.id>$3)
+           AND ($4 OR NOT EXISTS (
+             WITH RECURSIVE ancestors AS (
+               SELECT id,parent_id,restricted FROM pages WHERE workspace_id=$1 AND id=p.id
+               UNION ALL SELECT a.id,a.parent_id,a.restricted FROM pages a JOIN ancestors x ON x.parent_id=a.id WHERE a.workspace_id=$1
+             ) SELECT 1 FROM ancestors WHERE restricted
+           )) ORDER BY p.id LIMIT $5"
+    ).bind(current.workspace_id).bind(space_id).bind(query.after).bind(current.workspace_admin).bind((limit+1) as i64)
+        .fetch_all(&mut *tx).await.map_err(internal)?;
+    let has_more = rows.len() > limit;
+    let mut items = Vec::new();
+    for (id, ciphertext, nonce, version, archived_at) in rows.into_iter().take(limit) {
+        let name = decrypt_text(
+            &key,
+            &super::pages::page_aad(current.workspace_id, id, None, "title"),
+            ciphertext,
+            nonce,
+            version,
+        )?;
+        items.push(ArchivedItem {
+            id,
+            name,
+            archived_at,
+        });
+    }
+    append_audit_event(
+        &mut tx,
+        &key,
+        AuditEvent {
+            workspace_id: current.workspace_id,
+            actor_user_id: Some(current.user_id),
+            session_id: Some(current.session_id),
+            event_type: "recovery.listed",
+            target_type: "space",
+            target_id: Some(space_id),
+            request_id: request_id.as_uuid(),
+            metadata: json!({"object_type":"page"}),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
+    let next_cursor = has_more.then(|| items.last().map(|item| item.id)).flatten();
+    Ok(no_store(
+        Json(json!({"items":items,"nextCursor":next_cursor})).into_response(),
+    ))
 }
 
 async fn archived_groups(
@@ -282,7 +427,7 @@ async fn archived_items(
             "SELECT id,name_ciphertext,name_nonce,name_key_version,archived_at
                FROM groups
               WHERE workspace_id=$1 AND archived_at IS NOT NULL
-                AND archived_at >= now()-make_interval(days=>$2)
+                AND archived_at > clock_timestamp()-make_interval(days=>$2)
                 AND ($3::uuid IS NULL OR id>$3)
               ORDER BY id LIMIT $4",
         )
@@ -298,7 +443,7 @@ async fn archived_items(
             "SELECT s.id,s.name_ciphertext,s.name_nonce,s.name_key_version,s.archived_at
            FROM spaces s
           WHERE s.workspace_id=$1 AND s.archived_at IS NOT NULL
-            AND s.archived_at >= now()-make_interval(days=>$2)
+            AND s.archived_at > clock_timestamp()-make_interval(days=>$2)
             AND ($4::uuid IS NULL OR s.id>$4)
             AND EXISTS (
               SELECT 1 FROM users u
@@ -455,9 +600,9 @@ async fn restore(
     }
     let settings = read_settings(&mut tx, current.workspace_id).await?;
     let query = if table == "groups" {
-        "UPDATE groups SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at >= now()-($3::text || ' days')::interval"
+        "UPDATE groups SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3)"
     } else {
-        "UPDATE spaces SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at >= now()-($3::text || ' days')::interval"
+        "UPDATE spaces SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3)"
     };
     let changed = sqlx::query(query)
         .bind(current.workspace_id)
@@ -509,6 +654,7 @@ struct SubjectListQuery {
 
 async fn subjects(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(space_id): Path<Uuid>,
     query: Result<Query<SubjectListQuery>, QueryRejection>,
@@ -526,10 +672,7 @@ async fn subjects(
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let key = load_workspace_key(&state, current.workspace_id).await?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
-    lock_workspace_for_audit(&mut tx, current.workspace_id)
-        .await
-        .map_err(internal)?;
-    revalidate_session(&mut tx, current).await?;
+    let current = super::users::lock_and_refresh_current(&mut tx, current).await?;
     let access = resolve_access(&mut tx, current.user_id, space_id).await?;
     authorize(&access, Capability::ManageSpace)?;
     let cursor_kind = cursor.as_ref().map(|value| value.0.as_str());
@@ -557,6 +700,8 @@ async fn subjects(
     .fetch_all(&mut *tx)
     .await
     .map_err(internal)?;
+    super::users::audit_disclosure(&mut tx, &key, current, request_id, "subject.admin_access")
+        .await?;
     tx.commit().await.map_err(internal)?;
     let has_more = rows.len() > limit;
     let mut result = Vec::with_capacity(limit.min(rows.len()));
@@ -685,26 +830,22 @@ pub(crate) async fn readiness(state: &AppState) -> Readiness {
     };
     let master_key = if database {
         tokio::time::timeout(Duration::from_secs(2), async {
-            let records: Vec<(Uuid, Vec<u8>, Vec<u8>, i32)> = sqlx::query_as(
-                "SELECT id,wrapped_key_ciphertext,wrapped_key_nonce,wrapped_key_version
-                   FROM workspaces ORDER BY id LIMIT 1001",
-            )
-            .fetch_all(runtime.store.pool())
-            .await
-            .map_err(|_| ())?;
+            let records: Vec<Uuid> =
+                sqlx::query_scalar("SELECT id FROM workspaces ORDER BY id LIMIT 1001")
+                    .fetch_all(runtime.store.pool())
+                    .await
+                    .map_err(|_| ())?;
             if records.is_empty() || records.len() > 1000 {
                 return Ok::<bool, ()>(false);
             }
-            for (workspace_id, ciphertext, nonce, key_version) in records {
-                let Ok(nonce) = nonce.try_into() else {
-                    return Ok(false);
-                };
-                let record = knowledge_store::users::WorkspaceKeyRecord {
+            for workspace_id in records {
+                let record = knowledge_store::users::UserRepository::workspace_key(
+                    runtime.store.pool(),
                     workspace_id,
-                    ciphertext,
-                    nonce,
-                    key_version,
-                };
+                )
+                .await
+                .map_err(|_| ())?
+                .ok_or(())?;
                 if unwrap_workspace_key(&runtime.master_key, &record).is_err() {
                     return Ok(false);
                 }

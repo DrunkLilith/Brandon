@@ -18,6 +18,290 @@ use tower::ServiceExt;
 const ADMIN_PASSWORD: &str = "correct horse battery staple";
 const ORIGIN: &str = "https://knowledge.local";
 
+#[sqlx::test]
+async fn deletion_tombstones_members_revokes_sessions_and_protects_last_admin(pool: PgPool) {
+    let (app, pool) = app(pool).await;
+    let cookie = login(&app, "admin@example.com", ADMIN_PASSWORD).await;
+    let token = csrf(&app, &cookie).await;
+    let admin: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let response = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/users/{admin}"),
+        json!({}),
+        Some(&cookie),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let (_, invite) = create_invitation(&app, &cookie, &token, "deleted@example.com").await;
+    assert_eq!(
+        accept_invitation(&app, invite["token"].as_str().unwrap(), "Historical member").await,
+        StatusCode::CREATED
+    );
+    let member = login(
+        &app,
+        "deleted@example.com",
+        "another correct horse battery staple",
+    )
+    .await;
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE id<>$1")
+        .bind(admin)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let response = send(
+        &app,
+        "DELETE",
+        &format!("/api/v1/users/{id}"),
+        json!({}),
+        Some(&cookie),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let state: (String, bool, bool) = sqlx::query_as(
+        "SELECT status,deleted_at IS NOT NULL,password_hash IS NULL FROM users WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, ("deleted".into(), true, true));
+    let active: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id=$1 AND revoked_at IS NULL")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(active, 0);
+    assert_eq!(
+        send(
+            &app,
+            "GET",
+            "/api/v1/auth/session",
+            json!({}),
+            Some(&member),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let audit:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM audit_events WHERE event_type='user.deleted' AND target_id=$1)").bind(id).fetch_one(&pool).await.unwrap();
+    assert!(audit);
+}
+
+#[sqlx::test]
+async fn legacy_disclosures_lock_revalidate_and_audit(pool: PgPool) {
+    let (app, pool) = app(pool).await;
+    let cookie = login(&app, "admin@example.com", ADMIN_PASSWORD).await;
+    let csrf = csrf(&app, &cookie).await;
+    let group = json_body(
+        send(
+            &app,
+            "POST",
+            "/api/v1/groups",
+            json!({"name":"group"}),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await,
+    )
+    .await;
+    let space = json_body(
+        send(
+            &app,
+            "POST",
+            "/api/v1/spaces",
+            json!({"name":"space"}),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await,
+    )
+    .await;
+    let space_id = space["id"].as_str().unwrap();
+    let page = json_body(
+        send(
+            &app,
+            "POST",
+            "/api/v1/pages",
+            json!({"spaceId":space_id,"title":"page","markdown":"body","properties":{}}),
+            Some(&cookie),
+            Some(&csrf),
+        )
+        .await,
+    )
+    .await;
+    let page_id = page["id"].as_str().unwrap();
+    let paths = [
+        "/api/v1/users".into(),
+        "/api/v1/invitations".into(),
+        "/api/v1/groups".into(),
+        format!("/api/v1/groups/{}", group["id"].as_str().unwrap()),
+        "/api/v1/spaces".into(),
+        format!("/api/v1/spaces/{space_id}"),
+        format!("/api/v1/spaces/{space_id}/grants"),
+        format!("/api/v1/spaces/{space_id}/subjects"),
+        format!("/api/v1/pages/{page_id}/revisions"),
+        format!("/api/v1/pages/{page_id}/backlinks"),
+        "/api/v1/admin/settings".into(),
+    ];
+    for path in paths {
+        let disclosed = send(&app, "GET", &path, json!(null), Some(&cookie), None).await;
+        assert_eq!(disclosed.status(), StatusCode::OK, "{path}");
+        let request_id: uuid::Uuid = disclosed.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let audited: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM audit_events WHERE request_id=$1)")
+                .bind(request_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(audited, "unaudited disclosure: {path}");
+        for mutation in ["demote", "revoke"] {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("SELECT id FROM workspaces FOR UPDATE")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            let worker_app = app.clone();
+            let worker_cookie = cookie.clone();
+            let worker_path = path.clone();
+            let worker = tokio::spawn(async move {
+                send(
+                    &worker_app,
+                    "GET",
+                    &worker_path,
+                    json!(null),
+                    Some(&worker_cookie),
+                    None,
+                )
+                .await
+            });
+            wait_for_locked_query(&pool, "workspaces").await;
+            if mutation == "demote" {
+                sqlx::query("UPDATE workspace_members SET role='member'")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                sqlx::query("DELETE FROM space_grants")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            } else {
+                sqlx::query("UPDATE sessions SET revoked_at=now()")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+            tx.commit().await.unwrap();
+            let result = worker.await.unwrap();
+            if path == "/api/v1/spaces" && mutation == "demote" {
+                assert_eq!(json_body(result).await, json!([]));
+            } else {
+                assert!(
+                    [401, 403, 404].contains(&result.status().as_u16()),
+                    "stale {mutation} disclosure at {path}"
+                );
+            }
+            sqlx::query("UPDATE workspace_members SET role='admin'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE sessions SET revoked_at=NULL")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[sqlx::test]
+async fn login_revalidates_after_suspension_reactivation_and_password_change(pool: PgPool) {
+    let (app, pool) = app(pool).await;
+    let encoded: String = sqlx::query_scalar("SELECT password_hash FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for change in ["suspend", "reactivate", "password", "membership"] {
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM workspaces FOR UPDATE")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let worker_app = app.clone();
+        let worker = tokio::spawn(async move {
+            send(
+                &worker_app,
+                "POST",
+                "/api/v1/auth/login",
+                json!({"email":"admin@example.com","password":ADMIN_PASSWORD}),
+                None,
+                None,
+            )
+            .await
+        });
+        wait_for_locked_query(&pool, "workspaces").await;
+        match change {
+            "suspend" | "reactivate" => {
+                sqlx::query("UPDATE users SET status='suspended'")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                if change == "reactivate" {
+                    sqlx::query("UPDATE users SET status='active'")
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                }
+            }
+            "membership" => {
+                sqlx::query("UPDATE workspace_members SET status='suspended'")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                sqlx::query("UPDATE workspace_members SET status='active'")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                sqlx::query("UPDATE users SET password_hash='invalidated'")
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+        let response = worker.await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "stale login after {change}"
+        );
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+        // Start each race with the original active credentials, never print them.
+        sqlx::query("UPDATE users SET status='active', password_hash=$1")
+            .bind(&encoded)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
 fn master_key() -> MasterKey {
     MasterKey::from_base64(&STANDARD.encode([91_u8; 32])).unwrap()
 }
@@ -706,6 +990,7 @@ async fn administrators_can_list_suspend_reactivate_and_revoke_sessions(pool: Pg
     assert_eq!(
         user_events,
         [
+            "user.admin_access",
             "user.suspended",
             "user.reactivated",
             "user.sessions_revoked"

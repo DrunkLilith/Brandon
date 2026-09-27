@@ -245,7 +245,15 @@ async fn administrator_can_create_list_rename_and_archive_encrypted_groups(pool:
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(events, ["group.created", "group.updated", "group.archived"]);
+    assert_eq!(
+        events,
+        [
+            "group.created",
+            "group.admin_access",
+            "group.updated",
+            "group.archived"
+        ]
+    );
 }
 
 #[sqlx::test]

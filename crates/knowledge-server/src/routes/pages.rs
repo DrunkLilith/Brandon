@@ -8,9 +8,7 @@ use knowledge_core::{
     pages::SavePage,
     permissions::{Capability, EffectiveAccess, ResourceContext, SpaceRole},
 };
-use knowledge_crypto::{
-    BlindIndexer, EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey,
-};
+use knowledge_crypto::{BlindIndexer, EncryptedEnvelope, EnvelopeCipher, KeyPurpose, WorkspaceKey};
 use knowledge_store::{pages::PageRepository, search::BlindSearchRepository};
 use pulldown_cmark::{Event, Parser, Tag};
 use serde::{Deserialize, Serialize};
@@ -268,7 +266,7 @@ async fn create_page(
             version, restricted, created_by, updated_by
          ) VALUES (
             $1, $2, $3, $4, $5, $6,
-            $7, $8, 1, $9, $10, 1, $11, $12, 1, 1, $13, $14, $14
+            $7, $8, workspace_current_key_version($2), $9, $10, workspace_current_key_version($2), $11, $12, workspace_current_key_version($2), 1, $13, $14, $14
          )",
     )
     .bind(page_id)
@@ -504,9 +502,9 @@ async fn save_page(
         &properties,
     )?;
     sqlx::query(
-        "UPDATE pages SET title_ciphertext = $3, title_nonce = $4, title_key_version = 1,
-            body_ciphertext = $5, body_nonce = $6, body_key_version = 1,
-            properties_ciphertext = $7, properties_nonce = $8, properties_key_version = 1,
+        "UPDATE pages SET title_ciphertext = $3, title_nonce = $4, title_key_version = workspace_current_key_version($1),
+            body_ciphertext = $5, body_nonce = $6, body_key_version = workspace_current_key_version($1),
+            properties_ciphertext = $7, properties_nonce = $8, properties_key_version = workspace_current_key_version($1),
             version = $9, updated_by = $10, updated_at = now()
           WHERE workspace_id = $1 AND id = $2",
     )
@@ -824,6 +822,12 @@ async fn set_subtree_archive(
     )
     .await?;
     if !archive {
+        let expired: bool = sqlx::query_scalar(
+            "WITH RECURSIVE subtree AS (SELECT id,archived_at FROM pages WHERE workspace_id=$1 AND id=$2 UNION ALL SELECT p.id,p.archived_at FROM pages p JOIN subtree s ON p.parent_id=s.id WHERE p.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM subtree WHERE retention_expired($1,archived_at))",
+        ).bind(current.workspace_id).bind(page_id).fetch_one(&mut *transaction).await.map_err(internal)?;
+        if expired {
+            return Err(ApiProblem::not_found());
+        }
         sqlx::query(
             "UPDATE pages child SET parent_id = NULL
               WHERE child.workspace_id = $1 AND child.id = $2
@@ -933,11 +937,14 @@ async fn set_subtree_archive(
 
 async fn list_revisions(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(page_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let space_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT space_id FROM pages WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL",
     )
@@ -951,6 +958,14 @@ async fn list_revisions(
     let rows: Vec<(i64, Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT version, author_id, created_at FROM page_revisions WHERE workspace_id = $1 AND page_id = $2 ORDER BY version"
     ).bind(current.workspace_id).bind(page_id).fetch_all(&mut *transaction).await.map_err(internal)?;
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "revision.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     Ok(Json(rows.into_iter().map(|(version, author_id, created_at)| json!({"version": version, "authorId": author_id, "createdAt": created_at})).collect::<Vec<_>>()).into_response())
 }
@@ -1097,7 +1112,7 @@ async fn restore_revision(
         &markdown,
         properties_text.as_bytes(),
     )?;
-    sqlx::query("UPDATE pages SET title_ciphertext=$3,title_nonce=$4,title_key_version=1,body_ciphertext=$5,body_nonce=$6,body_key_version=1,properties_ciphertext=$7,properties_nonce=$8,properties_key_version=1,version=$9,updated_by=$10,updated_at=now() WHERE workspace_id=$1 AND id=$2")
+    sqlx::query("UPDATE pages SET title_ciphertext=$3,title_nonce=$4,title_key_version=workspace_current_key_version($1),body_ciphertext=$5,body_nonce=$6,body_key_version=workspace_current_key_version($1),properties_ciphertext=$7,properties_nonce=$8,properties_key_version=workspace_current_key_version($1),version=$9,updated_by=$10,updated_at=now() WHERE workspace_id=$1 AND id=$2")
         .bind(current.workspace_id).bind(page_id).bind(current_envelopes.title.ciphertext).bind(current_envelopes.title.nonce.as_slice())
         .bind(current_envelopes.body.ciphertext).bind(current_envelopes.body.nonce.as_slice()).bind(current_envelopes.properties.ciphertext)
         .bind(current_envelopes.properties.nonce.as_slice()).bind(new_version).bind(current.user_id)
@@ -1144,11 +1159,14 @@ async fn restore_revision(
 
 async fn backlinks(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(page_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let target_space: Option<Uuid> = sqlx::query_scalar(
         "SELECT space_id FROM pages WHERE workspace_id=$1 AND id=$2 AND archived_at IS NULL",
     )
@@ -1170,6 +1188,14 @@ async fn backlinks(
             visible.push(json!({"id": id}));
         }
     }
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "backlink.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     Ok(Json(visible).into_response())
 }
@@ -1524,7 +1550,7 @@ fn encrypt_page_fields(
     properties: &[u8],
 ) -> Result<PageEnvelopes, ApiProblem> {
     let cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        workspace_key.version(),
         workspace_key
             .derive(KeyPurpose::Content)
             .map_err(internal)?,
@@ -1574,7 +1600,7 @@ async fn insert_revision(
             body_ciphertext, body_nonce, body_key_version,
             properties_ciphertext, properties_nonce, properties_key_version,
             content_hash, author_id
-         ) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, 1, $9, $10, 1, $11, $12)",
+         ) VALUES ($1, $2, $3, $4, $5, $6, workspace_current_key_version($2), $7, $8, workspace_current_key_version($2), $9, $10, workspace_current_key_version($2), $11, $12)",
     )
     .bind(Uuid::now_v7())
     .bind(identity.workspace_id)

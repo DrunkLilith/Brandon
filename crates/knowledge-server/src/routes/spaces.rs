@@ -9,7 +9,7 @@ use knowledge_core::{
     ids::{SpaceId, UserId},
     permissions::{Capability, EffectiveAccess, ResourceContext, SpaceRole},
 };
-use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, KeyVersion, WorkspaceKey};
+use knowledge_crypto::{EncryptedEnvelope, EnvelopeCipher, KeyPurpose, WorkspaceKey};
 use knowledge_store::AccessResolver;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
@@ -176,7 +176,7 @@ async fn create_space(
         "INSERT INTO spaces (
             id, workspace_id, name_ciphertext, name_nonce, name_key_version,
             description_ciphertext, description_nonce, description_key_version, created_by
-         ) VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8)",
+         ) VALUES ($1, $2, $3, $4, workspace_current_key_version($2), $5, $6, $7, $8)",
     )
     .bind(space_id)
     .bind(current.workspace_id)
@@ -192,7 +192,11 @@ async fn create_space(
             .as_ref()
             .map(|value| value.nonce.as_slice()),
     )
-    .bind(description_envelope.as_ref().map(|_| 1_i32))
+    .bind(
+        description_envelope
+            .as_ref()
+            .map(|_| workspace_key.version().0 as i32),
+    )
     .bind(current.user_id)
     .execute(&mut *transaction)
     .await
@@ -234,11 +238,13 @@ async fn create_space(
 
 async fn list_spaces(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM spaces WHERE workspace_id = $1 AND archived_at IS NULL
          ORDER BY created_at, id",
@@ -264,6 +270,14 @@ async fn list_spaces(
             );
         }
     }
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "space.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     let mut response = Json(spaces).into_response();
     prevent_caching(&mut response);
@@ -272,12 +286,14 @@ async fn list_spaces(
 
 async fn get_space(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(space_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
     authorize(&access, Capability::ReadPage)?;
     let space = load_space(
@@ -289,6 +305,14 @@ async fn get_space(
     )
     .await?
     .ok_or_else(ApiProblem::not_found)?;
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "space.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     let mut response = Json(space).into_response();
     prevent_caching(&mut response);
@@ -361,7 +385,7 @@ async fn update_space(
         description.as_deref(),
     )?;
     sqlx::query(
-        "UPDATE spaces SET name_ciphertext = $3, name_nonce = $4, name_key_version = 1,
+        "UPDATE spaces SET name_ciphertext = $3, name_nonce = $4, name_key_version = workspace_current_key_version($1),
             description_ciphertext = $5, description_nonce = $6, description_key_version = $7,
             updated_at = now() WHERE workspace_id = $1 AND id = $2 AND archived_at IS NULL",
     )
@@ -379,7 +403,7 @@ async fn update_space(
             .as_ref()
             .map(|value| value.nonce.as_slice()),
     )
-    .bind(description_envelope.as_ref().map(|_| 1_i32))
+    .bind(description_envelope.as_ref().map(|_| workspace_key.version().0 as i32))
     .execute(&mut *transaction)
     .await
     .map_err(internal)?;
@@ -528,11 +552,14 @@ async fn create_grant(
 
 async fn list_grants(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path(space_id): Path<Uuid>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let access = resolve_access(&mut transaction, current.user_id, space_id).await?;
     authorize(&access, Capability::ManageSpace)?;
     let rows: Vec<(Uuid, Option<Uuid>, Option<Uuid>, String)> = sqlx::query_as(
@@ -544,6 +571,14 @@ async fn list_grants(
     .fetch_all(&mut *transaction)
     .await
     .map_err(internal)?;
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "space.grants_read",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     let grants: Vec<GrantResponse> = rows
         .into_iter()
@@ -758,8 +793,8 @@ pub(crate) fn authorize(
     }
 }
 
-fn effective_role(current: CurrentUser, access: &EffectiveAccess) -> String {
-    if current.workspace_admin {
+fn effective_role(_current: CurrentUser, access: &EffectiveAccess) -> String {
+    if access.is_workspace_admin() {
         "admin".to_owned()
     } else {
         access
@@ -898,7 +933,7 @@ fn encrypt_text(
     value: &str,
 ) -> Result<EncryptedEnvelope, ApiProblem> {
     EnvelopeCipher::new(
-        KeyVersion(1),
+        workspace_key.version(),
         workspace_key
             .derive(KeyPurpose::Content)
             .map_err(internal)?,

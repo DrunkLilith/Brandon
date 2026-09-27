@@ -9,7 +9,11 @@ use crate::{CryptoError, EncryptedEnvelope, EnvelopeCipher, KeyVersion};
 const WORKSPACE_KEY_AAD: &[u8] = b"knowledge-platform/workspace-key/v1";
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct MasterKey([u8; 32]);
+pub struct MasterKey {
+    bytes: [u8; 32],
+    version: u32,
+    previous: Option<(u32, [u8; 32])>,
+}
 
 impl MasterKey {
     pub fn from_base64(encoded: &str) -> Result<Self, CryptoError> {
@@ -22,36 +26,125 @@ impl MasterKey {
             .as_slice()
             .try_into()
             .map_err(|_| CryptoError::InvalidMasterKey)?;
-        Ok(Self(bytes))
+        Ok(Self {
+            bytes,
+            version: 1,
+            previous: None,
+        })
     }
 
     pub(crate) const fn expose(&self) -> &[u8; 32] {
-        &self.0
+        &self.bytes
+    }
+    pub const fn version(&self) -> KeyVersion {
+        KeyVersion(self.version)
+    }
+    pub fn with_versions(
+        mut self,
+        current: u32,
+        previous: Option<(u32, MasterKey)>,
+    ) -> Result<Self, CryptoError> {
+        if current == 0
+            || previous
+                .as_ref()
+                .is_some_and(|(version, _)| *version == 0 || *version == current)
+        {
+            return Err(CryptoError::UnsupportedKeyVersion);
+        }
+        self.version = current;
+        self.previous = previous.map(|(version, key)| (version, key.bytes));
+        Ok(self)
+    }
+    fn for_version(&self, version: KeyVersion) -> Result<&[u8; 32], CryptoError> {
+        if let Some((old, bytes)) = &self.previous {
+            if version.0 == *old {
+                return Ok(bytes);
+            }
+            if version.0 != self.version {
+                return Err(CryptoError::UnsupportedKeyVersion);
+            }
+        }
+        Ok(&self.bytes)
     }
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct WorkspaceKey([u8; 32]);
+pub struct WorkspaceKey {
+    bytes: [u8; 32],
+    version: u32,
+    previous: Vec<(u32, [u8; 32])>,
+}
 
 impl WorkspaceKey {
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
+        Self {
+            bytes,
+            version: 1,
+            previous: Vec::new(),
+        }
     }
 
     pub fn generate() -> Result<Self, CryptoError> {
         let mut bytes = [0_u8; 32];
         getrandom::fill(&mut bytes).map_err(|_| CryptoError::RandomnessFailed)?;
-        Ok(Self(bytes))
+        Ok(Self::from_bytes(bytes))
     }
 
     #[must_use]
     pub fn expose(&self) -> &[u8; 32] {
-        &self.0
+        &self.bytes
     }
 
     pub fn derive(&self, purpose: KeyPurpose) -> Result<PurposeKey, CryptoError> {
-        let hkdf = Hkdf::<Sha256>::new(None, &self.0);
+        self.derive_for(purpose, self.version())
+    }
+    pub const fn version(&self) -> KeyVersion {
+        KeyVersion(self.version)
+    }
+    pub fn rotated(&self) -> Result<Self, CryptoError> {
+        let version = self
+            .version
+            .checked_add(1)
+            .filter(|v| *v <= i32::MAX as u32)
+            .ok_or(CryptoError::UnsupportedKeyVersion)?;
+        let mut previous = self.previous.clone();
+        previous.push((self.version, self.bytes));
+        Self::generate()?.with_generation(version, previous)
+    }
+    pub fn with_generation(
+        mut self,
+        version: u32,
+        previous: Vec<(u32, [u8; 32])>,
+    ) -> Result<Self, CryptoError> {
+        if version == 0 || previous.iter().any(|(v, _)| *v == 0 || *v == version) {
+            return Err(CryptoError::UnsupportedKeyVersion);
+        }
+        self.version = version;
+        self.previous = previous;
+        Ok(self)
+    }
+    /// Stable identity/replay HMACs are not the rotated search index. Generation
+    /// one is retained encrypted for these identities and immutable audit reads.
+    pub fn derive_identity(&self) -> Result<PurposeKey, CryptoError> {
+        self.derive_for(KeyPurpose::Search, KeyVersion(1))
+    }
+    pub fn derive_for(
+        &self,
+        purpose: KeyPurpose,
+        version: KeyVersion,
+    ) -> Result<PurposeKey, CryptoError> {
+        let bytes = if version.0 == self.version {
+            &self.bytes
+        } else {
+            &self
+                .previous
+                .iter()
+                .find(|(v, _)| *v == version.0)
+                .ok_or(CryptoError::UnsupportedKeyVersion)?
+                .1
+        };
+        let hkdf = Hkdf::<Sha256>::new(None, bytes);
         let mut output = [0_u8; 32];
         hkdf.expand(purpose.info(), &mut output)
             .map_err(|_| CryptoError::KeyDerivationFailed)?;
@@ -117,7 +210,7 @@ impl Keyring {
     ) -> Result<WorkspaceKey, CryptoError> {
         let cipher = EnvelopeCipher::new(
             wrapped.key_version,
-            PurposeKey::from_bytes(*master_key.expose()),
+            PurposeKey::from_bytes(*master_key.for_version(wrapped.key_version)?),
         );
         let decrypted = cipher.decrypt(WORKSPACE_KEY_AAD, wrapped)?;
         let bytes = decrypted
@@ -136,7 +229,7 @@ impl Keyring {
         Self::wrap(new_master_key, &workspace_key, wrapped.key_version)
     }
 
-    fn wrap(
+    pub fn wrap(
         master_key: &MasterKey,
         workspace_key: &WorkspaceKey,
         key_version: KeyVersion,

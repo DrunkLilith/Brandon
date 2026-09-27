@@ -96,6 +96,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "getGroup"
             | "listArchivedGroups"
             | "listArchivedSpaces"
+            | "listArchivedPages"
             | "listSubjects"
             | "getSpace"
             | "listSpaceGrants"
@@ -110,6 +111,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "listExports"
             | "getSettings"
             | "getAdminStatus"
+            | "getKeyRotation"
     ) {
         statuses.push(403);
     }
@@ -118,6 +120,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
         "acceptInvitation"
             | "revokeInvitation"
             | "updateUser"
+            | "deleteUser"
             | "revokeUserSessions"
             | "getGroup"
             | "updateGroup"
@@ -130,6 +133,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "archiveSpace"
             | "restoreSpace"
             | "listSubjects"
+            | "listArchivedPages"
             | "listSpaceGrants"
             | "createSpaceGrant"
             | "updateSpaceGrant"
@@ -179,8 +183,10 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "listArchivedGroups"
             | "listArchivedSpaces"
             | "listSubjects"
+            | "listArchivedPages"
             | "listAttachments"
             | "search"
+            | "listPages"
             | "listAuditEvents"
             | "listExports"
     ) {
@@ -191,6 +197,7 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
         "createInvitation"
             | "acceptInvitation"
             | "updateUser"
+            | "deleteUser"
             | "createGroup"
             | "updateGroup"
             | "archiveGroup"
@@ -218,6 +225,9 @@ fn error_statuses(id: &str, access: Access) -> Vec<u16> {
             | "createExport"
             | "updateSettings"
     ) {
+        statuses.push(409);
+    }
+    if id == "startKeyRotation" {
         statuses.push(409);
     }
     if matches!(
@@ -272,7 +282,9 @@ fn success_schema(id: &str) -> Value {
         "listUsers" => array("User"),
         "updateUser" => reference("UserUpdate"),
         "listGroups" => array("Group"),
-        "listArchivedGroups" | "listArchivedSpaces" => reference("ArchivedList"),
+        "listArchivedGroups" | "listArchivedSpaces" | "listArchivedPages" => {
+            reference("ArchivedList")
+        }
         "createGroup" | "getGroup" | "updateGroup" => reference("Group"),
         "listSpaces" => array("Space"),
         "createSpace" | "getSpace" | "updateSpace" => reference("Space"),
@@ -296,6 +308,7 @@ fn success_schema(id: &str) -> Value {
         "createExport" => reference("Export"),
         "getSettings" | "updateSettings" => reference("Settings"),
         "getAdminStatus" => reference("AdminStatus"),
+        "getKeyRotation" | "startKeyRotation" => reference("KeyRotation"),
         _ => reference("EmptyResponse"),
     }
 }
@@ -318,6 +331,7 @@ fn add(paths: &mut BTreeMap<String, Value>, spec: &OperationSpec) {
         })
         .collect();
     if !parameters.is_empty() {
+        value["responses"]["422"] = problem("Validation failed");
         value["parameters"] = Value::Array(parameters);
     }
     let item = paths
@@ -445,6 +459,20 @@ pub fn document() -> Value {
             "after",
             false,
             json!({"type":"string"}),
+        ),
+        (
+            "/api/v1/spaces/{id}/archived-pages",
+            "get",
+            "after",
+            false,
+            json!({"type":"string","format":"uuid"}),
+        ),
+        (
+            "/api/v1/spaces/{id}/archived-pages",
+            "get",
+            "limit",
+            false,
+            json!({"type":"integer","minimum":1,"maximum":100,"default":100}),
         ),
         (
             "/api/v1/spaces/{id}/subjects",
@@ -689,7 +717,10 @@ fn schemas() -> Value {
         "ExportList":{"type":"object","additionalProperties":false,"required":["exports","nextCursor"],"properties":{"exports":{"type":"array","items":reference("Export")},"nextCursor":{"oneOf":[uuid(),{"type":"null"}]}}},
         "ExportCreateRequest":{"type":"object","additionalProperties":false,"required":["spaceId"],"properties":{"spaceId":uuid()}},
         "Settings":{"type":"object","additionalProperties":false,"required":["attachmentRecoveryDays","exportRetentionHours"],"properties":{"attachmentRecoveryDays":{"type":"integer","minimum":1,"maximum":3650},"exportRetentionHours":{"type":"integer","minimum":1,"maximum":720}}},
-        "AdminStatus":{"type":"object","additionalProperties":false,"required":["version","components","migrationState","queuedJobs","activeExports"],"properties":{"version":{"type":"string"},"components":{"type":"object","additionalProperties":false,"required":["database","migrations","masterKey","objectStorage"],"properties":{"database":{"type":"boolean"},"migrations":{"type":"boolean"},"masterKey":{"type":"boolean"},"objectStorage":{"type":"boolean"}}},"migrationState":{"type":"string","enum":["current","pending"]},"queuedJobs":{"type":"integer"},"activeExports":{"type":"integer"}}},
+        "OperationFailure":{"type":"object","additionalProperties":false,"required":["phase","code","correlationId","at"],"properties":{"phase":{"type":"string"},"code":{"type":"string","enum":["operation_failed"]},"correlationId":uuid(),"at":date()}},
+        "MaintenanceHealth":{"type":"object","additionalProperties":false,"required":["failures","lastFailure"],"properties":{"failures":{"type":"integer","minimum":0},"lastFailure":{"oneOf":[reference("OperationFailure"),{"type":"null"}]}}},
+        "AdminStatus":{"type":"object","additionalProperties":false,"required":["version","components","migrationState","queuedJobs","activeExports","maintenance"],"properties":{"version":{"type":"string"},"components":{"type":"object","additionalProperties":false,"required":["database","migrations","masterKey","objectStorage"],"properties":{"database":{"type":"boolean"},"migrations":{"type":"boolean"},"masterKey":{"type":"boolean"},"objectStorage":{"type":"boolean"}}},"migrationState":{"type":"string","enum":["current","pending"]},"queuedJobs":{"type":"integer"},"activeExports":{"type":"integer"},"maintenance":reference("MaintenanceHealth")}},
+        "KeyRotation":{"type":"object","additionalProperties":false,"required":["currentVersion","previousVersion","state","processed"],"properties":{"currentVersion":{"type":"integer","minimum":1},"previousVersion":{"type":["integer","null"],"minimum":1},"state":{"type":"string","enum":["migrating","rebuilding","complete"]},"processed":{"type":"integer","minimum":0}}},
         "EmptyResponse":{"type":"object","additionalProperties":false}
     })
 }

@@ -7,9 +7,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use hmac::{Hmac, KeyInit, Mac};
-use knowledge_crypto::{
-    EncryptedEnvelope, KeyPurpose, KeyVersion, Keyring, PasswordService, WorkspaceKey,
-};
+use knowledge_crypto::{EncryptedEnvelope, KeyVersion, Keyring, PasswordService, WorkspaceKey};
 use knowledge_store::users::{LoginUser, UserRepository, WorkspaceKeyRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -158,7 +156,7 @@ async fn login(
     let workspace_key = unwrap_workspace_key(&runtime.master_key, &workspace_record)
         .map_err(|_| ApiProblem::internal())?;
     let search_key = workspace_key
-        .derive(KeyPurpose::Search)
+        .derive_identity()
         .map_err(|_| ApiProblem::internal())?;
     let email_hmac = search_key.authenticate(normalized_email.as_bytes());
     let candidate = UserRepository::active_login_user(
@@ -208,6 +206,29 @@ async fn login(
     lock_workspace_for_audit(&mut transaction, user.workspace_id)
         .await
         .map_err(|_| ApiProblem::internal())?;
+    // Password hashing is intentionally outside the workspace lock. Bind its
+    // result to the exact credential/membership generation before creating a
+    // session; reactivation must never resurrect an in-flight old login.
+    let still_valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users u JOIN workspace_members wm
+           ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+         WHERE u.workspace_id=$1 AND u.id=$2 AND u.status='active'
+           AND u.deleted_at IS NULL AND wm.status='active'
+           AND u.auth_generation=$3 AND wm.auth_generation=$4
+           AND u.password_hash=$5 AND wm.role=$6)",
+    )
+    .bind(user.workspace_id)
+    .bind(user.user_id)
+    .bind(user.auth_generation)
+    .bind(user.membership_generation)
+    .bind(&user.password_hash)
+    .bind(&user.role)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    if !still_valid {
+        return Err(ApiProblem::unauthorized());
+    }
     if let Some(previous_hash) = token_hash_from_headers(&headers) {
         UserRepository::revoke_by_token_hash(&mut transaction, &previous_hash)
             .await
@@ -380,7 +401,7 @@ pub(crate) fn unwrap_workspace_key(
 ) -> Result<WorkspaceKey, knowledge_crypto::CryptoError> {
     let version = u32::try_from(record.key_version)
         .map_err(|_| knowledge_crypto::CryptoError::InvalidEnvelope)?;
-    Keyring::unwrap(
+    let current = Keyring::unwrap(
         master_key,
         &EncryptedEnvelope {
             algorithm: "AES-256-GCM".to_owned(),
@@ -388,6 +409,34 @@ pub(crate) fn unwrap_workspace_key(
             nonce: record.nonce,
             ciphertext: record.ciphertext.clone(),
         },
+    )?;
+    let mut previous = Vec::new();
+    for (generation, ciphertext, nonce, master_version) in &record.previous {
+        let old = Keyring::unwrap(
+            master_key,
+            &EncryptedEnvelope {
+                algorithm: "AES-256-GCM".into(),
+                key_version: KeyVersion(
+                    u32::try_from(*master_version)
+                        .map_err(|_| knowledge_crypto::CryptoError::InvalidEnvelope)?,
+                ),
+                nonce: nonce
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| knowledge_crypto::CryptoError::InvalidEnvelope)?,
+                ciphertext: ciphertext.clone(),
+            },
+        )?;
+        previous.push((
+            u32::try_from(*generation)
+                .map_err(|_| knowledge_crypto::CryptoError::InvalidEnvelope)?,
+            *old.expose(),
+        ));
+    }
+    current.with_generation(
+        u32::try_from(record.current_version)
+            .map_err(|_| knowledge_crypto::CryptoError::InvalidEnvelope)?,
+        previous,
     )
 }
 

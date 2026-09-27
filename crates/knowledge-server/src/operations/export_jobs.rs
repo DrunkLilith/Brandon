@@ -60,7 +60,7 @@ pub(crate) fn encrypt_job_payload(
     payload: &ExportJobPayload,
 ) -> Result<(Vec<u8>, [u8; 12]), OperationError> {
     let cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        key.version(),
         key.derive(KeyPurpose::Content)
             .map_err(|_| OperationError)?,
     );
@@ -91,7 +91,7 @@ pub(crate) fn decrypt_job_payload(
     };
     let cipher = EnvelopeCipher::new(
         envelope.key_version,
-        key.derive(KeyPurpose::Content)
+        key.derive_for(KeyPurpose::Content, envelope.key_version)
             .map_err(|_| OperationError)?,
     );
     let clear = cipher
@@ -126,6 +126,7 @@ impl JobRunner {
         let key = match load_workspace_key(state, lease.workspace_id).await {
             Ok(key) => key,
             Err(_) => {
+                runtime.operation_failed("job_key", lease.id);
                 self.fail_key_lease(state, &lease).await?;
                 return Ok(true);
             }
@@ -133,17 +134,20 @@ impl JobRunner {
         let payload = match decrypt_job_payload(&key, &lease) {
             Ok(payload) => payload,
             Err(_) => {
+                runtime.operation_failed("job_payload", lease.id);
                 self.fail_opaque_lease(state, &key, &lease).await?;
                 return Ok(true);
             }
         };
         if !lease.should_execute() {
+            runtime.operation_failed("job_exhausted", lease.id);
             self.fail_lease(state, &key, &lease, &payload).await?;
             return Ok(true);
         }
         match self.execute_export(state, &key, &lease, &payload).await {
             Ok(()) => Ok(true),
             Err(_) => {
+                runtime.operation_failed("job_execute", payload.request_id);
                 self.fail_lease(state, &key, &lease, &payload).await?;
                 Ok(true)
             }
@@ -160,10 +164,28 @@ impl JobRunner {
             .await
             .is_err();
         let expiry = expire_exports(state, objects.as_ref()).await;
-        if attachment_failed || export_orphan_failed || expiry.is_err() {
+        let purged = super::retention::purge(state, self.owner).await;
+        let rotated = super::key_rotation::run(state, self.owner).await;
+        for (phase, failed) in [
+            ("attachment_orphans", attachment_failed),
+            ("export_orphans", export_orphan_failed),
+            ("export_expiry", expiry.is_err()),
+            ("retention", purged.is_err()),
+            ("key_rotation", rotated.is_err()),
+        ] {
+            if failed {
+                runtime.operation_failed(phase, self.owner);
+            }
+        }
+        if attachment_failed
+            || export_orphan_failed
+            || expiry.is_err()
+            || purged.is_err()
+            || rotated.is_err()
+        {
             Err(OperationError)
         } else {
-            expiry
+            Ok(expiry? + purged? + rotated?)
         }
     }
     async fn fail_key_lease(
@@ -338,7 +360,16 @@ impl JobRunner {
             .await
             .map_err(|_| OperationError)?;
         ensure_fence(&mut tx, lease).await?;
-        sqlx::query("UPDATE exports SET status='running',object_key=$3,snapshot_ciphertext=$4,snapshot_nonce=$5,snapshot_key_version=1,plaintext_size=$6,key_version=1,updated_at=now() WHERE workspace_id=$1 AND id=$2").bind(lease.workspace_id).bind(payload.export_id).bind(object).bind(snapshot.0).bind(snapshot.1.as_slice()).bind(i64::try_from(plan.archive_size()).map_err(|_|OperationError)?).execute(&mut *tx).await.map_err(|_|OperationError)?;
+        let generation: i32 =
+            sqlx::query_scalar("SELECT current_key_version FROM workspaces WHERE id=$1")
+                .bind(lease.workspace_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| OperationError)?;
+        if generation != key.version().0 as i32 {
+            return Err(OperationError);
+        }
+        sqlx::query("UPDATE exports SET status='running',object_key=$3,snapshot_ciphertext=$4,snapshot_nonce=$5,snapshot_key_version=$7,plaintext_size=$6,key_version=$7,updated_at=now() WHERE workspace_id=$1 AND id=$2").bind(lease.workspace_id).bind(payload.export_id).bind(object).bind(snapshot.0).bind(snapshot.1.as_slice()).bind(i64::try_from(plan.archive_size()).map_err(|_|OperationError)?).bind(generation).execute(&mut *tx).await.map_err(|_|OperationError)?;
         sqlx::query(
             "INSERT INTO export_staging(object_key,workspace_id,export_id) VALUES($1,$2,$3)",
         )
@@ -366,9 +397,10 @@ impl JobRunner {
             .execute(&mut *object_connection)
             .await
             .map_err(|_| OperationError)?;
-        let mut encryptor = ArchiveEncryptor::new(
+        let mut encryptor = ArchiveEncryptor::with_version(
             key.derive(KeyPurpose::Attachment)
                 .map_err(|_| OperationError)?,
+            key.version(),
             lease.workspace_id,
             payload.export_id,
             plan.archive_size(),
@@ -496,7 +528,13 @@ pub async fn run_scheduler(state: AppState) {
         for _ in 0..100 {
             match runner.run_once(&state).await {
                 Ok(true) => {}
-                Ok(false) | Err(_) => break,
+                Ok(false) => break,
+                Err(_) => {
+                    if let Some(runtime) = state.runtime() {
+                        runtime.operation_failed("scheduler_claim_or_retry", runner.owner);
+                    }
+                    break;
+                }
             }
         }
         let _ = runner.run_maintenance_once(&state).await;
@@ -551,26 +589,15 @@ async fn expire_exports(
     objects: &dyn ObjectStore,
 ) -> Result<u64, OperationError> {
     let runtime = state.runtime().ok_or(OperationError)?;
-    let rows:Vec<(Uuid,Uuid,Uuid,Uuid)>=sqlx::query_as("SELECT id,workspace_id,requested_by,object_key FROM exports WHERE status='ready' AND expires_at<=now() ORDER BY expires_at LIMIT 100").fetch_all(runtime.store.pool()).await.map_err(|_|OperationError)?;
+    let rows:Vec<(Uuid,Uuid,Uuid,Uuid)>=sqlx::query_as("SELECT e.id,e.workspace_id,e.requested_by,e.object_key FROM exports e JOIN spaces s ON s.workspace_id=e.workspace_id AND s.id=e.space_id WHERE e.status='ready' AND (e.expires_at<=clock_timestamp() OR retention_expired(s.workspace_id,s.archived_at)) ORDER BY e.expires_at LIMIT 16").fetch_all(runtime.store.pool()).await.map_err(|_|OperationError)?;
     let mut count = 0;
     for (export, workspace, actor, object) in rows {
-        let Some(mut connection) = try_lock_object(runtime.store.pool(), object)
+        let Some(_connection) = try_lock_object(runtime.store.pool(), object)
             .await
             .map_err(|_| OperationError)?
         else {
             continue;
         };
-        let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM exports WHERE id=$1 AND workspace_id=$2 AND object_key=$3 AND status='ready' AND expires_at<=now())").bind(export).bind(workspace).bind(object).fetch_one(&mut *connection).await.map_err(|_|OperationError)?;
-        if !eligible {
-            continue;
-        }
-        tokio::time::timeout(Duration::from_secs(30), objects.delete(object))
-            .await
-            .map_err(|_| OperationError)?
-            .map_err(|_| OperationError)?;
-        let key = load_workspace_key(state, workspace)
-            .await
-            .map_err(|_| OperationError)?;
         let mut tx = runtime
             .store
             .pool()
@@ -580,7 +607,18 @@ async fn expire_exports(
         lock_workspace_for_audit(&mut tx, workspace)
             .await
             .map_err(|_| OperationError)?;
-        let changed=sqlx::query("UPDATE exports SET status='expired',object_key=NULL,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND object_key=$3 AND status='ready' AND expires_at<=now()").bind(export).bind(workspace).bind(object).execute(&mut *tx).await.map_err(|_|OperationError)?.rows_affected();
+        let key = load_workspace_key(state, workspace)
+            .await
+            .map_err(|_| OperationError)?;
+        let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM exports e JOIN spaces s ON s.workspace_id=e.workspace_id AND s.id=e.space_id WHERE e.id=$1 AND e.workspace_id=$2 AND e.object_key=$3 AND e.status='ready' AND (e.expires_at<=clock_timestamp() OR retention_expired(s.workspace_id,s.archived_at)))").bind(export).bind(workspace).bind(object).fetch_one(&mut *tx).await.map_err(|_|OperationError)?;
+        if !eligible {
+            continue;
+        }
+        tokio::time::timeout(Duration::from_secs(30), objects.delete(object))
+            .await
+            .map_err(|_| OperationError)?
+            .map_err(|_| OperationError)?;
+        let changed=sqlx::query("UPDATE exports SET status='expired',object_key=NULL,updated_at=now() WHERE id=$1 AND workspace_id=$2 AND object_key=$3 AND status='ready'").bind(export).bind(workspace).bind(object).execute(&mut *tx).await.map_err(|_|OperationError)?.rows_affected();
         if changed == 1 {
             append_audit_event(
                 &mut tx,
@@ -897,7 +935,7 @@ fn encrypt_snapshot(
     value: &SnapshotAccess,
 ) -> Result<(Vec<u8>, [u8; 12]), OperationError> {
     let cipher = EnvelopeCipher::new(
-        KeyVersion(1),
+        key.version(),
         key.derive(KeyPurpose::Content)
             .map_err(|_| OperationError)?,
     );
@@ -921,7 +959,7 @@ fn decrypt_snapshot(
     let version = KeyVersion(u32::try_from(version).map_err(|_| OperationError)?);
     let cipher = EnvelopeCipher::new(
         version,
-        key.derive(KeyPurpose::Content)
+        key.derive_for(KeyPurpose::Content, version)
             .map_err(|_| OperationError)?,
     );
     let value = EncryptedEnvelope {
@@ -1129,7 +1167,10 @@ async fn stream_attachment(
     let stream = AttachmentStream::new(
         context
             .key
-            .derive(KeyPurpose::Attachment)
+            .derive_for(
+                KeyPurpose::Attachment,
+                KeyVersion(u32::try_from(row.key_version).map_err(|_| OperationError)?),
+            )
             .map_err(|_| OperationError)?,
         KeyVersion(u32::try_from(row.key_version).map_err(|_| OperationError)?),
         context.lease.workspace_id.as_bytes(),

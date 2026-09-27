@@ -2,7 +2,7 @@ use axum::{
     extract::{Request, State},
     http::{HeaderValue, Method, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use uuid::Uuid;
 
@@ -33,6 +33,17 @@ pub async fn request_id(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(request_id);
 
     let mut response = next.run(request).await;
+    // Framework extractor errors are plaintext and can include submitted data.
+    // Normalize those responses without reading or reflecting their bodies.
+    if matches!(response.status().as_u16(), 400 | 422)
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/plain"))
+    {
+        response = ApiProblem::validation("request", "is invalid").into_response();
+    }
     response
         .headers_mut()
         .insert(REQUEST_ID_HEADER, header_value);

@@ -165,10 +165,11 @@ export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
 }) {
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
+  const lifetimeOpener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
   const cancel = useRef(onCancel)
   cancel.current = onCancel
   useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const opener = lifetimeOpener.current
     const dialog = dialogRef.current
     const backdrop = dialog?.closest<HTMLElement>('.modal-backdrop')
     if (!dialog || !backdrop) return

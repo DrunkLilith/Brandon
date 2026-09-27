@@ -12,7 +12,7 @@ import { I18nProvider, LanguageSwitch, useI18n } from './i18n'
 
 afterEach(() => {
   cleanup()
-  document.querySelectorAll('[data-modal-background-probe]').forEach((element) => element.remove())
+  document.querySelectorAll('[data-modal-background-probe], [data-modal-opener-probe]').forEach((element) => element.remove())
   localStorage.clear()
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true })
   document.documentElement.lang = 'en'
@@ -40,6 +40,20 @@ function StackedDialogHarness({ onCancelA, onCancelB }: {
     {bOpen && <ModalDialog title="Dialog B" onCancel={() => { onCancelB(); setBOpen(false) }}>
       <button>B first</button>
       <button onClick={() => setAOpen(false)}>Unmount A first</button>
+    </ModalDialog>}
+  </I18nProvider>
+}
+
+function SimultaneousDialogHarness() {
+  const [aOpen, setAOpen] = useState(true)
+  const [bOpen, setBOpen] = useState(true)
+  return <I18nProvider>
+    {aOpen && <ModalDialog title="Simultaneous A" onCancel={() => setAOpen(false)}>
+      <button>A first</button>
+    </ModalDialog>}
+    {bOpen && <ModalDialog title="Simultaneous B" onCancel={() => setBOpen(false)}>
+      <button>B first</button>
+      <button onClick={() => setAOpen(false)}>Unmount lower A</button>
     </ModalDialog>}
   </I18nProvider>
 }
@@ -216,4 +230,70 @@ describe('resilient accessible states', () => {
     expect(probe).not.toHaveAttribute('aria-hidden')
     expect(opener).toHaveFocus()
   })
+
+  it.each(['B then A', 'A then B'])(
+    'preserves the lifetime opener for simultaneous StrictMode dialogs closed %s',
+    async (order) => {
+      const probe = document.createElement('aside')
+      probe.dataset.modalBackgroundProbe = 'true'
+      probe.setAttribute('inert', 'kept')
+      probe.setAttribute('aria-hidden', 'false')
+      document.body.append(probe)
+      const opener = document.createElement('button')
+      opener.dataset.modalOpenerProbe = 'true'
+      opener.textContent = 'Original opener'
+      document.body.append(opener)
+      opener.focus()
+      expect(opener).toHaveFocus()
+      const user = userEvent.setup()
+      const addListener = vi.spyOn(document, 'addEventListener')
+      const removeListener = vi.spyOn(document, 'removeEventListener')
+      const listenerState = () => {
+        const events = [
+          ...addListener.mock.calls.map((args, index) => ({ type: args[0], delta: 1, order: addListener.mock.invocationCallOrder[index] })),
+          ...removeListener.mock.calls.map((args, index) => ({ type: args[0], delta: -1, order: removeListener.mock.invocationCallOrder[index] })),
+        ].filter((event) => event.type === 'focusin' || event.type === 'keydown')
+          .sort((left, right) => left.order - right.order)
+        return (['focusin', 'keydown'] as const).map((type) => {
+          let active = 0, peak = 0
+          for (const event of events) {
+            if (event.type !== type) continue
+            active += event.delta
+            peak = Math.max(peak, active)
+          }
+          return { type, active, peak }
+        })
+      }
+
+      render(<StrictMode><SimultaneousDialogHarness /></StrictMode>)
+      expect(screen.getByRole('button', { name: 'B first' })).toHaveFocus()
+      expect(listenerState()).toEqual([
+        { type: 'focusin', active: 1, peak: 1 },
+        { type: 'keydown', active: 1, peak: 1 },
+      ])
+
+      if (order === 'B then A') {
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Simultaneous B' }), { key: 'Escape' })
+        const remaining = screen.getByRole('dialog', { name: 'Simultaneous A' })
+        expect(remaining.contains(document.activeElement)).toBe(true)
+        expect(probe).toHaveAttribute('aria-hidden', 'true')
+        fireEvent.keyDown(remaining, { key: 'Escape' })
+      } else {
+        await user.click(screen.getByRole('button', { name: 'Unmount lower A' }))
+        const remaining = screen.getByRole('dialog', { name: 'Simultaneous B' })
+        expect(remaining.contains(document.activeElement)).toBe(true)
+        expect(probe).toHaveAttribute('aria-hidden', 'true')
+        fireEvent.keyDown(remaining, { key: 'Escape' })
+      }
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(opener).toHaveFocus()
+      expect(probe).toHaveAttribute('inert', 'kept')
+      expect(probe).toHaveAttribute('aria-hidden', 'false')
+      expect(listenerState()).toEqual([
+        { type: 'focusin', active: 0, peak: 1 },
+        { type: 'keydown', active: 0, peak: 1 },
+      ])
+    },
+  )
 })

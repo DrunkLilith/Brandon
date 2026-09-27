@@ -880,27 +880,27 @@ Commit: `feat(web): add localization accessibility and resilient states`
 - Produces: production deployment with Caddy, backend, frontend, PostgreSQL and MinIO.
 - Produces: encrypted backup bundle plus manifest; master key remains separate.
 
-- [ ] **Step 1: Write failing Compose smoke script**
+- [x] **Step 1: Write failing Compose smoke script**
 
 Script starts clean project, waits for readiness, runs bootstrap, asserts login page/API health, then shuts down without deleting named volumes unless explicit test cleanup flag is set.
 
-- [ ] **Step 2: Add multi-stage images, non-root users, healthchecks and secret mounts**
+- [x] **Step 2: Add multi-stage images, non-root users, healthchecks and secret mounts**
 
 Compose has no default production passwords. Startup fails with a precise error if master key or required credentials are missing.
 
-- [ ] **Step 3: Run RED backup/restore verification**
+- [x] **Step 3: Run RED backup/restore verification**
 
 Seed marker page/attachment, back up DB/MinIO metadata and ciphertext, restore into separate Compose project, assert marker round-trip through API with copied key; assert restore without key fails safely.
 
-- [ ] **Step 4: Implement equivalent Bash and PowerShell backup/restore scripts with explicit target validation**
+- [x] **Step 4: Implement equivalent Bash and PowerShell backup/restore scripts with explicit target validation**
 
 Both variants require an absolute backup directory, reject workspace/repository roots, write identical manifest checksums, and never copy the master key. CI compares the produced manifests from both entry points.
 
-- [ ] **Step 5: Write operations, security and user documentation**
+- [x] **Step 5: Write operations, security and user documentation**
 
 Documents include install, bootstrap, upgrade, key custody/rotation, backup/restore drill, threat model, permission semantics, search limitations and recovery paths with exact commands.
 
-- [ ] **Step 6: Run smoke and verification; commit**
+- [x] **Step 6: Run smoke and verification; commit**
 
 Run on Windows: `pwsh -File tests/operations/compose-smoke.ps1` and `pwsh -File scripts/verify-backup.ps1 -TestMode`.  
 Run on Linux: `bash tests/operations/compose-smoke.sh` and `bash scripts/verify-backup.sh --test-mode`.  

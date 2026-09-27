@@ -12,6 +12,7 @@ It does not protect against host root, backend process-memory inspection, a mali
 
 - Generate the 256-bit master key independently and store it in an operator-controlled secret system, never in Git, `.env`, PostgreSQL, MinIO, logs, an image layer, or a backup bundle.
 - Keep database and object-store credentials in separate mode-0600 files. Compose receives only absolute file paths.
+- MinIO client jobs read those mounted files through the bundled credential encoder, import JSON over standard input, and keep the resulting client configuration only on the container tmpfs. Credentials are not placed in `mc` arguments or persistent environment variables.
 - Do not set both a direct secret variable and its `_FILE` form. Startup rejects ambiguous, empty, multiline, NUL-containing, or unreadable secrets without logging values.
 - Bootstrap accepts an interactive or temporary file secret only. Never pass the password as an argument.
 - Restrict backup operators, restore operators, and key custodians separately where staffing permits. A backup becomes plaintext-readable only when combined with the key and a trusted backend.

@@ -52,7 +52,7 @@ export KNOWLEDGE_PUBLIC_ORIGIN="http://localhost:$http_port"
 export KNOWLEDGE_HTTP_PORT="$http_port"
 
 compose config --quiet
-compose build backend web
+compose build backend web minio minio-init
 compose up -d postgres minio
 compose up -d --no-deps backend
 pre_migration_deadline=$((SECONDS + 60))

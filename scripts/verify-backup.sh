@@ -100,7 +100,7 @@ export KNOWLEDGE_HTTP_PORT="$http_port"
 export KNOWLEDGE_HTTPS_PORT="$((http_port + 1))"
 
 compose "$source_project" config --quiet
-compose "$source_project" build backend web
+compose "$source_project" build backend web minio minio-init
 compose "$source_project" up -d postgres minio
 wait_storage "$source_project"
 compose "$source_project" run --rm -T minio-init

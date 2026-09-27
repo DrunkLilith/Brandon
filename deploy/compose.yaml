@@ -196,9 +196,7 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        access=$$(cat /run/secrets/object_access_key)
-        secret=$$(cat /run/secrets/object_secret_key)
-        mc alias set local http://minio:9000 "$$access" "$$secret"
+        mc-credentials http://minio:9000 | mc alias import local >/dev/null
         mc mb --ignore-existing local/knowledge
     secrets:
       - object_access_key

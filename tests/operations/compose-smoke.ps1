@@ -55,7 +55,7 @@ try {
     if ($backendDependencies -contains 'migrate' -or $bootstrapDependencies -contains 'migrate') {
         throw 'normal backend/bootstrap startup must not run migrations implicitly'
     }
-    Invoke-Compose build backend web
+    Invoke-Compose build backend web minio minio-init
     Invoke-Compose up --detach postgres minio
     Invoke-Compose up --detach --no-deps backend
     $preMigrationDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)

@@ -102,7 +102,7 @@ try {
     $env:KNOWLEDGE_HTTPS_PORT = "$($httpPort + 1)"
 
     Invoke-Compose $sourceProject config --quiet
-    Invoke-Compose $sourceProject build backend web
+    Invoke-Compose $sourceProject build backend web minio minio-init
     Invoke-Compose $sourceProject up --detach postgres minio
     Wait-Storage $sourceProject
     Invoke-Compose $sourceProject run --rm -T minio-init

@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$ProjectName,
     [Parameter(Mandatory)][string]$TargetDirectory,
-    [string]$ComposeFile
+    [string]$ComposeFile,
+    [ValidateRange(1, 3600)][int]$RestartTimeoutSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,15 +43,28 @@ if (-not $postgres -or -not $minio) { throw 'source project PostgreSQL and MinIO
 New-Item -ItemType Directory -Path (Join-Path $target 'postgres'),(Join-Path $target 'objects'),(Join-Path $target 'metadata') | Out-Null
 [IO.File]::WriteAllText((Join-Path $target 'bundle-version.txt'), "knowledge-platform-backup-v1`n", [Text.UTF8Encoding]::new($false))
 $backendWasRunning = -not [string]::IsNullOrWhiteSpace((& docker compose -f $ComposeFile -p $ProjectName ps -q backend))
+function Restore-BackendAfterBackup {
+    if (-not $backendWasRunning) { return }
+    & docker compose -f $ComposeFile -p $ProjectName start backend | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'backend failed to restart after backup' }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($RestartTimeoutSeconds)
+    do {
+        $containerId = (& docker compose -f $ComposeFile -p $ProjectName ps -q backend).Trim()
+        if ($containerId) {
+            $status = (& docker inspect -f '{{.State.Health.Status}}' $containerId 2>$null).Trim()
+            if ($LASTEXITCODE -eq 0 -and $status -eq 'healthy') { return }
+        }
+        Start-Sleep -Seconds 2
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw 'backend failed to return ready after backup'
+}
 try {
     if ($backendWasRunning) { Invoke-Compose stop backend | Out-Null }
     $postgresMount = "$(Join-Path $target 'postgres'):/backup"
     Invoke-Compose run --rm -T --volume $postgresMount --entrypoint /bin/sh postgres -ec 'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
     $bundleMount = "${target}:/backup"
     Invoke-Compose run --rm -T --volume $bundleMount --entrypoint /bin/sh minio-init -ec @'
-access=$(cat /run/secrets/object_access_key)
-secret=$(cat /run/secrets/object_secret_key)
-mc alias set --quiet local http://minio:9000 "$access" "$secret"
+mc-credentials http://minio:9000 | mc alias import local >/dev/null
 mc mirror --overwrite local/knowledge /backup/objects
 mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/object-index.jsonl
 '@
@@ -65,6 +79,6 @@ mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/obje
     [string[]]$lines = $paths | ForEach-Object { "$($entries[$_])  $_" }
     [IO.File]::WriteAllText((Join-Path $target 'manifest.sha256'), (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 } finally {
-    if ($backendWasRunning) { & docker compose -f $ComposeFile -p $ProjectName start backend | Out-Null }
+    Restore-BackendAfterBackup
 }
 Write-Output "backup completed: project=$ProjectName target=$target"

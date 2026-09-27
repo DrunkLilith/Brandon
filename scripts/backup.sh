@@ -4,11 +4,13 @@ set -euo pipefail
 project=''
 target=''
 compose_file=''
+restart_timeout_seconds=120
 while (($#)); do
   case "$1" in
     --project) shift; project="${1:?missing project}" ;;
     --target) shift; target="${1:?missing target}" ;;
     --compose-file) shift; compose_file="${1:?missing compose file}" ;;
+    --restart-timeout-seconds) shift; restart_timeout_seconds="${1:?missing restart timeout}" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -19,6 +21,7 @@ repo_root="$(cd -- "$script_dir/.." && pwd -P)"
 compose_file="${compose_file:-$repo_root/deploy/compose.yaml}"
 
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]{2,62}$ ]] || { echo 'project must be an explicit safe Compose project name' >&2; exit 2; }
+[[ "$restart_timeout_seconds" =~ ^[1-9][0-9]*$ ]] || { echo 'restart timeout must be a positive integer' >&2; exit 2; }
 case "$target" in *[\*\?\[\]]*) echo 'backup target must be an absolute path without glob characters' >&2; exit 2 ;; esac
 [[ -n "$target" && "$target" == /* ]] || { echo 'backup target must be an absolute path without glob characters' >&2; exit 2; }
 [[ -d "$target" ]] || { echo 'backup target must be an existing empty directory' >&2; exit 2; }
@@ -35,8 +38,33 @@ printf 'knowledge-platform-backup-v1\n' >"$target/bundle-version.txt"
 
 backend_was_running=false
 [[ -n "$(compose ps -q backend)" ]] && backend_was_running=true
-restart_backend() { $backend_was_running && compose start backend >/dev/null 2>&1 || true; }
-trap restart_backend EXIT
+restart_backend() {
+  $backend_was_running || return 0
+  if ! compose start backend >/dev/null; then
+    echo 'backend failed to restart after backup' >&2
+    return 1
+  fi
+  local deadline=$((SECONDS + restart_timeout_seconds)) container_id status
+  while ((SECONDS < deadline)); do
+    container_id="$(compose ps -q backend)"
+    if [[ -n "$container_id" ]]; then
+      status="$(docker inspect -f '{{.State.Health.Status}}' "$container_id" 2>/dev/null || true)"
+      [[ "$status" != healthy ]] || return 0
+    fi
+    sleep 2
+  done
+  echo 'backend failed to return ready after backup' >&2
+  return 1
+}
+restart_on_exit() {
+  local code=$?
+  trap - EXIT
+  if ! restart_backend && ((code == 0)); then
+    code=1
+  fi
+  exit "$code"
+}
+trap restart_on_exit EXIT
 $backend_was_running && compose stop backend >/dev/null
 
 run_with_mount() {
@@ -56,9 +84,7 @@ run_with_mount() {
 run_with_mount "$target/postgres" /backup --entrypoint /bin/sh postgres -ec \
   'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=postgres --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments --restrict-key=KnowledgePlatformBackupV1 --file=/backup/database.sql'
 run_with_mount "$target" /backup --entrypoint /bin/sh minio-init -ec '
-  access=$(cat /run/secrets/object_access_key)
-  secret=$(cat /run/secrets/object_secret_key)
-  mc alias set --quiet local http://minio:9000 "$access" "$secret"
+  mc-credentials http://minio:9000 | mc alias import local >/dev/null
   mc mirror --overwrite local/knowledge /backup/objects
   mc ls --recursive --json local/knowledge | LC_ALL=C sort > /backup/metadata/object-index.jsonl
 '
@@ -73,5 +99,5 @@ run_with_mount "$target" /backup --entrypoint /bin/sh minio-init -ec '
 ) >"$target/manifest.sha256"
 
 trap - EXIT
-restart_backend
+restart_backend || exit 1
 printf 'backup completed: project=%s target=%s\n' "$project" "$target"

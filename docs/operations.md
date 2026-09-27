@@ -99,6 +99,8 @@ install -d -m 0700 /srv/knowledge-backups/2026-09-27
 
 The bundle contains `postgres/database.sql`, encrypted objects under `objects/`, `metadata/object-index.jsonl`, `bundle-version.txt`, and an ordinal path-sorted `manifest.sha256`. It never contains or derives the master key. Store the master key separately. The manifest detects corruption and accidental replacement, but it is not a signature; protect or sign the bundle through the backup system and keep off-site copies.
 
+If the backend was running, backup stops it for the database/object snapshot, restarts it, and waits boundedly for `/ready` through the container health check. A restart failure or readiness timeout makes the backup command fail even when the bundle files were written; investigate the backend before treating that bundle as an accepted backup.
+
 ## Restore
 
 Restore only from a trusted, verified bundle. Supply the same database/object credentials expected by the Compose environment and the separately held original master key. The restore target must be an existing empty absolute directory, and the Compose project must be a new name matching `kp-restore-` plus 12 lowercase hexadecimal characters.
@@ -120,7 +122,7 @@ pwsh -File scripts/restore.ps1 -ProjectName kp-restore-0123456789ab `
   -TargetDirectory 'D:\knowledge-restore\drill-state'
 ```
 
-Restore validates every manifest path and checksum, rejects duplicates, traversal, links, missing files, unlisted files, and unsupported bundle versions, then loads a fresh PostgreSQL volume and MinIO bucket. It refuses any project that already has containers or volumes. It does not start the backend or copy a key.
+Restore validates every manifest path and checksum, rejects duplicates, traversal, links, missing files, unlisted files, and unsupported bundle versions, then loads a fresh PostgreSQL volume and MinIO bucket. It refuses any project that already has containers or any exact Compose-resolved volume name, even if a pre-existing volume has no Compose labels. Failure cleanup removes only volumes whose project and logical-volume ownership labels match this restore invocation. It does not start the backend or copy a key.
 
 ## Restore drill
 

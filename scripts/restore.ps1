@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][string]$ProjectName,
     [Parameter(Mandatory)][string]$SourceDirectory,
     [Parameter(Mandatory)][string]$TargetDirectory,
-    [string]$ComposeFile
+    [string]$ComposeFile,
+    [ValidateRange(1, 3600)][int]$StorageTimeoutSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,13 +93,36 @@ function Invoke-Compose {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
 }
 if (-not [string]::IsNullOrWhiteSpace((& docker compose -f $ComposeFile -p $ProjectName ps -aq))) { throw 'restore project already has containers' }
-if (-not [string]::IsNullOrWhiteSpace((& docker volume ls --quiet --filter "label=com.docker.compose.project=$ProjectName"))) { throw 'restore project already has volumes' }
+$volumeKeys = @(& docker compose -f $ComposeFile -p $ProjectName config --volumes)
+if ($LASTEXITCODE -ne 0 -or $volumeKeys.Count -eq 0) { throw 'restore Compose file declares no volumes' }
+$expectedVolumes = foreach ($keyValue in $volumeKeys) {
+    $key = $keyValue.Trim()
+    if ($key -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') { throw 'restore Compose volume name is invalid' }
+    [pscustomobject]@{ Key = $key; Name = "${ProjectName}_$key" }
+}
+foreach ($volume in $expectedVolumes) {
+    & docker volume inspect $volume.Name *> $null
+    if ($LASTEXITCODE -eq 0) { throw "restore project already has volume: $($volume.Name)" }
+}
 [IO.File]::WriteAllText((Join-Path $target 'restore-state.json'), "{`"project`":`"$ProjectName`",`"source`":`"$($source.Replace('\','/'))`"}`n", [Text.UTF8Encoding]::new($false))
+
+function Get-OwnedRestoreVolumes {
+    $owned = [Collections.Generic.List[string]]::new()
+    foreach ($volume in $expectedVolumes) {
+        $labels = & docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}|{{ index .Labels "com.docker.compose.volume" }}' $volume.Name 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            if ($labels.Trim() -ne "$ProjectName|$($volume.Key)") { throw 'restore volume ownership could not be established' }
+            $owned.Add($volume.Name)
+        }
+    }
+    return $owned.ToArray()
+}
 
 $completed = $false
 try {
     Invoke-Compose up --detach postgres minio
-    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
+    $null = Get-OwnedRestoreVolumes
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StorageTimeoutSeconds)
     do {
         $postgresId = (& docker compose -f $ComposeFile -p $ProjectName ps -q postgres).Trim()
         $minioId = (& docker compose -f $ComposeFile -p $ProjectName ps -q minio).Trim()
@@ -115,13 +139,18 @@ try {
     Invoke-Compose run --rm -T --volume $postgresMount --entrypoint /bin/sh postgres -ec 'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --host=postgres --username=knowledge --dbname=knowledge --file=/backup/database.sql'
     $objectsMount = "$(Join-Path $source 'objects'):/backup-objects"
     Invoke-Compose run --rm -T --volume $objectsMount --entrypoint /bin/sh minio-init -ec @'
-access=$(cat /run/secrets/object_access_key)
-secret=$(cat /run/secrets/object_secret_key)
-mc alias set --quiet local http://minio:9000 "$access" "$secret"
+mc-credentials http://minio:9000 | mc alias import local >/dev/null
 mc mirror --overwrite /backup-objects local/knowledge
 '@
     $completed = $true
 } finally {
-    if (-not $completed) { & docker compose -f $ComposeFile -p $ProjectName down --remove-orphans --volumes | Out-Null }
+    if (-not $completed) {
+        & docker compose -f $ComposeFile -p $ProjectName down --remove-orphans | Out-Null
+        $ownedVolumes = @(Get-OwnedRestoreVolumes)
+        if ($ownedVolumes.Count -gt 0) {
+            & docker volume rm @ownedVolumes | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'restore could not remove its owned volumes after failure' }
+        }
+    }
 }
 Write-Output "restore completed: project=$ProjectName target=$target"

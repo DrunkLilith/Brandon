@@ -11,7 +11,16 @@ export function validateLicenseReport(report) {
     if (!approved.has(groupLicense)) throw new Error(`production license is not approved: ${groupLicense || '<missing>'}`)
     if (!Array.isArray(dependencies) || dependencies.length === 0) throw new Error(`license group is malformed: ${groupLicense}`)
     for (const dependency of dependencies) {
-      if (!dependency || typeof dependency !== 'object' || typeof dependency.name !== 'string') throw new Error('license entry is malformed')
+      if (
+        !dependency
+        || typeof dependency !== 'object'
+        || Array.isArray(dependency)
+        || typeof dependency.name !== 'string'
+        || dependency.name.trim().length === 0
+        || !Array.isArray(dependency.versions)
+        || dependency.versions.length === 0
+        || dependency.versions.some((version) => typeof version !== 'string' || version.trim().length === 0)
+      ) throw new Error('license entry is malformed')
       if (typeof dependency.license !== 'string' || dependency.license.length === 0) throw new Error(`dependency ${dependency.name} has a missing license`)
       if (dependency.license !== groupLicense) throw new Error(`dependency ${dependency.name} license does not match its group`)
       if (!approved.has(dependency.license)) throw new Error(`production license is not approved: ${dependency.license}`)

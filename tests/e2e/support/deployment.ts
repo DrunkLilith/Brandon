@@ -14,6 +14,7 @@ export interface RuntimeState {
   adminPassword: string
   composeEnvironment: Record<string, string>
   expectedVolumes: string[]
+  expectedNetworks: string[]
   ownershipVolume?: string
   ownershipToken?: string
   dockerExecutable?: string
@@ -47,7 +48,7 @@ function composeFile() {
   return path.join(repoRoot(), 'deploy', 'compose.yaml')
 }
 
-function compose(state: RuntimeState, args: string[], inherit = true) {
+function composeCaptured(state: RuntimeState, args: string[], inherit = true) {
   const result = spawnSync(state.dockerExecutable ?? 'docker', [
     ...(state.dockerArguments ?? []), 'compose', '-f', composeFile(), '-p', state.project, ...args,
   ], {
@@ -70,6 +71,19 @@ function compose(state: RuntimeState, args: string[], inherit = true) {
     if (result.stderr) process.stderr.write(result.stderr)
   }
   return result.stdout ?? ''
+}
+
+function composeStreaming(state: RuntimeState, args: string[]) {
+  const result = spawnSync(state.dockerExecutable ?? 'docker', [
+    ...(state.dockerArguments ?? []), 'compose', '-f', composeFile(), '-p', state.project, ...args,
+  ], {
+    cwd: repoRoot(),
+    env: { ...process.env, ...state.composeEnvironment },
+    stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: 30 * 60_000,
+  })
+  if (result.error) throw new Error(`docker compose could not run: ${result.error.name}`)
+  if (result.status !== 0) throw new Error(`docker compose failed with exit code ${result.status ?? 'unknown'}`)
 }
 
 function docker(state: RuntimeState, args: string[]) {
@@ -105,13 +119,55 @@ function writeSecret(directory: string, name: string, value: string) {
   return target
 }
 
-function assertUnused(state: RuntimeState) {
+export function resolveComposeResourceNames(state: RuntimeState) {
+  const raw = composeCaptured(state, ['config', '--format', 'json'], false)
+  let config: unknown
+  try {
+    config = JSON.parse(raw)
+  } catch {
+    throw new Error('docker compose returned malformed resource configuration')
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('docker compose returned malformed resource configuration')
+  }
+  const resourceNames = (value: unknown, kind: string) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`docker compose returned malformed ${kind} configuration`)
+    }
+    const names = Object.values(value).map((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) || !('name' in entry) || typeof entry.name !== 'string' || !entry.name) {
+        throw new Error(`docker compose returned malformed ${kind} configuration`)
+      }
+      return entry.name
+    })
+    if (names.length === 0 || new Set(names).size !== names.length) {
+      throw new Error(`docker compose returned malformed ${kind} configuration`)
+    }
+    return names
+  }
+  const document = config as { volumes?: unknown; networks?: unknown }
+  return {
+    volumes: resourceNames(document.volumes, 'volume'),
+    networks: resourceNames(document.networks, 'network'),
+  }
+}
+
+export function assertDeploymentResourcesUnused(state: RuntimeState) {
   const containers = docker(state, ['ps', '-a', '--filter', `label=com.docker.compose.project=${state.project}`, '--format', '{{.ID}}']).trim()
   if (containers) throw new Error(`refusing to reuse Compose project ${state.project}`)
-  for (const volume of [...state.expectedVolumes, state.ownershipVolume!]) {
+  const volumes = state.ownershipVolume ? [...state.expectedVolumes, state.ownershipVolume] : state.expectedVolumes
+  for (const volume of volumes) {
     try {
       docker(state, ['volume', 'inspect', volume])
       throw new Error(`refusing to reuse Compose volume ${volume}`)
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('refusing')) throw error
+    }
+  }
+  for (const network of state.expectedNetworks) {
+    try {
+      docker(state, ['network', 'inspect', network])
+      throw new Error(`refusing to reuse Compose network ${network}`)
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('refusing')) throw error
     }
@@ -180,19 +236,22 @@ async function startDeploymentAttempt(options: StartDeploymentOptions): Promise<
     adminEmail: `admin-${suffix}@example.test`,
     adminPassword,
     composeEnvironment,
-    expectedVolumes: ['postgres_data', 'minio_data', 'caddy_data', 'caddy_config'].map((name) => `${project}_${name}`),
+    expectedVolumes: [],
+    expectedNetworks: [],
     ownershipVolume: `${project}_e2e_owner`,
     ownershipToken: randomBytes(24).toString('hex'),
     ...(options.dockerExecutable ? { dockerExecutable: options.dockerExecutable } : {}),
     ...(options.dockerArguments ? { dockerArguments: options.dockerArguments } : {}),
   }
-  const stateFile = path.join(tempDirectory, 'runtime.json')
-  writeFileSync(stateFile, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 })
-  chmodSync(stateFile, 0o600)
-  process.env[STATE_ENV] = stateFile
-
   try {
-    assertUnused(state)
+    const resources = resolveComposeResourceNames(state)
+    state.expectedVolumes = resources.volumes
+    state.expectedNetworks = resources.networks
+    const stateFile = path.join(tempDirectory, 'runtime.json')
+    writeFileSync(stateFile, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 })
+    chmodSync(stateFile, 0o600)
+    process.env[STATE_ENV] = stateFile
+    assertDeploymentResourcesUnused(state)
   } catch (error) {
     cleanupTempDirectory(state)
     throw error
@@ -200,19 +259,19 @@ async function startDeploymentAttempt(options: StartDeploymentOptions): Promise<
 
   try {
     claimOwnership(state)
-    compose(state, ['config', '--quiet'])
-    compose(state, ['build', 'backend', 'web', 'minio', 'minio-init'])
-    compose(state, ['up', '--detach', 'postgres', 'minio'])
-    compose(state, ['run', '--rm', '-T', 'minio-init'])
-    compose(state, ['run', '--rm', '-T', 'migrate'])
+    composeCaptured(state, ['config', '--quiet'])
+    composeStreaming(state, ['build', 'backend', 'web', 'minio', 'minio-init'])
+    composeCaptured(state, ['up', '--detach', 'postgres', 'minio'])
+    composeStreaming(state, ['run', '--rm', '-T', 'minio-init'])
+    composeStreaming(state, ['run', '--rm', '-T', 'migrate'])
     const bootstrapPasswordFile = writeSecret(tempDirectory, 'bootstrap_password', adminPassword)
-    compose(state, [
+    composeStreaming(state, [
       '--profile', 'tools', 'run', '--rm', '-T',
       '--volume', `${bootstrapPasswordFile}:/run/secrets/bootstrap_password:ro`,
       '--env', 'KNOWLEDGE_BOOTSTRAP_PASSWORD_FILE=/run/secrets/bootstrap_password',
       'bootstrap', '--email', state.adminEmail, '--workspace-name', 'E2E Workspace', '--display-name', 'E2E Administrator',
     ])
-    compose(state, ['up', '--detach', 'backend', 'web', 'caddy'])
+    composeCaptured(state, ['up', '--detach', 'backend', 'web', 'caddy'])
     await waitUntilReady(state.baseUrl)
     return state
   } catch (error) {
@@ -270,7 +329,7 @@ export function cleanupDeployment(state: RuntimeState) {
   }
   try {
     if (ownsResources) {
-      compose(state, ['down', '--remove-orphans', '--volumes'], false)
+      composeCaptured(state, ['down', '--remove-orphans', '--volumes'], false)
       docker(state, ['volume', 'rm', '--force', state.ownershipVolume!])
     }
   } finally {

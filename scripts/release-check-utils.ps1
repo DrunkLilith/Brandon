@@ -11,7 +11,7 @@ function Invoke-Native {
 
 function Get-SemanticVersion {
     param([Parameter(Mandatory)][string]$Observed)
-    $matches = [Regex]::Matches($Observed, '(?<![0-9A-Za-z])v?([0-9]+\.[0-9]+\.[0-9]+)(?![0-9A-Za-z.-])')
+    $matches = [Regex]::Matches($Observed, '(?<!\S)v?([0-9]+\.[0-9]+\.[0-9]+)(?!\S)')
     if ($matches.Count -ne 1) { throw 'version output must contain exactly one stable semantic version' }
     return $matches[0].Groups[1].Value
 }

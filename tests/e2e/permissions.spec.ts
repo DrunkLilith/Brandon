@@ -14,6 +14,7 @@ import {
   updatePage,
 } from './support/fixtures'
 import { readRuntimeState } from './support/deployment'
+import { assertPhysicalPostgresStorageHasNoPlaintext } from './support/storage-audit'
 
 test('restricted subtree and related resources are non-enumerating across every surface', async ({ browser }) => {
   const workspace = await seedWorkspace()
@@ -99,9 +100,23 @@ test('restricted subtree and related resources are non-enumerating across every 
       'export PGPASSWORD="$(cat /run/secrets/database_password)"; exec pg_dump --host=127.0.0.1 --username=knowledge --dbname=knowledge --format=plain --no-owner --no-privileges --no-comments',
     ], null) as Buffer
     const objectBytes = compose(['exec', '-T', 'minio', 'tar', '-C', '/data', '-cf', '-', '.'], null) as Buffer
-    for (const plaintext of [marker, `child ${marker}`, `private-${marker}.txt`]) {
+    const plaintextMarkers = [marker, `child ${marker}`, `private-${marker}.txt`]
+    for (const plaintext of plaintextMarkers) {
       expect(databaseBytes.includes(Buffer.from(plaintext))).toBe(false)
       expect(objectBytes.includes(Buffer.from(plaintext))).toBe(false)
+    }
+
+    const postgresVolume = runtime.expectedVolumes.find((volume) => volume.endsWith('_postgres_data'))
+    expect(postgresVolume, 'resolved PostgreSQL volume is missing').toBeTruthy()
+    compose(['stop', 'postgres'])
+    try {
+      assertPhysicalPostgresStorageHasNoPlaintext(postgresVolume!, plaintextMarkers)
+    } finally {
+      compose(['start', 'postgres'])
+      await expect.poll(async () => {
+        const response = await workspace.admin.context.get('/api/v1/health/ready')
+        return response.status()
+      }, { timeout: 60_000 }).toBe(200)
     }
 
     const backupDirectory = path.join(runtime.tempDirectory, 'plaintext-audit-backup')
@@ -117,7 +132,7 @@ test('restricted subtree and related resources are non-enumerating across every 
     try {
       for (const file of files(backupDirectory)) {
         const bytes = readFileSync(file)
-        for (const plaintext of [marker, `child ${marker}`, `private-${marker}.txt`]) {
+        for (const plaintext of plaintextMarkers) {
           expect(bytes.includes(Buffer.from(plaintext)), `${path.basename(file)} contains plaintext`).toBe(false)
         }
       }

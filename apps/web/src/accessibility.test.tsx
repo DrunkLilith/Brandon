@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useState } from 'react'
+import { StrictMode, useState } from 'react'
 
 import { ApiError } from './api/client'
 import { ModalDialog } from './admin/shared'
@@ -91,15 +91,21 @@ describe('resilient accessible states', () => {
   it('focuses and traps both Tab directions, closes on Escape, and restores the opener', async () => {
     function DialogHarness() {
       const [open, setOpen] = useState(false)
-      return <I18nProvider><button onClick={() => setOpen(true)}>Open</button>{open && <ModalDialog title="Dialog" onCancel={() => setOpen(false)}><button>First</button><button>Last</button></ModalDialog>}</I18nProvider>
+      return <I18nProvider><LanguageSwitch /><button onClick={() => setOpen(true)}>Open</button>{open && <ModalDialog title="Dialog" onCancel={() => setOpen(false)}><button>First</button><button>Last</button></ModalDialog>}</I18nProvider>
     }
     const user = userEvent.setup()
-    render(<DialogHarness />)
+    render(<StrictMode><DialogHarness /></StrictMode>)
     const opener = screen.getByRole('button', { name: 'Open' })
+    const englishSwitch = screen.getByRole('button', { name: 'English' })
     await user.click(opener)
     const first = screen.getByRole('button', { name: 'First' })
     const last = screen.getByRole('button', { name: 'Last' })
     expect(first).toHaveFocus()
+
+    englishSwitch.focus()
+    fireEvent.focusIn(englishSwitch)
+    expect(first).toHaveFocus()
+    expect(englishSwitch.closest('div')).toHaveAttribute('inert')
 
     last.focus()
     await user.tab()
@@ -110,5 +116,6 @@ describe('resilient accessible states', () => {
     fireEvent.keyDown(last, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(opener).toHaveFocus()
+    expect(englishSwitch.closest('div')).not.toHaveAttribute('inert')
   })
 })

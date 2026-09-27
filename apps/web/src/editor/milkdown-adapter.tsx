@@ -39,6 +39,7 @@ export function MilkdownAdapter({
   const { messages: text } = useI18n()
   const root = useRef<HTMLDivElement>(null),
     editor = useRef<Editor | null>(null)
+  const visualMarkdownLabel = useRef(text.workspace.visualMarkdown)
   const latest = useRef(value),
     change = useRef(onChange),
     locked = useRef(readOnly),
@@ -54,6 +55,7 @@ export function MilkdownAdapter({
   locked.current = readOnly
   dirty.current = onDirty
   unmount.current = onUnmount
+  visualMarkdownLabel.current = text.workspace.visualMarkdown
   const cancelTimer = () => {
     if (timer.current !== null) clearTimeout(timer.current)
     timer.current = null
@@ -115,7 +117,7 @@ export function MilkdownAdapter({
           },
           attributes: {
             role: 'textbox',
-            'aria-label': text.workspace.visualMarkdown,
+            'aria-label': visualMarkdownLabel.current,
             'aria-multiline': 'true',
           },
         }))
@@ -139,6 +141,9 @@ export function MilkdownAdapter({
         }
         editor.current = instance
         if (latest.current !== value) replaceValue(instance, latest.current)
+        instance.action((ctx) => {
+          ctx.get(editorViewCtx).dom.setAttribute('aria-label', visualMarkdownLabel.current)
+        })
       })
       .catch((reason) => {
         if (!disposed) setError(reason)
@@ -157,9 +162,13 @@ export function MilkdownAdapter({
     editor.current?.action((ctx) => {
       const view = ctx.get(editorViewCtx)
       view.updateState(view.state)
-      view.dom.setAttribute('aria-label', text.workspace.visualMarkdown)
     })
-  }, [readOnly, text.workspace.visualMarkdown])
+  }, [readOnly])
+  useLayoutEffect(() => {
+    editor.current?.action((ctx) => {
+      ctx.get(editorViewCtx).dom.setAttribute('aria-label', text.workspace.visualMarkdown)
+    })
+  }, [text.workspace.visualMarkdown])
   useEffect(() => {
     if (editor.current && value !== emitted.current) {
       replaceValue(editor.current, value)

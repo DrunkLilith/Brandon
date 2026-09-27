@@ -179,6 +179,7 @@ it.each([
         : tree,
     )
     await screen.findByLabelText('Название страницы')
+    const pageTree = screen.getByRole('tree')
     await user.click(screen.getByRole('button', { name: action }))
     if (action === 'Создать дочернюю' || action === 'Переименовать') {
       await user.clear(screen.getByLabelText('Новое название'))
@@ -193,14 +194,14 @@ it.each([
     await waitFor(() => expect(fail).toBeDefined())
     if (action === 'Переименовать' || action === 'Создать дочернюю')
       expect(
-        within(screen.getByRole('tree')).getByText('Изменено'),
+        within(pageTree).getByText('Изменено'),
       ).toBeVisible()
     if (action === 'Архивировать')
-      expect(within(screen.getByRole('tree')).queryByText('Начало')).toBeNull()
+      expect(within(pageTree).queryByText('Начало')).toBeNull()
     fail!(problem())
-    expect(await screen.findByRole('alert')).toBeVisible()
-    expect(within(screen.getByRole('tree')).getByText('Начало')).toBeVisible()
-    expect(within(screen.getByRole('tree')).queryByText('Изменено')).toBeNull()
+    expect(await screen.findByRole('alert', { hidden: true })).toBeVisible()
+    expect(within(pageTree).getByText('Начало')).toBeVisible()
+    expect(within(pageTree).queryByText('Изменено')).toBeNull()
     expect(window.location.pathname).toBe('/app/spaces/s/pages/p')
   },
 )
@@ -527,21 +528,22 @@ it('reorders siblings optimistically and restores exact order after network reje
     [{ ...tree[0], id: 'first', title: 'Первый', sortKey: '0' }, ...tree],
   )
   await screen.findByLabelText('Название страницы')
+  const pageTree = screen.getByRole('tree')
   await user.click(screen.getByRole('button', { name: 'Поднять' }))
   await user.click(screen.getByRole('button', { name: 'Применить' }))
   await waitFor(() =>
     expect(sent).toEqual({ spaceId: 's', parentId: null, beforeId: 'first' }),
   )
   expect(
-    within(screen.getByRole('tree'))
-      .getAllByRole('treeitem')
+    within(pageTree)
+      .getAllByRole('treeitem', { hidden: true })
       .map((n) => n.getAttribute('aria-label')),
   ).toEqual(['Начало', 'Первый'])
   reject(new TypeError('offline'))
-  await screen.findByRole('alert')
+  await screen.findByRole('alert', { hidden: true })
   expect(
-    within(screen.getByRole('tree'))
-      .getAllByRole('treeitem')
+    within(pageTree)
+      .getAllByRole('treeitem', { hidden: true })
       .map((n) => n.getAttribute('aria-label')),
   ).toEqual(['Первый', 'Начало'])
 })

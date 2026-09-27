@@ -16,6 +16,7 @@ const session = { sessionId: 's', userId: 'admin', workspaceId: 'w', workspaceAd
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   window.history.replaceState({}, '', '/')
@@ -87,6 +88,12 @@ describe('settings administration', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить настройки' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('от 1 до 3650')
     expect(updates).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'English' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('between 1 and 3650')
+    expect(screen.getByLabelText('Attachment recovery, days')).toHaveValue(0)
+    expect(screen.getByLabelText('Export retention, hours')).toHaveValue(721)
+    await user.click(screen.getByRole('button', { name: 'Русский' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('от 1 до 3650')
 
     await user.clear(recovery)
     await user.type(recovery, '45')

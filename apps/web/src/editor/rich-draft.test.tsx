@@ -18,6 +18,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { PageView } from '../pages/page-view'
 import { pageKey } from '../pages/queries'
 import { apiClient } from '../api/client'
+import { I18nProvider, LanguageSwitch } from '../i18n'
 import { MilkdownAdapter } from './milkdown-adapter'
 
 afterEach(() => {
@@ -38,6 +39,63 @@ it('does not report an authoritative external replacement as a new user edit', a
   view.rerender(<MilkdownAdapter value="server version" onChange={change} />)
   expect(await screen.findByText('server version')).toBeVisible()
   expect(change).not.toHaveBeenCalled()
+})
+
+it('applies the latest locale label when the real editor finishes creating after a locale change', async () => {
+  const realMake = Editor.make
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const editors = vi.spyOn(Editor, 'make').mockImplementation(() => {
+    const instance = realMake()
+    const realCreate = instance.create.bind(instance)
+    vi.spyOn(instance, 'create').mockImplementation(async () => {
+      await gate
+      return realCreate()
+    })
+    return instance
+  })
+  const onChange = vi.fn(), onDirty = vi.fn(), onUnmount = vi.fn()
+  const persist = vi.spyOn(Storage.prototype, 'setItem')
+  render(<I18nProvider><LanguageSwitch /><MilkdownAdapter value="unchanged" onChange={onChange} onDirty={onDirty} onUnmount={onUnmount} /></I18nProvider>)
+
+  fireEvent.click(screen.getByRole('button', { name: 'English' }))
+  await waitFor(() => expect(document.documentElement.lang).toBe('en'))
+  act(() => release())
+  await waitFor(() => expect(editors.mock.results[0]?.value.status).toBe(EditorStatus.Created))
+
+  expect(screen.getByRole('textbox', { name: 'Visual Markdown' })).toHaveTextContent('unchanged')
+  expect(screen.queryByRole('textbox', { name: 'Визуальный Markdown' })).not.toBeInTheDocument()
+  expect(editors).toHaveBeenCalledTimes(1)
+  expect(persist).toHaveBeenCalledOnce()
+  expect(persist).toHaveBeenCalledWith('knowledge.locale', 'en')
+  expect(onChange).not.toHaveBeenCalled()
+  expect(onDirty).not.toHaveBeenCalled()
+  expect(onUnmount).not.toHaveBeenCalled()
+})
+
+it('relocalizes an already-visible local-draft status both ways without losing the draft', async () => {
+  const page = {
+    id: 'p', spaceId: 's', parentId: null, stableKey: 'key', title: 'Page',
+    markdown: 'old', properties: {}, restricted: false, version: 1,
+    capabilities: { edit: true, managePermissions: false },
+  }
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  cache.setQueryData(pageKey('p'), page)
+  vi.stubGlobal('fetch', async () => new Response('[]', { headers: { 'content-type': 'application/json' } }))
+  render(<I18nProvider><LanguageSwitch /><QueryClientProvider client={cache}><PageView pageId="p" spaceId="s" workspaceId="w" /></QueryClientProvider></I18nProvider>)
+  const title = screen.getByLabelText('Название страницы')
+  fireEvent.change(title, { target: { value: 'Unsaved title' } })
+  expect(screen.getByText('Черновик сохранён в браузере')).toBeVisible()
+
+  fireEvent.click(screen.getByRole('button', { name: 'English' }))
+  expect(screen.getByText('Draft saved in browser')).toBeVisible()
+  expect(screen.getByLabelText('Page title')).toBe(title)
+  expect(title).toHaveValue('Unsaved title')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Русский' }))
+  expect(screen.getByText('Черновик сохранён в браузере')).toBeVisible()
+  expect(screen.getByLabelText('Название страницы')).toBe(title)
+  expect(title).toHaveValue('Unsaved title')
 })
 
 it.each([false, true])(

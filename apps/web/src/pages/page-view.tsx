@@ -69,7 +69,7 @@ function PageEditor({
     () =>
       readDraft(draftKey(workspaceId, initial.id, initial.version)) !== null,
   )
-  const [status, setStatus] = useState(''),
+  const [status, setStatus] = useState<'local' | 'saved' | null>(null),
     [localError, setLocalError] = useState(false),
     [panel, setPanel] = useState<'history' | 'permissions' | null>(null),
     [properties, setProperties] = useState(() =>
@@ -88,7 +88,7 @@ function PageEditor({
     setDraft(next)
     try {
       writeDraft(key, next)
-      setStatus(text.workspace.local)
+      setStatus('local')
       setLocalError(false)
     } catch {
       setLocalError(true)
@@ -101,7 +101,7 @@ function PageEditor({
     setDraft(page)
     setProperties(JSON.stringify(page.properties, null, 2))
     setConflict(null)
-    setStatus(text.workspace.saved)
+    setStatus('saved')
   }
   useEffect(() => {
     if (initial.version > base.version && !dirty && !conflict) {
@@ -136,7 +136,7 @@ function PageEditor({
       setDirty(false)
       setBase(next)
       cache.setQueryData(pageKey(base.id), next)
-      setStatus(text.workspace.saved)
+      setStatus('saved')
       await cache.invalidateQueries({ queryKey: ['workspace', 'tree'] })
       await cache.invalidateQueries({
         queryKey: ['workspace', 'history', base.id],
@@ -265,7 +265,7 @@ function PageEditor({
           </button>
         )}
       </div>
-      <p role="status">{save.isPending ? text.workspace.saving : status}</p>
+      <p role="status">{save.isPending ? text.workspace.saving : status ? text.workspace[status] : ''}</p>
       {localError && <p role="alert">{text.workspace.draftFailed}</p>}
       {save.isError && !conflict && <ErrorNotice error={save.error} />}
       {panel === 'history' && (

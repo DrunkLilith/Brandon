@@ -13,7 +13,7 @@ export function SettingsPage() {
   const settings = useQuery({ queryKey: settingsKey, queryFn: async () => unwrap(await apiClient.GET('/api/v1/admin/settings')) })
   const [attachmentRecoveryDays, setAttachmentRecoveryDays] = useState(30)
   const [exportRetentionHours, setExportRetentionHours] = useState(24)
-  const [validation, setValidation] = useState('')
+  const [validation, setValidation] = useState<'recovery' | 'retention' | null>(null)
   useEffect(() => {
     if (settings.data) {
       setAttachmentRecoveryDays(settings.data.attachmentRecoveryDays)
@@ -26,16 +26,16 @@ export function SettingsPage() {
   })
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!Number.isInteger(attachmentRecoveryDays) || attachmentRecoveryDays < 1 || attachmentRecoveryDays > 3650) return setValidation(text.settings.invalidRecovery)
-    if (!Number.isInteger(exportRetentionHours) || exportRetentionHours < 1 || exportRetentionHours > 720) return setValidation(text.settings.invalidRetention)
-    setValidation('')
+    if (!Number.isInteger(attachmentRecoveryDays) || attachmentRecoveryDays < 1 || attachmentRecoveryDays > 3650) return setValidation('recovery')
+    if (!Number.isInteger(exportRetentionHours) || exportRetentionHours < 1 || exportRetentionHours > 720) return setValidation('retention')
+    setValidation(null)
     update.mutate()
   }
   return <section><PageHeader title={text.pages.settings} />
     <section className="admin-panel"><h2>{text.settings.storage}</h2>{settings.isPending ? <LoadingBlock /> : settings.isError ? <ErrorNotice error={settings.error} /> : <form className="settings-form" onSubmit={submit} noValidate>
       <label>{text.settings.recoveryDays}<input type="number" min={1} max={3650} value={attachmentRecoveryDays} onChange={(event) => setAttachmentRecoveryDays(Number(event.target.value))} /></label>
       <label>{text.settings.retentionHours}<input type="number" min={1} max={720} value={exportRetentionHours} onChange={(event) => setExportRetentionHours(Number(event.target.value))} /></label>
-      {validation && <p role="alert" className="form-error">{validation}</p>}
+      {validation && <p role="alert" className="form-error">{validation === 'recovery' ? text.settings.invalidRecovery : text.settings.invalidRetention}</p>}
       {update.isError && <ErrorNotice error={update.error} />}
       {update.isSuccess && <p role="status">{text.settings.saved}</p>}
       <button type="submit" disabled={update.isPending}>{update.isPending ? text.settings.saving : text.settings.save}</button>

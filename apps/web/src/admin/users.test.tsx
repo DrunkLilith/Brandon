@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -16,6 +16,7 @@ function json(body: unknown, status = 200) {
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
   vi.unstubAllGlobals()
   window.history.replaceState({}, '', '/')
 })
@@ -47,6 +48,8 @@ describe('users and invitations administration', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
 
     render(<App />)
+    const englishSwitch = screen.getByRole('button', { name: 'English' })
+    const russianSwitch = screen.getByRole('button', { name: 'Русский' })
     const invitationOpener = await screen.findByRole('button', { name: 'Пригласить пользователя' })
     invitationOpener.focus()
     await user.click(invitationOpener)
@@ -90,6 +93,14 @@ describe('users and invitations administration', () => {
     await user.click(screen.getByRole('button', { name: 'Скопировать токен' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('one-time-secret-token'))
     expect(screen.getByRole('status')).toHaveTextContent('Токен скопирован')
+    fireEvent.click(englishSwitch)
+    expect(screen.getByRole('status')).toHaveTextContent('Token copied')
+    expect(screen.getByText('one-time-secret-token')).toBeVisible()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    fireEvent.click(russianSwitch)
+    expect(screen.getByRole('status')).toHaveTextContent('Токен скопирован')
+    expect(screen.getByText('one-time-secret-token')).toBeVisible()
+    expect(writeText).toHaveBeenCalledTimes(1)
 
     await user.click(screen.getByRole('button', { name: 'Закрыть' }))
     expect(screen.queryByText('one-time-secret-token')).not.toBeInTheDocument()

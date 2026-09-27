@@ -28,42 +28,80 @@ export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
 }) {
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
+  const cancel = useRef(onCancel)
+  cancel.current = onCancel
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const background = document.querySelector<HTMLElement>('.admin-shell')
-    const previousHidden = background?.getAttribute('aria-hidden')
-    background?.setAttribute('inert', '')
-    background?.setAttribute('aria-hidden', 'true')
     const dialog = dialogRef.current
-    const initial = initialFocusRef?.current ?? dialog?.querySelector<HTMLElement>(focusableSelector)
-    initial?.focus()
+    const backdrop = dialog?.closest<HTMLElement>('.modal-backdrop')
+    if (!dialog || !backdrop) return
+
+    const backgrounds = new Set<HTMLElement>(
+      [...document.body.children]
+        .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== backdrop),
+    )
+    document.querySelectorAll<HTMLElement>('.language-switch, .admin-shell').forEach((element) => {
+      if (!backdrop.contains(element)) backgrounds.add(element)
+    })
+    const previousAttributes = [...backgrounds].map((element) => ({
+      element,
+      inert: element.getAttribute('inert'),
+      hidden: element.getAttribute('aria-hidden'),
+    }))
+    for (const background of backgrounds) {
+      background.setAttribute('inert', '')
+      background.setAttribute('aria-hidden', 'true')
+    }
+
+    const focusInitial = () => {
+      const initial = initialFocusRef?.current ?? dialog.querySelector<HTMLElement>(focusableSelector) ?? dialog
+      initial.focus()
+    }
+    const onFocusIn = (event: FocusEvent) => {
+      if (!(event.target instanceof Node) || !dialog.contains(event.target)) focusInitial()
+    }
+    const onDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        cancel.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)]
+      if (!focusable.length) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('focusin', onFocusIn, true)
+    document.addEventListener('keydown', onDocumentKeyDown, true)
+    focusInitial()
     return () => {
-      background?.removeAttribute('inert')
-      if (previousHidden === null) background?.removeAttribute('aria-hidden')
-      else if (previousHidden !== undefined) background?.setAttribute('aria-hidden', previousHidden)
+      document.removeEventListener('focusin', onFocusIn, true)
+      document.removeEventListener('keydown', onDocumentKeyDown, true)
+      for (const { element, inert, hidden } of previousAttributes) {
+        if (inert === null) element.removeAttribute('inert')
+        else element.setAttribute('inert', inert)
+        if (hidden === null) element.removeAttribute('aria-hidden')
+        else element.setAttribute('aria-hidden', hidden)
+      }
       opener?.focus()
     }
   }, [initialFocusRef])
-  const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onCancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ?? [])]
-    if (!focusable.length) return
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-  return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKeyDown}>
+  return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
     <h2 id={titleId}>{title}</h2>
     {children}
   </section></div>, document.body)

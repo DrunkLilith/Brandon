@@ -111,7 +111,7 @@ kbd { padding:.08rem .4rem; border:1px solid #ced7d0; border-radius:.3rem; backg
 .error-notice { color:#982b2b; }
 .admin-list { display:grid; gap:.7rem; margin:0; padding:0; list-style:none; }
 .admin-list-item { display:flex; position:relative; align-items:center; justify-content:space-between; gap:1rem; padding:.8rem; border:1px solid #e1e6e2; border-radius:.7rem; }
-.modal-backdrop { position:fixed; z-index:10; inset:0; display:grid; place-items:center; padding:1rem; background:rgba(20,36,27,.5); }
+.modal-backdrop { position:fixed; z-index:30; inset:0; display:grid; place-items:center; padding:1rem; background:rgba(20,36,27,.5); }
 .admin-dialog { width:min(100%,31rem); max-height:calc(100vh - 2rem); overflow:auto; padding:1.5rem; border-radius:1rem; background:white; box-shadow:0 24px 70px rgba(17,31,22,.28); }
 .admin-dialog h2 { margin-top:0; }
 .admin-dialog form { display:grid; gap:1rem; }

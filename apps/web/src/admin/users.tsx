@@ -52,9 +52,9 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
   const [email, setEmail] = useState('')
   const [workspaceRole, setWorkspaceRole] = useState<'admin' | 'member'>('member')
   const [expiresInHours, setExpiresInHours] = useState(168)
-  const [validation, setValidation] = useState('')
+  const [validation, setValidation] = useState<'email' | 'expiry' | null>(null)
   const [created, setCreated] = useState<InvitationCreated | null>(null)
-  const [copyStatus, setCopyStatus] = useState('')
+  const [copyStatus, setCopyStatus] = useState<'copied' | 'failed' | null>(null)
   const idempotency = useRef<{ fingerprint: string; key: string } | null>(null)
   const mounted = useRef(true)
   const emailInput = useRef<HTMLInputElement>(null)
@@ -76,18 +76,18 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const normalized = email.trim().toLowerCase()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return setValidation(text.users.invalidEmail)
-    if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) return setValidation(text.users.invalidExpiry)
-    setValidation('')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return setValidation('email')
+    if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 720) return setValidation('expiry')
+    setValidation(null)
     mutation.mutate({ email: normalized, workspaceRole, expiresInHours })
   }
   const copy = async () => {
     try {
       if (!navigator.clipboard) throw new Error('clipboard unavailable')
       await navigator.clipboard.writeText(created?.token ?? '')
-      setCopyStatus(text.users.tokenCopied)
+      setCopyStatus('copied')
     } catch {
-      setCopyStatus(text.users.tokenCopyFailed)
+      setCopyStatus('failed')
     }
   }
   return <ModalDialog title={text.users.newInvitation} onCancel={onClose} initialFocusRef={emailInput}>
@@ -95,13 +95,13 @@ function InvitationDialog({ onClose }: { onClose(): void }) {
       <p>{text.users.tokenNotice}</p>
       <code>{created.token}</code>
       <button ref={copyButton} type="button" onClick={copy}>{text.users.copyToken}</button>
-      <p role="status" aria-live="polite">{copyStatus}</p>
+      <p role="status" aria-live="polite">{copyStatus === 'copied' ? text.users.tokenCopied : copyStatus === 'failed' ? text.users.tokenCopyFailed : ''}</p>
       <button type="button" className="secondary-button" onClick={onClose}>{text.common.close}</button>
     </div> : <form onSubmit={submit} noValidate>
       <label>{text.users.invitationEmail}<input ref={emailInput} type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
       <label>{text.users.workspaceRole}<select value={workspaceRole} onChange={(event) => setWorkspaceRole(event.target.value as 'admin' | 'member')}><option value="member">{text.labels.role.member}</option><option value="admin">{text.labels.role.admin}</option></select></label>
       <label>{text.users.expiryHours}<input type="number" min={1} max={720} value={expiresInHours} onChange={(event) => setExpiresInHours(Number(event.target.value))} /></label>
-      {validation && <p role="alert" className="form-error">{validation}</p>}
+      {validation && <p role="alert" className="form-error">{validation === 'email' ? text.users.invalidEmail : text.users.invalidExpiry}</p>}
       {mutation.isError && <ErrorNotice error={mutation.error} />}
       <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>{text.common.cancel}</button><button type="submit" disabled={mutation.isPending}>{mutation.isPending ? text.users.creating : text.users.createInvitation}</button></div>
     </form>}

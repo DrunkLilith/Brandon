@@ -33,7 +33,7 @@ function SpaceAccess({ space }: { space: Space }) {
   const [subjectType, setSubjectType] = useState<SubjectType>('user')
   const [subjectId, setSubjectId] = useState('')
   const [role, setRole] = useState<GrantRole>('viewer')
-  const [validation, setValidation] = useState('')
+  const [validation, setValidation] = useState<'subject' | null>(null)
   const grantsKey = ['admin', 'spaces', space.id, 'grants'] as const
   const subjects = useInfiniteQuery({
     queryKey: ['admin', 'spaces', space.id, 'subjects'],
@@ -50,8 +50,8 @@ function SpaceAccess({ space }: { space: Space }) {
   const available = allSubjects.filter((subject) => subject.type === subjectType)
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!subjectId || !available.some((subject) => subject.id === subjectId)) return setValidation(text.spaces.invalidSubject)
-    setValidation('')
+    if (!subjectId || !available.some((subject) => subject.id === subjectId)) return setValidation('subject')
+    setValidation(null)
     create.mutate()
   }
   return <section className="admin-panel" aria-label={text.spaces.accessFor(space.name)}><h2>{text.spaces.accessTitle(space.name)}</h2>
@@ -62,7 +62,7 @@ function SpaceAccess({ space }: { space: Space }) {
       <button type="submit" disabled={create.isPending}>{text.spaces.addGrant}</button>
     </form>
     {subjects.hasNextPage && <button type="button" onClick={() => subjects.fetchNextPage()} disabled={subjects.isFetchingNextPage}>{text.spaces.loadMoreSubjects}</button>}
-    {validation && <p role="alert" className="form-error">{validation}</p>}
+    {validation && <p role="alert" className="form-error">{text.spaces.invalidSubject}</p>}
     {subjects.isError || grants.isError || create.isError ? <ErrorNotice error={subjects.error ?? grants.error ?? create.error} /> : grants.isPending ? <LoadingBlock /> : <ul className="admin-list">{grants.data.map((grant) => {
       const subject = allSubjects.find((item) => item.id === grant.subjectId)
       return <GrantRow key={grant.id} spaceId={space.id} grant={grant} subjectLabel={subject?.label ?? text.spaces.unavailableSubject} grantsKey={grantsKey} />

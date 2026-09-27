@@ -803,31 +803,31 @@ Commit: `feat(web): add complete administration console`
 - Produces full `/app/spaces/:spaceId/pages/:pageId` workflow.
 - Produces local draft key `{workspaceId}:{pageId}:{serverVersion}`.
 
-- [ ] **Step 1: Write RED page-tree operations tests**
+- [x] **Step 1: Write RED page-tree operations tests**
 
 Create child, rename, reorder, move and archive use optimistic UI but roll back on Problem Details response.
 
-- [ ] **Step 2: Implement virtualized accessible tree and page route**
+- [x] **Step 2: Implement virtualized accessible tree and page route**
 
-- [ ] **Step 3: Write RED draft/conflict tests**
+- [x] **Step 3: Write RED draft/conflict tests**
 
 Typing persists local draft; successful save clears matching draft; 409 shows submitted and current-version metadata and never discards text.
 
-- [ ] **Step 4: Implement Milkdown editor, raw Markdown mode, draft store and save status**
+- [x] **Step 4: Implement Milkdown editor, raw Markdown mode, draft store and save status**
 
-- [ ] **Step 5: Write RED history/restore/permissions tests and implement panels**
+- [x] **Step 5: Write RED history/restore/permissions tests and implement panels**
 
 Diff is calculated client-side from authorized revision payloads; restore requires confirmation and updates current version.
 
-- [ ] **Step 6: Write RED search tests and implement command palette**
+- [x] **Step 6: Write RED search tests and implement command palette**
 
 Keyboard shortcut focuses search; filters serialize to URL; result snippets are treated as text, not HTML.
 
-- [ ] **Step 7: Write RED attachment tests and implement upload/download UI**
+- [x] **Step 7: Write RED attachment tests and implement upload/download UI**
 
 Progress, cancellation, validation Problem Details and encrypted-storage messaging are visible.
 
-- [ ] **Step 8: Run frontend suite and commit**
+- [x] **Step 8: Run frontend suite and commit**
 
 Run: `pnpm --filter @knowledge/web test --run && pnpm --filter @knowledge/web build`  
 Expected: PASS.  

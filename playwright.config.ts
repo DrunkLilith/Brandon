@@ -22,6 +22,6 @@ export default defineConfig({
   },
   projects: [
     { name: 'auth', testMatch: 'auth.spec.ts' },
-    { name: 'e2e', testIgnore: 'auth.spec.ts', dependencies: ['auth'] },
+    { name: 'e2e', testIgnore: ['auth.spec.ts', '**/support/**/*.test.ts'], dependencies: ['auth'] },
   ],
 })

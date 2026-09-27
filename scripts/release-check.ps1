@@ -85,7 +85,16 @@ function Invoke-RustTests {
     } finally {
         $env:DATABASE_URL = $previousDatabaseUrl
         $owned = (& docker ps -a --filter "name=^/$container`$" --filter 'label=knowledge-platform.release-owned=true' --format '{{.Names}}' | Out-String).Trim()
-        if ($owned -eq $container) { & docker rm --force $container *> $null }
+        if ($owned -eq $container) {
+            $anonymousVolumes = @(& docker inspect $container --format '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}' | Where-Object { $_ })
+            if ($LASTEXITCODE -ne 0) { throw 'could not inventory Rust test database volumes' }
+            & docker rm --force --volumes $container *> $null
+            if ($LASTEXITCODE -ne 0) { throw 'could not remove Rust test database container and volumes' }
+            foreach ($volume in $anonymousVolumes) {
+                & docker volume inspect $volume *> $null
+                if ($LASTEXITCODE -eq 0) { throw "Rust test database volume cleanup failed: $volume" }
+            }
+        }
         $expected = Join-Path ([IO.Path]::GetTempPath()) $container
         if ([IO.Path]::GetFullPath($temporary) -ne [IO.Path]::GetFullPath($expected)) { throw 'refusing Rust test cleanup outside its exact temporary directory' }
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }

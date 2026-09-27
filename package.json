@@ -6,10 +6,17 @@
     "api:check": "node scripts/generate-api.mjs --check",
     "api:generate": "node scripts/generate-api.mjs",
     "build": "pnpm --recursive build",
+    "e2e:typecheck": "tsc -p tests/e2e/tsconfig.json",
+    "e2e:lint": "eslint tests/e2e playwright.config.ts --max-warnings 0",
+    "e2e": "playwright test",
     "test": "pnpm --recursive test",
     "typecheck": "pnpm --recursive typecheck"
   },
   "devDependencies": {
-    "openapi-typescript": "7.13.0"
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.19.0",
+    "eslint": "10.11.0",
+    "openapi-typescript": "7.13.0",
+    "typescript-eslint": "8.70.1"
   }
 }

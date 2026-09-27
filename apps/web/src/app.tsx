@@ -13,6 +13,7 @@ import { SettingsPage } from './admin/settings'
 import { SpacesPage } from './admin/spaces'
 import { UsersPage } from './admin/users'
 import { LoginPage } from './auth/login-page'
+import { InvitationPage } from './auth/invitation-page'
 import { SessionProvider, useSession } from './auth/session'
 import { NotFound } from './components/not-found'
 import { OfflineBanner } from './components/offline-banner'
@@ -67,6 +68,7 @@ export function App() {
     <OfflineBanner />
     <QueryClientProvider client={queryClient}><SessionProvider><BrowserRouter><Routes>
       <Route path="/login" element={<LoginRoute />} />
+      <Route path="/invite/:token" element={<InvitationPage />} />
       <Route path="/app/*" element={<AppRoute />} />
       <Route path="/admin" element={<AdminRoute />}>
         <Route index element={<DashboardPage />} />

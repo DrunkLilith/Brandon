@@ -4,8 +4,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$composeFile = Join-Path $repoRoot 'deploy\compose.yaml'
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+$composeFile = Join-Path $repoRoot 'deploy/compose.yaml'
 if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf)) {
     throw "production Compose file is missing: $composeFile"
 }

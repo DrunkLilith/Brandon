@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if (-not $TestMode) { throw 'verify-backup requires -TestMode; production restore targets must be operated explicitly' }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$composeFile = Join-Path $repoRoot 'deploy\compose.yaml'
+$composeFile = Join-Path $repoRoot 'deploy/compose.yaml'
 $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 12)
 $sourceProject = "kp-verify-$suffix"
 $restoreProject = "kp-restore-$suffix"
@@ -65,8 +65,19 @@ function Mutation-Headers([string]$Cookie, [string]$Csrf) {
 
 function Convert-ToGitBashPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
+    if (-not $IsWindows) { return $full }
     if ($full -notmatch '^([A-Za-z]):\\(.*)$') { throw "cannot convert path for Git Bash: $full" }
     return "/$($Matches[1].ToLowerInvariant())/$($Matches[2].Replace('\','/'))"
+}
+
+function Resolve-Bash {
+    if ($IsWindows) {
+        $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+        if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw "Git Bash is required at $gitBash" }
+        return $gitBash
+    }
+    $bash = Get-Command bash -CommandType Application -ErrorAction Stop
+    return $bash.Source
 }
 
 $oldEnvironment = @{}
@@ -128,11 +139,10 @@ try {
     if ([IO.File]::ReadAllText($seedDownload) -ne $attachmentMarker) { throw 'seed attachment round trip failed before backup' }
 
     Invoke-Compose $sourceProject stop backend
-    & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts\backup.ps1') -ProjectName $sourceProject -TargetDirectory $backupPowerShell
+    & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts/backup.ps1') -ProjectName $sourceProject -TargetDirectory $backupPowerShell
     if ($LASTEXITCODE -ne 0) { throw 'PowerShell backup failed' }
-    $gitBash = 'C:\Program Files\Git\bin\bash.exe'
-    if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw "Git Bash is required at $gitBash" }
-    & $gitBash (Join-Path $repoRoot 'scripts\backup.sh') --project $sourceProject --target (Convert-ToGitBashPath $backupBash)
+    $gitBash = Resolve-Bash
+    & $gitBash (Join-Path $repoRoot 'scripts/backup.sh') --project $sourceProject --target (Convert-ToGitBashPath $backupBash)
     if ($LASTEXITCODE -ne 0) { throw 'Bash backup failed' }
     $powerShellManifestPath = Join-Path $backupPowerShell 'manifest.sha256'
     $bashManifestPath = Join-Path $backupBash 'manifest.sha256'
@@ -146,7 +156,7 @@ try {
     if (Get-ChildItem -LiteralPath $backupPowerShell,$backupBash -Recurse -Force | Where-Object Name -Match 'master.?key') { throw 'backup bundle contains master-key material' }
 
     Invoke-Compose $sourceProject down --remove-orphans
-    & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts\restore.ps1') -ProjectName $restoreProject -SourceDirectory $backupPowerShell -TargetDirectory $restoreTarget
+    & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts/restore.ps1') -ProjectName $restoreProject -SourceDirectory $backupPowerShell -TargetDirectory $restoreTarget
     if ($LASTEXITCODE -ne 0) { throw 'restore failed' }
 
     Invoke-Compose $restoreProject rm --force --stop backend

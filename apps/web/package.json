@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -b && vite build",
     "dev": "vite",
+    "lint": "eslint src --max-warnings 0",
     "test": "vitest",
     "typecheck": "tsc -b --pretty false"
   },

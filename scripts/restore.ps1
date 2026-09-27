@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if ([string]::IsNullOrWhiteSpace($ComposeFile)) { $ComposeFile = Join-Path $repoRoot 'deploy\compose.yaml' }
+if ([string]::IsNullOrWhiteSpace($ComposeFile)) { $ComposeFile = Join-Path $repoRoot 'deploy/compose.yaml' }
 $ComposeFile = [IO.Path]::GetFullPath($ComposeFile)
 if ($ProjectName -notmatch '^kp-restore-[a-f0-9]{12}$') { throw 'restore project must match kp-restore-<12 hex>' }
 

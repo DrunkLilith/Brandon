@@ -24,6 +24,17 @@ export const en = {
     submit: 'Sign in',
     pending: 'Signing in…',
   },
+  invitation: {
+    title: 'Accept invitation',
+    intro: 'Create your account to join the protected workspace.',
+    displayName: 'Display name',
+    confirmPassword: 'Confirm password',
+    passwordTooShort: 'Use at least 12 characters.',
+    passwordMismatch: 'The passwords do not match.',
+    submit: 'Create account',
+    pending: 'Creating account…',
+    accepted: 'Your account is ready. Sign in to continue.',
+  },
   language: {
     heading: 'Language',
     russian: 'Русский',

@@ -78,7 +78,8 @@ export function createApiClient() {
   client.use({
     async onRequest({ request }) {
       const path = new URL(request.url).pathname
-      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && path !== '/api/v1/auth/login') {
+      const csrfExempt = path === '/api/v1/auth/login' || (path.startsWith('/api/v1/invitations/') && path.endsWith('/accept'))
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !csrfExempt) {
         if (!csrf) {
           const response = await fetch('/api/v1/auth/csrf', { credentials: 'include', signal: request.signal })
           const value: unknown = await response.json().catch(() => undefined)

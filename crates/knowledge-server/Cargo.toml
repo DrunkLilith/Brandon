@@ -15,9 +15,9 @@ chrono.workspace = true
 getrandom.workspace = true
 hmac.workspace = true
 ipnet.workspace = true
-knowledge-core = { path = "../knowledge-core" }
-knowledge-crypto = { path = "../knowledge-crypto" }
-knowledge-store = { path = "../knowledge-store" }
+knowledge-core = { path = "../knowledge-core", version = "=0.1.0" }
+knowledge-crypto = { path = "../knowledge-crypto", version = "=0.1.0" }
+knowledge-store = { path = "../knowledge-store", version = "=0.1.0" }
 pulldown-cmark.workspace = true
 serde.workspace = true
 serde_json.workspace = true

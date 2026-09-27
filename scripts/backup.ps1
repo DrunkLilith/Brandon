@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if ([string]::IsNullOrWhiteSpace($ComposeFile)) { $ComposeFile = Join-Path $repoRoot 'deploy\compose.yaml' }
+if ([string]::IsNullOrWhiteSpace($ComposeFile)) { $ComposeFile = Join-Path $repoRoot 'deploy/compose.yaml' }
 $ComposeFile = [IO.Path]::GetFullPath($ComposeFile)
 
 if ($ProjectName -notmatch '^[a-z0-9][a-z0-9_-]{2,62}$') { throw 'project must be an explicit safe Compose project name' }

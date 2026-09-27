@@ -35,6 +35,7 @@ export function LoginPage() {
       <p className="eyebrow">Knowledge Platform</p>
       <h1 id="login-title">{text.login.title}</h1>
       <p className="login-intro">{text.login.intro}</p>
+      {(location.state as { invitationAccepted?: unknown } | null)?.invitationAccepted === true && <p role="status">{text.invitation.accepted}</p>}
       <form onSubmit={submit}>
         <label>{text.login.email}<input name="email" type="email" autoComplete="username" required /></label>
         <label>{text.login.password}<input name="password" type="password" autoComplete="current-password" required /></label>

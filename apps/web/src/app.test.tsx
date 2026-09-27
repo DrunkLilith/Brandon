@@ -11,10 +11,41 @@ function response(body: unknown, status = 200) {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  localStorage.clear()
   window.history.replaceState({}, '', '/')
 })
 
 describe('authentication and route guards', () => {
+  it('accepts an invitation through the public route without exposing the token in the page', async () => {
+    window.history.replaceState({}, '', '/invite/opaque-invitation-token')
+    const requests: Request[] = []
+    vi.stubGlobal('fetch', vi.fn((input: Request | string, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init)
+      requests.push(request.clone())
+      if (new URL(request.url).pathname === '/api/v1/auth/session') {
+        return response({ code: 'authentication_required', type: 'x', title: 'Authentication required', status: 401, detail: 'invalid' }, 401)
+      }
+      if (new URL(request.url).pathname === '/api/v1/invitations/opaque-invitation-token/accept') {
+        return response({ id: 'user-1', workspaceId: 'workspace-1' }, 201)
+      }
+      throw new Error(`Unexpected request ${request.method} ${request.url}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: 'English' }))
+    expect(await screen.findByRole('heading', { name: 'Accept invitation' })).toBeVisible()
+    expect(screen.queryByText('opaque-invitation-token')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Display name'), 'Invited editor')
+    await user.type(screen.getByLabelText('Password'), 'correct horse battery staple')
+    await user.type(screen.getByLabelText('Confirm password'), 'correct horse battery staple')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    await waitFor(() => expect(window.location.pathname).toBe('/login'))
+    const accept = requests.find((request) => request.method === 'POST')
+    expect(await accept?.json()).toEqual({ displayName: 'Invited editor', password: 'correct horse battery staple' })
+  })
+
   it('redirects an anonymous /app visit to login', async () => {
     window.history.replaceState({}, '', '/app')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ code: 'authentication_required', type: 'x', title: 'Authentication required', status: 401, detail: 'invalid' }, 401)))

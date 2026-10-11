@@ -979,7 +979,11 @@ async fn get_revision(
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
-    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
+    lock_workspace_for_audit(&mut transaction, current.workspace_id)
+        .await
+        .map_err(internal)?;
+    revalidate_session(&mut transaction, current).await?;
+    let current = super::users::refresh_workspace_admin(&mut transaction, current).await?;
     let active: bool = sqlx::query_scalar(
         "SELECT EXISTS (
             SELECT 1 FROM pages

@@ -1175,6 +1175,32 @@ pub(crate) async fn lock_and_refresh_current(
     Ok(current)
 }
 
+/// Refresh only the administrative bypass bit after the caller has acquired
+/// the workspace lock and revalidated the session. Inactive memberships remain
+/// ordinary ACL misses so resource routes preserve their non-enumerating 404s.
+pub(crate) async fn refresh_workspace_admin(
+    transaction: &mut Transaction<'_, Postgres>,
+    current: CurrentUser,
+) -> Result<CurrentUser, ApiProblem> {
+    let admin: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM users u
+            JOIN workspace_members wm ON wm.workspace_id=u.workspace_id AND wm.user_id=u.id
+            WHERE u.workspace_id=$1 AND u.id=$2
+              AND u.status='active' AND u.deleted_at IS NULL
+              AND wm.status='active' AND wm.role='admin'
+        )",
+    )
+    .bind(current.workspace_id)
+    .bind(current.user_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(|_| ApiProblem::internal())?;
+    let mut current = current;
+    current.workspace_admin = admin;
+    Ok(current)
+}
+
 pub(crate) async fn audit_disclosure(
     transaction: &mut Transaction<'_, Postgres>,
     key: &WorkspaceKey,

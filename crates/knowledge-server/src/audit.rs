@@ -156,10 +156,11 @@ mod tests {
 
     #[test]
     fn chain_rejects_deletion_reordering_metadata_and_removed_valid_suffix() {
-        let key = WorkspaceKey::generate().unwrap();
+        let old_key = WorkspaceKey::generate().unwrap();
+        let key = old_key.rotated().unwrap();
         let workspace = Uuid::now_v7();
         let mut records = Vec::new();
-        for _ in 0..3 {
+        for index in 0..3 {
             let id = Uuid::now_v7();
             let event = AuditEvent {
                 workspace_id: workspace,
@@ -171,8 +172,11 @@ mod tests {
                 request_id: Uuid::now_v7(),
                 metadata: serde_json::json!({"operation":"fixture"}),
             };
-            let cipher =
-                EnvelopeCipher::new(KeyVersion(1), key.derive(KeyPurpose::Content).unwrap());
+            let version = KeyVersion(if index == 0 { 1 } else { 2 });
+            let cipher = EnvelopeCipher::new(
+                version,
+                key.derive_for(KeyPurpose::Content, version).unwrap(),
+            );
             let envelope = cipher
                 .encrypt(
                     format!("workspace:{workspace}:audit:{id}:metadata").as_bytes(),
@@ -195,7 +199,7 @@ mod tests {
                 created_at: Utc::now(),
                 metadata_ciphertext: envelope.ciphertext,
                 metadata_nonce: envelope.nonce.to_vec(),
-                metadata_key_version: 1,
+                metadata_key_version: version.0 as i32,
                 previous_hash: previous.map(|h: [u8; 32]| h.to_vec()),
                 event_hash: hash.to_vec(),
             });

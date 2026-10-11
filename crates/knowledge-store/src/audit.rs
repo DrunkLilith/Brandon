@@ -164,7 +164,7 @@ pub fn verify_chain(
             KeyVersion(u32::try_from(r.metadata_key_version).map_err(|_| AuditVerificationError)?);
         let cipher = EnvelopeCipher::new(
             version,
-            key.derive(KeyPurpose::Content)
+            key.derive_for(KeyPurpose::Content, version)
                 .map_err(|_| AuditVerificationError)?,
         );
         let envelope = EncryptedEnvelope {

@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState, type FormEvent } from 'react'
 import {
   Link,
   NavLink,
@@ -8,7 +8,8 @@ import {
   useSearchParams,
 } from 'react-router-dom'
 import { useSession } from '../auth/session'
-import { ApiError } from '../api/client'
+import { apiClient, ApiError, unwrap } from '../api/client'
+import type { components } from '../api/generated'
 import { ErrorNotice, hasOpenModal, LoadingBlock } from '../admin/shared'
 import { SpaceAccess, SpaceEditor } from '../admin/spaces'
 import { SpaceArchive } from '../pages/space-archive'
@@ -22,11 +23,14 @@ import { pageQuery, spacesQuery, treeQuery } from '../pages/queries'
 import { SearchDialog } from '../search/search-dialog'
 import { Topbar } from './topbar'
 
+type Space = components['schemas']['Space']
+
 export function AppShell() {
   const { messages: text } = useI18n()
   const { session, logout } = useSession(),
     navigate = useNavigate(),
-    [params] = useSearchParams()
+    [params] = useSearchParams(),
+    queryClient = useQueryClient()
   const pageMatch = useMatch('/app/spaces/:spaceId/pages/:pageId'),
     spaceMatch = useMatch('/app/spaces/:spaceId')
   const overviewMatch = useMatch('/app')
@@ -34,10 +38,34 @@ export function AppShell() {
     pageId = pageMatch?.params.pageId
   const [searchOpen, setSearchOpen] = useState(!!params.get('q'))
   const [manageSpace, setManageSpace] = useState(false)
+  const [newSpaceName, setNewSpaceName] = useState('')
+  const [newSpaceDescription, setNewSpaceDescription] = useState('')
   useEffect(() => { setManageSpace(false) }, [spaceId])
   const spaces = useQuery(spacesQuery),
     tree = useQuery({ ...treeQuery(spaceId), enabled: !!spaceId }),
     page = useQuery({ ...pageQuery(pageId ?? ''), enabled: !!pageId })
+  const createSpace = useMutation({
+    mutationFn: async ({ name, description }: { name: string; description: string }) =>
+      unwrap(await apiClient.POST('/api/v1/spaces', { body: { name, description: description || null } })),
+    onSuccess: async (created) => {
+      queryClient.setQueryData(
+        spacesQuery.queryKey,
+        (current: readonly Space[] | undefined) => current?.some((item) => item.id === created.id)
+          ? current
+          : [...(current ?? []), created],
+      )
+      await queryClient.invalidateQueries({ queryKey: ['admin', 'spaces'] })
+      setNewSpaceName('')
+      setNewSpaceDescription('')
+      navigate(`/app/spaces/${created.id}`)
+    },
+  })
+  const submitSpace = (event: FormEvent) => {
+    event.preventDefault()
+    const name = newSpaceName.trim()
+    if (!name || createSpace.isPending) return
+    createSpace.mutate({ name, description: newSpaceDescription.trim() })
+  }
   const space = spaces.data?.find((s) => s.id === spaceId)
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -132,6 +160,22 @@ export function AppShell() {
                     </li>
                   ))}
                 </ul>
+              ) : session?.workspaceAdmin ? (
+                <section className="first-space-card" aria-labelledby="first-space-title">
+                  <div>
+                    <p className="eyebrow">{text.spaces.create}</p>
+                    <h2 id="first-space-title">{text.workspace.createFirstSpace}</h2>
+                    <p>{text.workspace.noSpacesAdmin}</p>
+                  </div>
+                  <form className="first-space-form" onSubmit={submitSpace}>
+                    <label>{text.spaces.name}<input autoComplete="off" value={newSpaceName} onChange={(event) => setNewSpaceName(event.target.value)} /></label>
+                    <label>{text.common.description}<input autoComplete="off" value={newSpaceDescription} onChange={(event) => setNewSpaceDescription(event.target.value)} /></label>
+                    <button className="primary-button" type="submit" disabled={!newSpaceName.trim() || createSpace.isPending}>
+                      {createSpace.isPending ? text.common.running : text.spaces.create}
+                    </button>
+                  </form>
+                  {createSpace.isError && <ErrorNotice error={createSpace.error} />}
+                </section>
               ) : (
                 <p>{text.workspace.noSpaces}</p>
               )}

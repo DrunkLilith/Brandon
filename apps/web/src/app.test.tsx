@@ -154,7 +154,8 @@ describe('application shell', () => {
     expect(screen.getByRole('combobox', { name: 'Пространство' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Дерево страниц' })).toBeVisible()
     expect(screen.getByRole('link', { name: 'Администрирование' })).toHaveAttribute('href', '/admin')
-    expect(await screen.findByText('Нет доступных пространств. Обратитесь к администратору.')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Первое пространство' })).toBeVisible()
+    expect(screen.queryByText('Обратитесь к администратору.')).not.toBeInTheDocument()
     const search = screen.getByRole('button', { name: /Поиск по знаниям/ })
     expect(search).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Профиль' })).toBeVisible()
@@ -164,5 +165,33 @@ describe('application shell', () => {
     await user.click(screen.getByRole('button', { name: 'Профиль' }))
     await user.click(screen.getByRole('button', { name: 'Выйти' }))
     await waitFor(() => expect(window.location.pathname).toBe('/login'))
+  })
+
+  it('lets a workspace administrator create and enter the first space from the overview', async () => {
+    window.history.replaceState({}, '', '/app')
+    const requests: Request[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: Request | string) => {
+      const request = input instanceof Request ? input : new Request(new URL(input, location.origin))
+      requests.push(request.clone())
+      const path = new URL(request.url).pathname
+      if (path === '/api/v1/auth/session') return response({ sessionId: 's', userId: 'u', workspaceId: 'w', workspaceAdmin: true })
+      if (path === '/api/v1/auth/csrf') return response({ token: 'csrf' })
+      if (path === '/api/v1/spaces' && request.method === 'GET') return response([])
+      if (path === '/api/v1/spaces' && request.method === 'POST') return response({ id: 'space-1', name: 'Команда', description: 'База знаний', effectiveRole: 'admin', archivedAt: null }, 201)
+      if (path === '/api/v1/pages') return response([])
+      throw new Error(`Unexpected request ${request.method} ${path}`)
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.type(await screen.findByLabelText('Название пространства'), '  Команда  ')
+    await user.type(screen.getByLabelText('Описание'), '  База знаний  ')
+    await user.click(screen.getByRole('button', { name: 'Создать пространство' }))
+
+    await waitFor(() => expect(window.location.pathname).toBe('/app/spaces/space-1'))
+    expect(screen.getByRole('combobox', { name: 'Пространство' })).toHaveValue('space-1')
+    expect(await screen.findByText('Выберите страницу или создайте первую.')).toBeVisible()
+    const creation = requests.find((request) => request.method === 'POST' && new URL(request.url).pathname === '/api/v1/spaces')
+    expect(await creation?.json()).toEqual({ name: 'Команда', description: 'База знаний' })
   })
 })

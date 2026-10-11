@@ -26,6 +26,11 @@ export function getWorkspaceMessages(locale: AdminLocale) {
         'Нет доступных пространств. Обратитесь к администратору.',
         'No accessible spaces. Contact an administrator.',
       ),
+      noSpacesAdmin: pick(
+        'Пространств пока нет. Создайте первое и начните собирать знания.',
+        'There are no spaces yet. Create the first one and start collecting knowledge.',
+      ),
+      createFirstSpace: pick('Первое пространство', 'Your first space'),
       choose: pick(
         'Выберите страницу или создайте первую.',
         'Choose a page or create the first one.',

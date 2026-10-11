@@ -5,6 +5,8 @@ import type { components } from '../api/generated'
 import { ErrorNotice, LoadingBlock, ModalDialog } from '../admin/shared'
 import { AttachmentList } from '../attachments/attachment-list'
 import {
+  createDraftDocumentId,
+  currentDraftDocumentId,
   draftKey,
   discoverDrafts,
   readDraft,
@@ -91,7 +93,8 @@ function PageEditor({
     current?: Page
     error?: unknown
   } | null>(null)
-  const key = draftKey(workspaceId, base.id, base.version, userId)
+  const [draftDocumentId, setDraftDocumentId] = useState(currentDraftDocumentId)
+  const key = draftKey(workspaceId, base.id, base.version, userId, draftDocumentId)
   const [recoveryOpen, setRecoveryOpen] = useState(false)
   const [recoverable, setRecoverable] = useState<ReturnType<typeof discoverDrafts>>(() => {
     try { return discoverDrafts(workspaceId, initial.id, userId).filter((item) => item.key !== key) }
@@ -102,11 +105,23 @@ function PageEditor({
       try { setRecoverable(discoverDrafts(workspaceId, initial.id, userId).filter((item) => item.key !== key)) }
       catch { setLocalError(true) }
     }
+    refresh()
     window.addEventListener('storage', refresh)
     window.addEventListener('focus', refresh)
     return () => { window.removeEventListener('storage', refresh); window.removeEventListener('focus', refresh) }
   }, [workspaceId, initial.id, userId, key])
   const editor = useRef<MarkdownHandle>(null)
+  const openRecovery = () => {
+    const current = { ...draft, markdown: editor.current?.flush() ?? draft.markdown }
+    setDraft(current)
+    try {
+      writeDraft(key, current)
+      setLocalError(false)
+    } catch {
+      setLocalError(true)
+    }
+    setRecoveryOpen(true)
+  }
   const change = (next: Draft) => {
     setDirty(true)
     setDraft(next)
@@ -194,7 +209,7 @@ function PageEditor({
   })
   return (
     <article className="page-workspace">
-      {recoverable.length > 0 && <button onClick={() => { editor.current?.flush(); setRecoveryOpen(true) }}>{text.workspace.recoverDrafts}</button>}
+      {recoverable.length > 0 && <button onClick={openRecovery}>{text.workspace.recoverDrafts}</button>}
       {recoveryOpen && <ModalDialog title={text.workspace.recoverDrafts} onCancel={() => setRecoveryOpen(false)}>
         <p>{text.workspace.recoveryHelp}</p>
         <h3>{text.workspace.current(initial.version)}</h3><pre>{initial.markdown}</pre>
@@ -202,12 +217,17 @@ function PageEditor({
           <h3>{text.workspace.base(item.version)} · {item.draft.title}</h3>
           <pre>{item.draft.markdown}</pre><pre>{JSON.stringify(item.draft.properties, null, 2)}</pre>
           <button disabled={!base.capabilities.edit} onClick={() => {
+            const recoveredDocumentId = createDraftDocumentId()
+            const recoveredKey = draftKey(workspaceId, base.id, item.version, userId, recoveredDocumentId)
+            try {
+              writeDraft(recoveredKey, item.draft)
+              setLocalError(false)
+            } catch { setLocalError(true) }
+            setDraftDocumentId(recoveredDocumentId)
             setBase({ ...initial, version: item.version })
             setDraft(item.draft)
             setProperties(JSON.stringify(item.draft.properties, null, 2))
             setDirty(true)
-            try { writeDraft(draftKey(workspaceId, base.id, item.version, userId), item.draft) }
-            catch { setLocalError(true) }
             setRecoveryOpen(false)
           }}>{text.workspace.continueEditing}</button>
         </section>)}

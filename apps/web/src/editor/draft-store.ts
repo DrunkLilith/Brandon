@@ -7,6 +7,8 @@ export type Draft = Pick<
 // sessionStorage. Each document owns its writes; all prior documents remain
 // discoverable for that authenticated identity after reload or a crash.
 const documentId = crypto.randomUUID()
+export const currentDraftDocumentId = () => documentId
+export const createDraftDocumentId = () => crypto.randomUUID()
 const prefix = (workspaceId: string, pageId: string, userId: string) =>
   `knowledge.draft.v2:${encodeURIComponent(userId)}:${encodeURIComponent(workspaceId)}:${encodeURIComponent(pageId)}:`
 export const draftKey = (

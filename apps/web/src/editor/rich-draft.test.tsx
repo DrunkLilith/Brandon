@@ -16,7 +16,7 @@ import {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { PageView } from '../pages/page-view'
-import { draftKey } from './draft-store'
+import { discoverDrafts, draftKey, readDraft, writeDraft } from './draft-store'
 import { pageKey } from '../pages/queries'
 import { apiClient } from '../api/client'
 import { I18nProvider, LanguageSwitch } from '../i18n'
@@ -97,6 +97,34 @@ it('relocalizes an already-visible local-draft status both ways without losing t
   expect(screen.getByText('Черновик сохранён в браузере')).toBeVisible()
   expect(screen.getByLabelText('Название страницы')).toBe(title)
   expect(title).toHaveValue('Unsaved title')
+})
+
+it('forks a recovered same-base draft without overwriting either durable source', async () => {
+  const page = {
+    id: 'p', spaceId: 's', parentId: null, stableKey: 'key', title: 'Server',
+    markdown: 'server', properties: {}, restricted: false, version: 1,
+    capabilities: { edit: true, managePermissions: false },
+  }
+  const currentKey = draftKey('w', 'p', 1, 'u')
+  const sourceKey = draftKey('w', 'p', 1, 'u', 'recoverable-source')
+  const currentDraft = { title: 'Current A', markdown: 'current A', properties: { branch: 'A' }, restricted: false }
+  const sourceDraft = { title: 'Recovered B', markdown: 'recovered B', properties: { branch: 'B' }, restricted: false }
+  writeDraft(currentKey, currentDraft)
+  writeDraft(sourceKey, sourceDraft)
+  const cache = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  cache.setQueryData(pageKey('p'), page)
+  vi.stubGlobal('fetch', async () => new Response('[]', { headers: { 'content-type': 'application/json' } }))
+  render(<I18nProvider><QueryClientProvider client={cache}><PageView pageId="p" spaceId="s" workspaceId="w" userId="u" /></QueryClientProvider></I18nProvider>)
+  await waitFor(() => expect(screen.getByLabelText('Название страницы')).toHaveValue('Current A'))
+
+  fireEvent.click(screen.getByRole('button', { name: 'Восстановить черновики браузера' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Продолжить редактирование' }))
+  expect(screen.getByLabelText('Название страницы')).toHaveValue('Recovered B')
+  expect(readDraft(currentKey)).toEqual(currentDraft)
+  expect(readDraft(sourceKey)).toEqual(sourceDraft)
+  const drafts = discoverDrafts('w', 'p', 'u')
+  expect(drafts).toHaveLength(3)
+  expect(drafts.filter((item) => item.draft.title === 'Recovered B')).toHaveLength(2)
 })
 
 it.each([false, true])(

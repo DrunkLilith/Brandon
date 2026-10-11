@@ -165,11 +165,12 @@ const registerModal = (entry: ModalEntry, handoff: symbol) => {
 
 export const hasOpenModal = () => modalStack.length > 0 || backgroundOwned
 
-export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
+export function ModalDialog({ title, children, onCancel, initialFocusRef, className }: {
   title: string
   children: ReactNode
   onCancel(): void
   initialFocusRef?: RefObject<HTMLElement | null>
+  className?: string
 }) {
   const titleId = useId()
   const dialogRef = useRef<HTMLElement>(null)
@@ -199,7 +200,7 @@ export function ModalDialog({ title, children, onCancel, initialFocusRef }: {
       cancel: () => cancel.current(),
     }, handoff.current)
   }, [initialFocusRef])
-  return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+  return createPortal(<div className="modal-backdrop"><section ref={dialogRef} className={`admin-dialog${className ? ` ${className}` : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
     <h2 id={titleId}>{title}</h2>
     {children}
   </section></div>, document.body)

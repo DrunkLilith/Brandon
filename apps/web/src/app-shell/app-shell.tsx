@@ -81,6 +81,8 @@ export function AppShell() {
   const missingSpace =
     (spaceId && spaces.isSuccess && !space) ||
     (!overviewMatch && !pageMatch && !spaceMatch)
+  const canManageSpace = !!space && ['admin', 'owner'].includes(space.effectiveRole)
+  const canCreatePage = !!space && ['admin', 'owner', 'editor'].includes(space.effectiveRole)
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -183,31 +185,36 @@ export function AppShell() {
             </section>
           ) : (
             <>
-              {space && ['admin', 'owner'].includes(space.effectiveRole) && <>
-                <button type="button" aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>{text.workspace.manageSpace}</button>
-                <PageArchive key={spaceId} spaceId={spaceId} />
-                {manageSpace && <><SpaceEditor space={space} /><SpaceAccess space={space} /><SpaceExports key={spaceId} spaceId={spaceId} /></>}
-              </>}
-              <PageToolbar
-                spaceId={spaceId}
-                page={page.data}
-                nodes={tree.data ?? []}
-                spaces={spaces.data}
-                canCreate={
-                  !!space &&
-                  ['admin', 'owner', 'editor'].includes(space.effectiveRole)
-                }
-              />
               {pageId && session ? (
-                <PageView
-                  pageId={pageId}
-                  spaceId={spaceId}
-                  workspaceId={session.workspaceId}
-                  userId={session.userId}
-                  canRecover={!!space && ['admin', 'owner'].includes(space.effectiveRole)}
-                />
+                <>
+                  <div className="space-context-actions">
+                    {canManageSpace && <>
+                      <button className="space-context-button" type="button" aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>{text.workspace.manageSpace}</button>
+                      <PageArchive key={spaceId} spaceId={spaceId} />
+                    </>}
+                    <PageToolbar spaceId={spaceId} page={page.data} nodes={tree.data ?? []} spaces={spaces.data} canCreate={canCreatePage} />
+                  </div>
+                  {manageSpace && space && <div className="space-management-panels"><SpaceEditor space={space} /><SpaceAccess space={space} /><SpaceExports key={spaceId} spaceId={spaceId} /></div>}
+                  <PageView pageId={pageId} spaceId={spaceId} workspaceId={session.workspaceId} userId={session.userId} canRecover={canManageSpace} />
+                </>
               ) : (
-                <p>{text.workspace.choose}</p>
+                <section className="space-welcome">
+                  <div className="space-welcome__hero">
+                    <div className="space-welcome__art" aria-hidden="true"><span /></div>
+                    <p className="eyebrow">{text.workspace.emptySpaceEyebrow}</p>
+                    <h1>{canCreatePage ? text.workspace.emptySpaceTitle : text.workspace.emptySpaceReadOnlyTitle}</h1>
+                    <p className="space-welcome__description">{canCreatePage ? text.workspace.emptySpaceDescription : text.workspace.emptySpaceReadOnlyDescription}</p>
+                    <PageToolbar variant="empty" spaceId={spaceId} nodes={tree.data ?? []} spaces={spaces.data} canCreate={canCreatePage} />
+                  </div>
+                  {canManageSpace && <aside className="space-welcome__tools" aria-labelledby="space-tools-title">
+                    <div className="space-welcome__tools-heading"><h2 id="space-tools-title">{text.workspace.spaceTools}</h2><p>{text.workspace.spaceToolsHelp}</p></div>
+                    <button className="space-tool-button" type="button" aria-label={text.workspace.manageSpace} aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>
+                      <span className="space-tool-button__icon" aria-hidden="true">&#9881;</span><span className="space-tool-button__copy"><strong>{text.workspace.manageSpace}</strong><small>{text.workspace.manageSpaceHelp}</small></span><span className="space-tool-button__chevron" aria-hidden="true">&#8250;</span>
+                    </button>
+                    <PageArchive key={spaceId} spaceId={spaceId} appearance="tool" />
+                  </aside>}
+                  {manageSpace && space && <div className="space-management-panels"><SpaceEditor space={space} /><SpaceAccess space={space} /><SpaceExports key={spaceId} spaceId={spaceId} /></div>}
+                </section>
               )}
             </>
           )}

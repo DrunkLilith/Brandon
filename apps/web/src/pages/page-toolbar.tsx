@@ -16,12 +16,14 @@ export function PageToolbar({
   nodes,
   spaces,
   canCreate,
+  variant = 'toolbar',
 }: {
   spaceId: string
   page?: Page
   nodes: readonly Node[]
   spaces: readonly components['schemas']['Space'][]
   canCreate: boolean
+  variant?: 'toolbar' | 'empty'
 }) {
   const { messages: text } = useI18n()
   const cache = useQueryClient(),
@@ -221,17 +223,18 @@ export function PageToolbar({
     setAction(operation)
   }
   return (
-    <div className="page-toolbar">
+    <div className={`page-toolbar page-toolbar--${variant}`}>
       <div className="row-actions">
         {canCreate && (
-          <button onClick={() => open('create')}>
-            {text.workspace.create}
+          <button className="page-action page-action--primary" onClick={() => open('create')}>
+            <span className="page-action__icon" aria-hidden="true">+</span><span>{text.workspace.create}</span>
           </button>
         )}
         {page?.capabilities.edit &&
           (['child', 'rename', 'move', 'up', 'archive'] as const).map(
             (operation) => (
               <button
+                className={`page-action page-action--secondary${operation === 'archive' ? ' page-action--danger' : ''}`}
                 disabled={
                   mutation.isPending || (operation === 'up' && !previousSibling)
                 }
@@ -247,10 +250,12 @@ export function PageToolbar({
       {action && (
         <ModalDialog
           title={text.workspace[action]}
+          className="page-action-dialog"
           onCancel={() => {
             if (!mutation.isPending) setAction(null)
           }}
         >
+          {(action === 'create' || action === 'child') && <p className="page-action-dialog__intro">{text.workspace.createPageIntro}</p>}
           <form
             onSubmit={(event) => {
               event.preventDefault()
@@ -258,7 +263,7 @@ export function PageToolbar({
               if (action === 'up' && !previousSibling) return
               mutation.mutate({
                 action,
-                title,
+                title: title.trim(),
                 destination,
                 parent,
                 beforeId: action === 'up' ? previousSibling?.id : undefined,
@@ -271,23 +276,25 @@ export function PageToolbar({
               action === 'create' ||
               action === 'child') && (
               <label>
-                {text.workspace.newTitle}
+                {action === 'create' ? text.workspace.title : text.workspace.newTitle}
                 <input
                   required
                   maxLength={500}
+                  placeholder={action === 'create' ? text.workspace.pageTitlePlaceholder : undefined}
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                 />
               </label>
             )}
             {(action === 'create' || action === 'child') && canRestrict && (
-              <label>
+              <label className="access-toggle">
                 <input
                   type="checkbox"
+                  aria-label={text.workspace.restricted}
                   checked={restricted}
                   onChange={(e) => setRestricted(e.target.checked)}
                 />
-                {text.workspace.restricted}
+                <span className="access-toggle__copy"><strong>{text.workspace.restricted}</strong><small>{text.workspace.restrictedHelp}</small></span>
               </label>
             )}
             {action === 'move' && (
@@ -333,19 +340,12 @@ export function PageToolbar({
                 {target.isError && <ErrorNotice error={target.error} />}
               </>
             )}
-            <button
-              disabled={mutation.isPending || unresolvedTarget}
-              type="submit"
-            >
-              {text.workspace.apply}
-            </button>
-            <button
-              type="button"
-              disabled={mutation.isPending}
-              onClick={() => setAction(null)}
-            >
-              {text.common.cancel}
-            </button>
+            <div className="page-action-dialog__actions">
+              <button className="secondary-button" type="button" disabled={mutation.isPending} onClick={() => setAction(null)}>{text.common.cancel}</button>
+              <button className="primary-button" disabled={mutation.isPending || unresolvedTarget || ((action === 'create' || action === 'child' || action === 'rename') && !title.trim())} type="submit">
+                {mutation.isPending ? text.common.running : action === 'create' ? text.workspace.create : action === 'child' ? text.workspace.child : text.workspace.apply}
+              </button>
+            </div>
           </form>
         </ModalDialog>
       )}

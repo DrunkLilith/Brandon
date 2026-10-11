@@ -205,7 +205,7 @@ it.each([
         screen.getByLabelText('Родитель страницы'),
         'root',
       )
-    await user.click(screen.getByRole('button', { name: 'Применить' }))
+    await user.click(screen.getByRole('button', { name: action === 'Создать дочернюю' ? action : 'Применить' }))
     await waitFor(() => expect(fail).toBeDefined())
     if (action === 'Переименовать' || action === 'Создать дочернюю')
       expect(
@@ -529,9 +529,9 @@ it('lets an admin create a restricted page using the real create contract', asyn
   await screen.findByLabelText('Название страницы')
   await user.click(screen.getByRole('button', { name: 'Создать страницу' }))
   const dialog = screen.getByRole('dialog', { name: 'Создать страницу' })
-  await user.type(within(dialog).getByLabelText('Новое название'), 'Закрыто')
+  await user.type(within(dialog).getByLabelText('Название страницы'), 'Закрыто')
   await user.click(within(dialog).getByLabelText('Ограниченный доступ'))
-  await user.click(within(dialog).getByRole('button', { name: 'Применить' }))
+  await user.click(within(dialog).getByRole('button', { name: 'Создать страницу' }))
   await waitFor(() =>
     expect(sent).toMatchObject({
       title: 'Закрыто',

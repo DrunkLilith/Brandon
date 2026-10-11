@@ -23,8 +23,8 @@ export function MarkdownEditor({
     flush: () => rich.current?.flush() ?? value,
   }))
   return (
-    <section>
-      <div className="row-actions">
+    <section className="markdown-editor">
+      <div className="editor-mode-switch">
         {(['rich', 'raw', 'preview'] as const).map((m) => (
           <button
             key={m}

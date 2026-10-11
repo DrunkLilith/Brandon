@@ -233,15 +233,17 @@ function PageEditor({
         </section>)}
         <button onClick={() => setRecoveryOpen(false)}>{text.common.cancel}</button>
       </ModalDialog>}
-      <label>
-        {text.workspace.title}
-        <input
-          value={draft.title}
-          readOnly={!base.capabilities.edit || save.isPending}
-          onChange={(e) => change({ ...draft, title: e.target.value })}
-        />
-      </label>
-      <p>{text.workspace.version(base.version)}</p>
+      <header className="page-editor-header">
+        <label className="page-title-field">
+          {text.workspace.title}
+          <input
+            value={draft.title}
+            readOnly={!base.capabilities.edit || save.isPending}
+            onChange={(e) => change({ ...draft, title: e.target.value })}
+          />
+        </label>
+        <div className="page-editor-meta"><span>{text.workspace.version(base.version)}</span><p role="status">{save.isPending ? text.workspace.saving : status ? text.workspace[status] : ''}</p></div>
+      </header>
       <MarkdownEditor
         ref={editor}
         value={draft.markdown}
@@ -258,7 +260,7 @@ function PageEditor({
           }
         }}
       />
-      <details>
+      <details className="page-properties">
         <summary>{text.workspace.properties}</summary>
         <textarea
           aria-label={text.workspace.properties}
@@ -276,13 +278,14 @@ function PageEditor({
           }}
         />
       </details>
-      <label>
+      <label className="restricted-indicator">
         <input type="checkbox" checked={draft.restricted} disabled readOnly />
         {text.workspace.restricted}
       </label>
-      <div className="row-actions">
+      <div className="page-editor-actions">
         {base.capabilities.edit && (
           <button
+            className="primary-button"
             disabled={
               save.isPending ||
               !draft.title.trim() ||
@@ -314,13 +317,15 @@ function PageEditor({
           </button>
         )}
         <button
+          aria-pressed={panel === 'history'}
           onClick={() => setPanel(panel === 'history' ? null : 'history')}
         >
           {text.workspace.history}
         </button>
-        <button onClick={()=>setPanel(panel==='backlinks'?null:'backlinks')}>{text.workspace.backlinks}</button>
+        <button aria-pressed={panel === 'backlinks'} onClick={()=>setPanel(panel==='backlinks'?null:'backlinks')}>{text.workspace.backlinks}</button>
         {base.restricted && base.capabilities.managePermissions && (
           <button
+            aria-pressed={panel === 'permissions'}
             onClick={() =>
               setPanel(panel === 'permissions' ? null : 'permissions')
             }
@@ -329,7 +334,6 @@ function PageEditor({
           </button>
         )}
       </div>
-      <p role="status">{save.isPending ? text.workspace.saving : status ? text.workspace[status] : ''}</p>
       {localError && <p role="alert">{text.workspace.draftFailed}</p>}
       {save.isError && !conflict && <ErrorNotice error={save.error} />}
       {panel === 'history' && (

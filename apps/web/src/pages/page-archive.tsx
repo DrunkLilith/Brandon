@@ -5,7 +5,7 @@ import { ErrorNotice, LoadingBlock } from '../admin/shared'
 import { useI18n } from '../i18n'
 import { treeKey } from './queries'
 
-export function PageArchive({ spaceId }: { spaceId: string }) {
+export function PageArchive({ spaceId, appearance = 'default' }: { spaceId: string; appearance?: 'default' | 'tool' }) {
   const { messages: text } = useI18n()
   const client = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -19,8 +19,10 @@ export function PageArchive({ spaceId }: { spaceId: string }) {
     mutationFn: async (id: string) => unwrap(await apiClient.POST('/api/v1/pages/{id}/unarchive', { params: { path: { id } } })),
     onSuccess: async () => { await client.invalidateQueries({ queryKey: key }); await client.invalidateQueries({ queryKey: treeKey(spaceId) }) },
   })
-  return <section>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}>{text.workspace.pageArchive}</button>
+  return <section className={appearance === 'tool' ? 'space-tool-section' : undefined}>
+    <button className={appearance === 'tool' ? 'space-tool-button' : undefined} type="button" aria-label={text.workspace.pageArchive} aria-expanded={open} onClick={() => setOpen(!open)}>
+      {appearance === 'tool' ? <><span className="space-tool-button__icon space-tool-button__icon--archive" aria-hidden="true">&#8634;</span><span className="space-tool-button__copy"><strong>{text.workspace.pageArchive}</strong><small>{text.workspace.pageArchiveHelp}</small></span><span className="space-tool-button__chevron" aria-hidden="true">&#8250;</span></> : text.workspace.pageArchive}
+    </button>
     {open && <section className="admin-panel" aria-label={text.workspace.pageArchive}>
       <p>{text.workspace.recoveryDeadline}</p>
       {archived.isPending && <LoadingBlock />}{archived.isError && <ErrorNotice error={archived.error} />}

@@ -96,6 +96,26 @@ async fn workspace_title_disclosures_audit_administrator_access(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(count, 2);
+    assert_eq!(
+        send(
+            &app,
+            "GET",
+            &format!("/api/v1/pages/{page}/revisions/1"),
+            json!(null),
+            Some(&cookie),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::OK,
+    );
+    let revision_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='revision.admin_access'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(revision_audits, 1);
 }
 
 #[sqlx::test]

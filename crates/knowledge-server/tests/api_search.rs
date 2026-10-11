@@ -675,4 +675,12 @@ async fn search_completes_with_only_its_transaction_connection_available(pool: P
     .expect("search attempted to acquire a second pool connection");
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body(response).await.as_array().unwrap().len(), 1);
+    drop(held);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='search.admin_access'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
 }

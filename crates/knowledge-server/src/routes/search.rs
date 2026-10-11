@@ -10,7 +10,7 @@
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -26,10 +26,14 @@ use uuid::Uuid;
 
 use crate::{
     CurrentUser,
+    middleware::RequestId,
     problem::ApiProblem,
     routes::{
         pages::page_aad,
-        users::{decrypt_text, load_workspace_key_in_transaction},
+        users::{
+            audit_disclosure, decrypt_text, load_workspace_key_in_transaction,
+            lock_and_refresh_current,
+        },
     },
     state::AppState,
 };
@@ -68,6 +72,7 @@ struct RankedHit {
 
 async fn search(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Query(query): Query<SearchQuery>,
 ) -> Result<Response, ApiProblem> {
@@ -83,10 +88,7 @@ async fn search(
 
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
-    crate::audit::lock_workspace_for_audit(&mut transaction, current.workspace_id)
-        .await
-        .map_err(internal)?;
-    crate::routes::spaces::revalidate_session(&mut transaction, current).await?;
+    let current = lock_and_refresh_current(&mut transaction, current).await?;
     let rotating: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM key_rotations WHERE workspace_id=$1 AND state<>'complete')",
     )
@@ -214,6 +216,14 @@ async fn search(
             rank,
         });
     }
+    audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "search.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
 
     hits.sort_by(|left, right| {

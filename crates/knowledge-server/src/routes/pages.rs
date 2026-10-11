@@ -972,16 +972,14 @@ async fn list_revisions(
 
 async fn get_revision(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     current: CurrentUser,
     Path((page_id, version)): Path<(Uuid, i64)>,
 ) -> Result<Response, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
     let mut transaction = runtime.store.pool().begin().await.map_err(internal)?;
-    lock_workspace_for_audit(&mut transaction, current.workspace_id)
-        .await
-        .map_err(internal)?;
-    revalidate_session(&mut transaction, current).await?;
+    let current = super::users::lock_and_refresh_current(&mut transaction, current).await?;
     let active: bool = sqlx::query_scalar(
         "SELECT EXISTS (
             SELECT 1 FROM pages
@@ -1012,6 +1010,14 @@ async fn get_revision(
     .await
     .map_err(internal)?;
     let row = row.ok_or_else(ApiProblem::not_found)?;
+    super::users::audit_disclosure(
+        &mut transaction,
+        &workspace_key,
+        current,
+        request_id,
+        "revision.admin_access",
+    )
+    .await?;
     transaction.commit().await.map_err(internal)?;
     let title = decrypt_text(
         &workspace_key,

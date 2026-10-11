@@ -823,7 +823,7 @@ async fn set_subtree_archive(
     .await?;
     if !archive {
         let expired: bool = sqlx::query_scalar(
-            "WITH RECURSIVE subtree AS (SELECT id,archived_at FROM pages WHERE workspace_id=$1 AND id=$2 UNION ALL SELECT p.id,p.archived_at FROM pages p JOIN subtree s ON p.parent_id=s.id WHERE p.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM subtree WHERE retention_expired($1,archived_at))",
+            "WITH RECURSIVE subtree AS (SELECT id,archived_at FROM pages WHERE workspace_id=$1 AND id=$2 UNION ALL SELECT p.id,p.archived_at FROM pages p JOIN subtree s ON p.parent_id=s.id WHERE p.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM subtree WHERE retention_expired($1,archived_at) OR EXISTS(SELECT 1 FROM retention_purge_marks m WHERE m.workspace_id=$1 AND m.object_type='page' AND m.object_id=subtree.id))",
         ).bind(current.workspace_id).bind(page_id).fetch_one(&mut *transaction).await.map_err(internal)?;
         if expired {
             return Err(ApiProblem::not_found());

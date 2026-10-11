@@ -816,6 +816,131 @@ async fn expired_page_recovery_fails_before_purge(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn partial_page_purge_cannot_be_recovered_after_retention_is_extended(pool: PgPool) {
+    let (app, state, pool, _) = setup(pool).await;
+    let (cookie, csrf) = login(&app).await;
+    let (space, page) = create_space_page(&app, &cookie, &csrf).await;
+    sqlx::query(
+        "INSERT INTO page_revisions(
+            id,workspace_id,page_id,version,
+            title_ciphertext,title_nonce,title_key_version,
+            body_ciphertext,body_nonce,body_key_version,
+            properties_ciphertext,properties_nonce,properties_key_version,
+            content_hash,author_id,change_reason_ciphertext,change_reason_nonce,
+            change_reason_key_version,created_at
+         )
+         SELECT gen_random_uuid(),r.workspace_id,r.page_id,series.version,
+                r.title_ciphertext,r.title_nonce,r.title_key_version,
+                r.body_ciphertext,r.body_nonce,r.body_key_version,
+                r.properties_ciphertext,r.properties_nonce,r.properties_key_version,
+                r.content_hash,r.author_id,r.change_reason_ciphertext,r.change_reason_nonce,
+                r.change_reason_key_version,r.created_at
+           FROM page_revisions r
+          CROSS JOIN generate_series(2,101) AS series(version)
+          WHERE r.page_id=$1 AND r.version=1",
+    )
+    .bind(page)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE pages SET archived_at=now()-interval '31 days' WHERE id=$1")
+        .bind(page)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let runner = JobRunner::new(Uuid::now_v7());
+    runner.run_maintenance_once(&state).await.unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM page_revisions WHERE page_id=$1")
+        .bind(page)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1, "the first bounded batch must be durable");
+    let marked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM retention_purge_marks WHERE object_type='page' AND object_id=$1)",
+    )
+    .bind(page)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(marked, "the first destructive batch must freeze recovery");
+
+    let settings = send(
+        &app,
+        "PATCH",
+        "/api/v1/admin/settings",
+        json!({"attachmentRecoveryDays":3650,"exportRetentionHours":24}),
+        Some(&cookie),
+        Some(&csrf),
+        None,
+    )
+    .await;
+    assert_eq!(settings.status(), StatusCode::OK);
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            &format!("/api/v1/pages/{page}/unarchive"),
+            json!({}),
+            Some(&cookie),
+            Some(&csrf),
+            None,
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND,
+    );
+    let recovery = send(
+        &app,
+        "GET",
+        &format!("/api/v1/spaces/{space}/archived-pages"),
+        json!({}),
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(recovery.status(), StatusCode::OK);
+    assert!(
+        value(recovery).await["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    runner.run_maintenance_once(&state).await.unwrap();
+    let page_exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pages WHERE id=$1)")
+        .bind(page)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !page_exists,
+        "the frozen purge must finish after settings change"
+    );
+    let marks: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM retention_purge_marks WHERE object_type='page' AND object_id=$1",
+    )
+    .bind(page)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(marks, 0, "the completed purge must remove its checkpoint");
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events WHERE event_type='retention.purged' AND target_type='page' AND target_id=$1",
+    )
+    .bind(page)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audits, 1,
+        "the completed purge must be audited exactly once"
+    );
+}
+
+#[sqlx::test]
 async fn retention_discovery_hides_expired_attachments_and_purge_is_bounded(pool: PgPool) {
     let (app, state, pool, _) = setup(pool).await;
     let (cookie, csrf) = login(&app).await;

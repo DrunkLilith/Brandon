@@ -742,7 +742,7 @@ async fn list(
         query.archived,
     )
     .await?;
-    let rows:Vec<StoredAttachment>=sqlx::query_as(select_attachment!("WHERE workspace_id=$1 AND page_id=$2 AND (archived_at IS NOT NULL)=$3 AND NOT retention_expired(workspace_id,archived_at) AND ($4::uuid IS NULL OR id>$4) ORDER BY id LIMIT 100")).bind(current.workspace_id).bind(page).bind(query.archived).bind(query.after).fetch_all(&mut *tx).await.map_err(internal)?;
+    let rows:Vec<StoredAttachment>=sqlx::query_as(select_attachment!("WHERE workspace_id=$1 AND page_id=$2 AND (archived_at IS NOT NULL)=$3 AND NOT retention_expired(workspace_id,archived_at) AND NOT EXISTS(SELECT 1 FROM retention_purge_marks m WHERE m.workspace_id=attachments.workspace_id AND m.object_type='page' AND m.object_id=attachments.page_id) AND ($4::uuid IS NULL OR id>$4) ORDER BY id LIMIT 100")).bind(current.workspace_id).bind(page).bind(query.archived).bind(query.after).fetch_all(&mut *tx).await.map_err(internal)?;
     if administrative {
         audit_access(&mut tx, &key, current, request, ("page", page), "list").await?;
     }
@@ -1036,7 +1036,9 @@ async fn mutate(
         let retention_days =
             persisted_retention.unwrap_or(runtime.attachment_retention_days as i32);
         let retained: bool = sqlx::query_scalar(
-            "SELECT archived_at > clock_timestamp()-make_interval(days => $2) FROM attachments WHERE id=$1",
+            "SELECT a.archived_at > clock_timestamp()-make_interval(days => $2)
+               AND NOT EXISTS(SELECT 1 FROM retention_purge_marks m WHERE m.workspace_id=a.workspace_id AND m.object_type='page' AND m.object_id=a.page_id)
+             FROM attachments a WHERE a.id=$1",
         )
         .bind(id)
         .bind(retention_days)

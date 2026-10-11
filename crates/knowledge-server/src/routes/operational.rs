@@ -336,6 +336,8 @@ async fn archived_pages(
         "SELECT p.id,p.title_ciphertext,p.title_nonce,p.title_key_version,p.archived_at
          FROM pages p WHERE p.workspace_id=$1 AND p.space_id=$2 AND p.archived_at IS NOT NULL
            AND NOT retention_expired($1,p.archived_at) AND ($3::uuid IS NULL OR p.id>$3)
+           AND NOT EXISTS (SELECT 1 FROM retention_purge_marks m
+                            WHERE m.workspace_id=p.workspace_id AND m.object_type='page' AND m.object_id=p.id)
            AND ($4 OR NOT EXISTS (
              WITH RECURSIVE ancestors AS (
                SELECT id,parent_id,restricted FROM pages WHERE workspace_id=$1 AND id=p.id
@@ -431,6 +433,8 @@ async fn archived_items(
                FROM groups
               WHERE workspace_id=$1 AND archived_at IS NOT NULL
                 AND archived_at > clock_timestamp()-make_interval(days=>$2)
+                AND NOT EXISTS (SELECT 1 FROM retention_purge_marks m
+                                 WHERE m.workspace_id=groups.workspace_id AND m.object_type='group' AND m.object_id=groups.id)
                 AND ($3::uuid IS NULL OR id>$3)
               ORDER BY id LIMIT $4",
         )
@@ -447,6 +451,8 @@ async fn archived_items(
            FROM spaces s
           WHERE s.workspace_id=$1 AND s.archived_at IS NOT NULL
             AND s.archived_at > clock_timestamp()-make_interval(days=>$2)
+            AND NOT EXISTS (SELECT 1 FROM retention_purge_marks m
+                             WHERE m.workspace_id=s.workspace_id AND m.object_type='space' AND m.object_id=s.id)
             AND ($4::uuid IS NULL OR s.id>$4)
             AND EXISTS (
               SELECT 1 FROM users u
@@ -603,9 +609,9 @@ async fn restore(
     }
     let settings = read_settings(&mut tx, current.workspace_id).await?;
     let query = if table == "groups" {
-        "UPDATE groups SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3)"
+        "UPDATE groups SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3) AND NOT EXISTS(SELECT 1 FROM retention_purge_marks m WHERE m.workspace_id=$1 AND m.object_type='group' AND m.object_id=$2)"
     } else {
-        "UPDATE spaces SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3)"
+        "UPDATE spaces SET archived_at=NULL,updated_at=now() WHERE workspace_id=$1 AND id=$2 AND archived_at IS NOT NULL AND archived_at > clock_timestamp()-make_interval(days=>$3) AND NOT EXISTS(SELECT 1 FROM retention_purge_marks m WHERE m.workspace_id=$1 AND m.object_type='space' AND m.object_id=$2)"
     };
     let changed = sqlx::query(query)
         .bind(current.workspace_id)

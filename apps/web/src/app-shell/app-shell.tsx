@@ -117,6 +117,10 @@ export function AppShell() {
           {session?.workspaceAdmin && <Link to="/admin">{text.section}</Link>}
         </nav>
         <section aria-label={text.workspace.tree} className="page-tree">
+          <div className="page-tree__heading">
+            <span>{text.workspace.pages}</span>
+            {!!tree.data?.length && <span>{tree.data.length}</span>}
+          </div>
           {tree.isFetching && <LoadingBlock />}
           {tree.isError && <ErrorNotice error={tree.error} />}
           {tree.data && (
@@ -188,11 +192,14 @@ export function AppShell() {
               {pageId && session ? (
                 <>
                   <div className="space-context-actions">
-                    {canManageSpace && <>
-                      <button className="space-context-button" type="button" aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>{text.workspace.manageSpace}</button>
-                      <PageArchive key={spaceId} spaceId={spaceId} />
-                    </>}
                     <PageToolbar spaceId={spaceId} page={page.data} nodes={tree.data ?? []} spaces={spaces.data} canCreate={canCreatePage} />
+                    {canManageSpace && <div className="space-context-actions__tools">
+                      <button className="space-context-button" type="button" aria-expanded={manageSpace} onClick={() => setManageSpace(!manageSpace)}>
+                        <span className="space-context-button__icon" aria-hidden="true">&#9881;</span>
+                        {text.workspace.manageSpace}
+                      </button>
+                      <PageArchive key={spaceId} spaceId={spaceId} />
+                    </div>}
                   </div>
                   {manageSpace && space && <div className="space-management-panels"><SpaceEditor space={space} /><SpaceAccess space={space} /><SpaceExports key={spaceId} spaceId={spaceId} /></div>}
                   <PageView pageId={pageId} spaceId={spaceId} workspaceId={session.workspaceId} userId={session.userId} canRecover={canManageSpace} />

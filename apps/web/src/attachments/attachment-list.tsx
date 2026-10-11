@@ -51,15 +51,17 @@ export function AttachmentList({
     },
   })
   return (
-    <section className="admin-panel">
-      <h2>{text.workspace.attachments}</h2>
-      {recoverable && <button type="button" aria-pressed={archived} onClick={() => setArchived(!archived)}>{text.workspace.attachmentArchive}</button>}
+    <section className="page-attachments">
+      <header className="page-attachments__header">
+        <div><span aria-hidden="true">&#128206;</span><h2>{text.workspace.attachments}</h2></div>
+        {recoverable && <button type="button" aria-pressed={archived} onClick={() => setArchived(!archived)}>{text.workspace.attachmentArchive}</button>}
+      </header>
       {archived && <p>{text.workspace.recoveryDeadline}</p>}
       {query.isPending && <LoadingBlock />}
       {query.isError && <ErrorNotice error={query.error} />}
       {download.isError && <ErrorNotice error={download.error} />}
       {changeArchive.isError && <ErrorNotice error={changeArchive.error} />}
-      {query.isSuccess && !query.data.pages.some(p => p.length) && <p>{archived ? text.common.emptyArchive : text.workspace.noFiles}</p>}
+      {query.isSuccess && !query.data.pages.some(p => p.length) && <p className="page-attachments__empty">{archived ? text.common.emptyArchive : text.workspace.noFiles}</p>}
       {query.data?.pages.flat().map((file) => (
         <div key={file.id}>
           <span>

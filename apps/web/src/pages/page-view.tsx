@@ -207,6 +207,16 @@ function PageEditor({
       }
     },
   })
+  const invalidProperties = (() => {
+    try {
+      return (
+        JSON.stringify(JSON.parse(properties)) !==
+        JSON.stringify(draft.properties)
+      )
+    } catch {
+      return true
+    }
+  })()
   return (
     <article className="page-workspace">
       {recoverable.length > 0 && <button onClick={openRecovery}>{text.workspace.recoverDrafts}</button>}
@@ -233,33 +243,60 @@ function PageEditor({
         </section>)}
         <button onClick={() => setRecoveryOpen(false)}>{text.common.cancel}</button>
       </ModalDialog>}
-      <header className="page-editor-header">
-        <label className="page-title-field">
-          {text.workspace.title}
-          <input
-            value={draft.title}
-            readOnly={!base.capabilities.edit || save.isPending}
-            onChange={(e) => change({ ...draft, title: e.target.value })}
-          />
-        </label>
-        <div className="page-editor-meta"><span>{text.workspace.version(base.version)}</span><p role="status">{save.isPending ? text.workspace.saving : status ? text.workspace[status] : ''}</p></div>
-      </header>
-      <MarkdownEditor
-        ref={editor}
-        value={draft.markdown}
-        readOnly={!base.capabilities.edit || save.isPending}
-        onChange={(markdown) => {
-          if (!save.isPending) change({ ...draft, markdown })
-        }}
-        onDirty={() => setDirty(true)}
-        onUnmount={(markdown) => {
-          try {
-            writeDraft(key, { ...draft, markdown })
-          } catch {
-            // The page is leaving; do not update unmounted UI state.
-          }
-        }}
-      />
+      <section className="document-surface">
+        <header className="page-editor-header">
+          <label className="page-title-field">
+            <span>{text.workspace.title}</span>
+            <input
+              value={draft.title}
+              readOnly={!base.capabilities.edit || save.isPending}
+              onChange={(e) => change({ ...draft, title: e.target.value })}
+            />
+          </label>
+          <div className="page-editor-meta">
+            <div className="page-editor-meta__status">
+              <span>{text.workspace.version(base.version)}</span>
+              <p role="status">{save.isPending ? text.workspace.saving : status ? text.workspace[status] : ''}</p>
+            </div>
+            {base.capabilities.edit && (
+              <button
+                className="primary-button page-save-button"
+                disabled={save.isPending || !draft.title.trim() || invalidProperties}
+                onClick={() =>
+                  save.mutate({
+                    draft: {
+                      title: draft.title,
+                      markdown: editor.current?.flush() ?? draft.markdown,
+                      properties: draft.properties,
+                      restricted: draft.restricted,
+                    },
+                    version: base.version,
+                    key,
+                  })
+                }
+              >
+                {text.workspace.save}
+              </button>
+            )}
+          </div>
+        </header>
+        <MarkdownEditor
+          ref={editor}
+          value={draft.markdown}
+          readOnly={!base.capabilities.edit || save.isPending}
+          onChange={(markdown) => {
+            if (!save.isPending) change({ ...draft, markdown })
+          }}
+          onDirty={() => setDirty(true)}
+          onUnmount={(markdown) => {
+            try {
+              writeDraft(key, { ...draft, markdown })
+            } catch {
+              // The page is leaving; do not update unmounted UI state.
+            }
+          }}
+        />
+      </section>
       <details className="page-properties">
         <summary>{text.workspace.properties}</summary>
         <textarea
@@ -278,61 +315,30 @@ function PageEditor({
           }}
         />
       </details>
-      <label className="restricted-indicator">
-        <input type="checkbox" checked={draft.restricted} disabled readOnly />
-        {text.workspace.restricted}
-      </label>
-      <div className="page-editor-actions">
-        {base.capabilities.edit && (
+      <div className="page-editor-support">
+        <label className="restricted-indicator">
+          <input type="checkbox" checked={draft.restricted} disabled readOnly />
+          {text.workspace.restricted}
+        </label>
+        <div className="page-editor-actions">
           <button
-            className="primary-button"
-            disabled={
-              save.isPending ||
-              !draft.title.trim() ||
-              (() => {
-                try {
-                  return (
-                    JSON.stringify(JSON.parse(properties)) !==
-                    JSON.stringify(draft.properties)
-                  )
-                } catch {
-                  return true
-                }
-              })()
-            }
-            onClick={() =>
-              save.mutate({
-                draft: {
-                  title: draft.title,
-                  markdown: editor.current?.flush() ?? draft.markdown,
-                  properties: draft.properties,
-                  restricted: draft.restricted,
-                },
-                version: base.version,
-                key,
-              })
-            }
+            aria-pressed={panel === 'history'}
+            onClick={() => setPanel(panel === 'history' ? null : 'history')}
           >
-            {text.workspace.save}
+            {text.workspace.history}
           </button>
-        )}
-        <button
-          aria-pressed={panel === 'history'}
-          onClick={() => setPanel(panel === 'history' ? null : 'history')}
-        >
-          {text.workspace.history}
-        </button>
-        <button aria-pressed={panel === 'backlinks'} onClick={()=>setPanel(panel==='backlinks'?null:'backlinks')}>{text.workspace.backlinks}</button>
-        {base.restricted && base.capabilities.managePermissions && (
-          <button
-            aria-pressed={panel === 'permissions'}
-            onClick={() =>
-              setPanel(panel === 'permissions' ? null : 'permissions')
-            }
-          >
-            {text.workspace.permissions}
-          </button>
-        )}
+          <button aria-pressed={panel === 'backlinks'} onClick={()=>setPanel(panel==='backlinks'?null:'backlinks')}>{text.workspace.backlinks}</button>
+          {base.restricted && base.capabilities.managePermissions && (
+            <button
+              aria-pressed={panel === 'permissions'}
+              onClick={() =>
+                setPanel(panel === 'permissions' ? null : 'permissions')
+              }
+            >
+              {text.workspace.permissions}
+            </button>
+          )}
+        </div>
       </div>
       {localError && <p role="alert">{text.workspace.draftFailed}</p>}
       {save.isError && !conflict && <ErrorNotice error={save.error} />}

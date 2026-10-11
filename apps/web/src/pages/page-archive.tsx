@@ -20,8 +20,8 @@ export function PageArchive({ spaceId, appearance = 'default' }: { spaceId: stri
     onSuccess: async () => { await client.invalidateQueries({ queryKey: key }); await client.invalidateQueries({ queryKey: treeKey(spaceId) }) },
   })
   return <section className={appearance === 'tool' ? 'space-tool-section' : undefined}>
-    <button className={appearance === 'tool' ? 'space-tool-button' : undefined} type="button" aria-label={text.workspace.pageArchive} aria-expanded={open} onClick={() => setOpen(!open)}>
-      {appearance === 'tool' ? <><span className="space-tool-button__icon space-tool-button__icon--archive" aria-hidden="true">&#8634;</span><span className="space-tool-button__copy"><strong>{text.workspace.pageArchive}</strong><small>{text.workspace.pageArchiveHelp}</small></span><span className="space-tool-button__chevron" aria-hidden="true">&#8250;</span></> : text.workspace.pageArchive}
+    <button className={appearance === 'tool' ? 'space-tool-button' : 'space-context-button space-context-button--archive'} type="button" aria-label={text.workspace.pageArchive} aria-expanded={open} onClick={() => setOpen(!open)}>
+      {appearance === 'tool' ? <><span className="space-tool-button__icon space-tool-button__icon--archive" aria-hidden="true">&#8634;</span><span className="space-tool-button__copy"><strong>{text.workspace.pageArchive}</strong><small>{text.workspace.pageArchiveHelp}</small></span><span className="space-tool-button__chevron" aria-hidden="true">&#8250;</span></> : <><svg className="space-context-button__svg" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16v13H4zM3 4h18v3H3z"/><path d="M9 11h6"/></svg><span>{text.workspace.pageArchive}</span></>}
     </button>
     {open && <section className="admin-panel" aria-label={text.workspace.pageArchive}>
       <p>{text.workspace.recoveryDeadline}</p>

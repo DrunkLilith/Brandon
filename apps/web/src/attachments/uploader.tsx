@@ -52,7 +52,7 @@ export function Uploader({ pageId }: { pageId: string }) {
     }
   }
   return (
-    <div>
+    <div className="attachment-uploader">
       <p>{text.workspace.encrypted}</p>
       <label>
         {text.workspace.file}

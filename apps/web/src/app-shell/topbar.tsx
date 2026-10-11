@@ -29,7 +29,10 @@ export function Topbar({
         {page && <strong>{page.title}</strong>}
       </nav>
       <button className="search-button" type="button" onClick={onSearch}>
-        <span>{text.workspace.search}</span>
+        <span className="search-button__label">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+          <span>{text.workspace.search}</span>
+        </span>
         <kbd>Ctrl K</kbd>
       </button>
       <div className="profile-menu">

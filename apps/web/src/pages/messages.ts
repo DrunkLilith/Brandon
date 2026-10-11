@@ -21,6 +21,7 @@ export function getWorkspaceMessages(locale: AdminLocale) {
       moreAttachments: pick('Показать ещё вложения', 'Load more attachments'),
       overview: pick('Обзор', 'Overview'),
       spaces: pick('Пространство', 'Space'),
+      pages: pick('Страницы', 'Pages'),
       tree: pick('Дерево страниц', 'Page tree'),
       noSpaces: pick(
         'Нет доступных пространств. Обратитесь к администратору.',

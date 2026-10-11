@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiClient, unwrap } from '../api/client'
 import type { components } from '../api/generated'
@@ -9,6 +9,18 @@ import { pageKey, pageQuery, treeKey, treeQuery } from './queries'
 type Page = components['schemas']['Page']
 type Node = components['schemas']['PageTreeItem']
 type Operation = 'create' | 'child' | 'rename' | 'move' | 'up' | 'archive'
+
+function ActionIcon({ name }: { name: Operation }) {
+  const paths: Record<Operation, ReactNode> = {
+    create: <><path d="M12 5v14M5 12h14" /></>,
+    child: <><path d="M6 4v7a3 3 0 0 0 3 3h9" /><path d="m15 11 3 3-3 3" /></>,
+    rename: <><path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></>,
+    move: <><path d="M12 3v18M3 12h18" /><path d="m8 7 4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4" /></>,
+    up: <><path d="m6 10 6-6 6 6" /><path d="M12 4v16" /></>,
+    archive: <><path d="M4 7h16v13H4zM3 4h18v3H3z" /><path d="M9 11h6" /></>,
+  }
+  return <svg className="page-action__icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>
+}
 
 export function PageToolbar({
   spaceId,
@@ -226,8 +238,8 @@ export function PageToolbar({
     <div className={`page-toolbar page-toolbar--${variant}`}>
       <div className="row-actions">
         {canCreate && (
-          <button className="page-action page-action--primary" onClick={() => open('create')}>
-            <span className="page-action__icon" aria-hidden="true">+</span><span>{text.workspace.create}</span>
+          <button className="page-action page-action--primary" data-operation="create" onClick={() => open('create')}>
+            <ActionIcon name="create" /><span>{text.workspace.create}</span>
           </button>
         )}
         {page?.capabilities.edit &&
@@ -239,9 +251,12 @@ export function PageToolbar({
                   mutation.isPending || (operation === 'up' && !previousSibling)
                 }
                 key={operation}
+                data-operation={operation}
+                title={text.workspace[operation]}
                 onClick={() => open(operation)}
               >
-                {text.workspace[operation]}
+                <ActionIcon name={operation} />
+                <span>{text.workspace[operation]}</span>
               </button>
             ),
           )}

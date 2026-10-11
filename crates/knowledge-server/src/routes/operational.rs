@@ -16,7 +16,10 @@ use uuid::Uuid;
 use super::{
     auth::{CurrentUser, unwrap_workspace_key},
     spaces::{authorize, resolve_access, revalidate_session},
-    users::{decrypt_text, load_workspace_key, lock_and_revalidate_admin},
+    users::{
+        decrypt_text, load_workspace_key, load_workspace_key_in_transaction,
+        lock_and_revalidate_admin,
+    },
 };
 use crate::{
     audit::{AuditEvent, append_audit_event, lock_workspace_for_audit},
@@ -56,7 +59,7 @@ async fn key_rotation_status(
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_and_revalidate_admin(&mut tx, current).await?;
-    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let key = load_workspace_key_in_transaction(&state, &mut tx, current.workspace_id).await?;
     let row:Option<(i32,i32,String,i64)>=sqlx::query_as("SELECT current_version,previous_version,state,processed FROM key_rotations WHERE workspace_id=$1").bind(current.workspace_id).fetch_optional(&mut *tx).await.map_err(internal)?;
     super::users::audit_disclosure(&mut tx, &key, current, request, "key.admin_access").await?;
     tx.commit().await.map_err(internal)?;
@@ -82,7 +85,7 @@ async fn start_key_rotation(
     if busy {
         return Err(ApiProblem::conflict("A key rotation is already running"));
     }
-    let old = load_workspace_key(&state, current.workspace_id).await?;
+    let old = load_workspace_key_in_transaction(&state, &mut tx, current.workspace_id).await?;
     let key = old.rotated().map_err(internal)?;
     let wrapped =
         knowledge_crypto::Keyring::wrap(&runtime.master_key, &key, runtime.master_key.version())
@@ -134,7 +137,7 @@ async fn settings(
     let mut tx = runtime.store.pool().begin().await.map_err(internal)?;
     lock_and_revalidate_admin(&mut tx, current).await?;
     let value = read_settings(&mut tx, current.workspace_id).await?;
-    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let key = load_workspace_key_in_transaction(&state, &mut tx, current.workspace_id).await?;
     super::users::audit_disclosure(&mut tx, &key, current, request_id, "settings.admin_access")
         .await?;
     tx.commit().await.map_err(internal)?;

@@ -16,6 +16,16 @@ afterEach(() => {
 })
 
 describe('authentication and route guards', () => {
+  it('redirects an anonymous root visit to login instead of rendering not found', async () => {
+    window.history.replaceState({}, '', '/')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ code: 'authentication_required', type: 'x', title: 'Authentication required', status: 401, detail: 'invalid' }, 401)))
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: 'Вход' })).toBeVisible()
+    expect(window.location.pathname).toBe('/login')
+    expect(screen.queryByRole('heading', { name: 'Страница не найдена' })).not.toBeInTheDocument()
+  })
+
   it('accepts an invitation through the public route without exposing the token in the page', async () => {
     window.history.replaceState({}, '', '/invite/opaque-invitation-token')
     const requests: Request[] = []

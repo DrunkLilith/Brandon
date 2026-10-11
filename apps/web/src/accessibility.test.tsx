@@ -79,6 +79,8 @@ describe('runtime localization', () => {
     render(<I18nProvider><LocaleProbe /></I18nProvider>)
 
     expect(screen.getByRole('heading', { name: 'Язык' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Русский' })).toHaveTextContent('RU')
+    expect(screen.getByRole('button', { name: 'English' })).toHaveTextContent('EN')
     expect(screen.getByText('Вход')).toBeVisible()
     await user.type(screen.getByRole('textbox', { name: 'Исходный Markdown' }), 'local draft')
     await user.click(screen.getByRole('button', { name: 'English' }))

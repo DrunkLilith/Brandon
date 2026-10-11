@@ -61,6 +61,21 @@ function AdminRoute() {
   return session.workspaceAdmin ? <AdminLayout /> : <Navigate to="/app" replace />
 }
 
+function FallbackRoute() {
+  const { session, loading, error } = useSession()
+  const location = useLocation()
+  if (loading) return <Loading />
+  if (error) return <SessionUnavailable />
+  if (!session) {
+    return <Navigate
+      to="/login"
+      replace
+      state={{ from: `${location.pathname}${location.search}${location.hash}` }}
+    />
+  }
+  return location.pathname === '/' ? <Navigate to="/app" replace /> : <NotFound />
+}
+
 export function App() {
   const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }))
   return <I18nProvider>
@@ -79,7 +94,7 @@ export function App() {
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFound />} />
       </Route>
-      <Route path="*" element={<NotFound />} />
+      <Route path="*" element={<FallbackRoute />} />
     </Routes></BrowserRouter></SessionProvider></QueryClientProvider>
   </I18nProvider>
 }

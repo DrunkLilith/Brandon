@@ -124,6 +124,7 @@ describe('admin dashboard', () => {
     }))
     render(<App />)
 
+    expect(await screen.findByRole('link', { name: 'В рабочую область' })).toHaveAttribute('href', '/app')
     expect(await screen.findByText('Хранилище объектов: недоступно')).toBeVisible()
     expect(screen.getByText('Задач в очереди: 2')).toBeVisible()
     expect(screen.getByText('Активных экспортов: 1')).toBeVisible()

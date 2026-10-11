@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 
 import { useI18n } from '../i18n'
 
@@ -14,7 +14,10 @@ export function AdminLayout() {
   ] as const
   return <div className="admin-shell">
     <header className="admin-topbar">
-      <NavLink to="/app" className="admin-brand"><span aria-hidden="true" className="brand-mark small">K</span><span>{text.brand}</span></NavLink>
+      <div className="admin-topbar-start">
+        <span className="admin-brand"><span aria-hidden="true" className="brand-mark small">K</span><span>{text.brand}</span></span>
+        <Link to="/app" className="admin-back-link"><span aria-hidden="true">←</span><span>{text.backToWorkspace}</span></Link>
+      </div>
       <span className="admin-context">{text.console}</span>
     </header>
     <div className="admin-body">

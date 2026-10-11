@@ -69,23 +69,28 @@ export function LanguageSwitch() {
     'section',
     { className: 'language-switch', 'aria-labelledby': 'language-switch-title' },
     createElement('h2', { id: 'language-switch-title', className: 'sr-only' }, messages.language.heading),
+    createElement('span', { className: 'language-switch__globe', 'aria-hidden': 'true' }),
     createElement(
       'button',
       {
         type: 'button',
+        'aria-label': messages.language.russian,
         'aria-pressed': locale === 'ru',
+        title: messages.language.russian,
         onClick: () => setLocale('ru'),
       },
-      messages.language.russian,
+      createElement('span', { 'aria-hidden': 'true' }, 'RU'),
     ),
     createElement(
       'button',
       {
         type: 'button',
+        'aria-label': messages.language.english,
         'aria-pressed': locale === 'en',
+        title: messages.language.english,
         onClick: () => setLocale('en'),
       },
-      messages.language.english,
+      createElement('span', { 'aria-hidden': 'true' }, 'EN'),
     ),
   )
 }

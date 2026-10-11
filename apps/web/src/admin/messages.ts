@@ -7,6 +7,7 @@ export function getAdminMessages(locale: AdminLocale) {
     brand: 'Knowledge',
     section: pick('Администрирование', 'Administration'),
     console: pick('Консоль администратора', 'Administration console'),
+    backToWorkspace: pick('В рабочую область', 'Back to workspace'),
     loading: pick('Загрузка…', 'Loading…'),
     navigationLabel: pick('Навигация администрирования', 'Administration navigation'),
     navigation: {

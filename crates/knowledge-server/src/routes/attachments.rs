@@ -11,7 +11,10 @@ use crate::{
     audit::{AuditEvent, append_audit_event, lock_workspace_for_audit},
     middleware::RequestId,
     problem::ApiProblem,
-    routes::{spaces::revalidate_session, users::load_workspace_key},
+    routes::{
+        spaces::revalidate_session,
+        users::{load_workspace_key, load_workspace_key_in_transaction},
+    },
     state::AppState,
 };
 use axum::{
@@ -797,7 +800,7 @@ async fn download(
         .await
         .map_err(internal)?;
     revalidate_session(&mut tx, current).await?;
-    let key = load_workspace_key(&state, current.workspace_id).await?;
+    let key = load_workspace_key_in_transaction(&state, &mut tx, current.workspace_id).await?;
     let row = load(&mut tx, current.workspace_id, id, false).await?;
     if row.object_key != object {
         return Err(ApiProblem::not_found());

@@ -632,3 +632,47 @@ async fn search_snippet_preserves_a_late_nfkc_normalized_match(pool: PgPool) {
             .contains("\u{ff2f}\u{ff26}\u{ff26}\u{ff29}\u{ff23}\u{ff25}")
     );
 }
+
+#[sqlx::test]
+async fn search_completes_with_only_its_transaction_connection_available(pool: PgPool) {
+    let app = app(pool.clone()).await;
+    let (cookie, csrf) = login_as(&app, "admin@example.com").await;
+    let space_id = create_space(&app, &cookie, &csrf, "Saturated pool").await;
+    create_page(
+        &app,
+        &cookie,
+        &csrf,
+        space_id,
+        false,
+        "Only connection",
+        "searchable marker",
+    )
+    .await;
+
+    let mut held = Vec::new();
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), pool.acquire()).await {
+            Ok(Ok(connection)) => held.push(connection),
+            Ok(Err(error)) => panic!("failed while saturating the pool: {error}"),
+            Err(_) => break,
+        }
+    }
+    assert!(!held.is_empty(), "the test must saturate at least one slot");
+    drop(held.pop());
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        send(
+            &app,
+            "GET",
+            "/api/v1/search?q=searchable",
+            json!({}),
+            Some(&cookie),
+            None,
+        ),
+    )
+    .await
+    .expect("search attempted to acquire a second pool connection");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body(response).await.as_array().unwrap().len(), 1);
+}

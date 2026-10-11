@@ -521,7 +521,7 @@ async fn accept_invitation(
             .map_err(|_| ApiProblem::not_found())?
             .ok_or_else(ApiProblem::not_found)?;
     let nonce: [u8; 12] = email_nonce.try_into().map_err(|_| ApiProblem::internal())?;
-    let key_record = UserRepository::workspace_key(runtime.store.pool(), workspace_id)
+    let key_record = UserRepository::workspace_key_in_transaction(&mut transaction, workspace_id)
         .await
         .map_err(|_| ApiProblem::internal())?
         .ok_or_else(ApiProblem::internal)?;
@@ -1130,6 +1130,19 @@ pub(crate) async fn load_workspace_key(
 ) -> Result<WorkspaceKey, ApiProblem> {
     let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
     let record = UserRepository::workspace_key(runtime.store.pool(), workspace_id)
+        .await
+        .map_err(|_| ApiProblem::internal())?
+        .ok_or_else(ApiProblem::internal)?;
+    unwrap_workspace_key(&runtime.master_key, &record).map_err(|_| ApiProblem::internal())
+}
+
+pub(crate) async fn load_workspace_key_in_transaction(
+    state: &AppState,
+    transaction: &mut Transaction<'_, Postgres>,
+    workspace_id: Uuid,
+) -> Result<WorkspaceKey, ApiProblem> {
+    let runtime = state.runtime().ok_or_else(ApiProblem::unavailable)?;
+    let record = UserRepository::workspace_key_in_transaction(transaction, workspace_id)
         .await
         .map_err(|_| ApiProblem::internal())?
         .ok_or_else(ApiProblem::internal)?;

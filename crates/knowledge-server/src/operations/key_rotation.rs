@@ -5,7 +5,7 @@ use crate::{
     audit::{AuditEvent, append_audit_event, lock_workspace_for_audit},
     routes::{
         pages::page_aad,
-        users::{decrypt_text, load_workspace_key},
+        users::{decrypt_text, load_workspace_key, load_workspace_key_in_transaction},
     },
     state::AppState,
 };
@@ -601,7 +601,9 @@ pub async fn rewrap_master_once(state: &AppState) -> Result<u64> {
             .map_err(fail)?;
         sqlx::query("UPDATE workspace_key_generations SET ciphertext=$3,nonce=$4,master_version=$5 WHERE workspace_id=$1 AND version=$2").bind(workspace).bind(version).bind(&wrapped.ciphertext).bind(wrapped.nonce.as_slice()).bind(wrapped.key_version.0 as i32).execute(&mut *tx).await.map_err(fail)?;
         sqlx::query("UPDATE workspaces SET wrapped_key_ciphertext=$3,wrapped_key_nonce=$4,wrapped_key_version=$5 WHERE id=$1 AND current_key_version=$2").bind(workspace).bind(version).bind(&wrapped.ciphertext).bind(wrapped.nonce.as_slice()).bind(wrapped.key_version.0 as i32).execute(&mut *tx).await.map_err(fail)?;
-        let key = load_workspace_key(state, workspace).await.map_err(fail)?;
+        let key = load_workspace_key_in_transaction(state, &mut tx, workspace)
+            .await
+            .map_err(fail)?;
         audit(
             &mut tx,
             &key,

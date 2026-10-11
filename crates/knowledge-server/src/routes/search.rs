@@ -29,7 +29,7 @@ use crate::{
     problem::ApiProblem,
     routes::{
         pages::page_aad,
-        users::{decrypt_text, load_workspace_key},
+        users::{decrypt_text, load_workspace_key_in_transaction},
     },
     state::AppState,
 };
@@ -97,7 +97,8 @@ async fn search(
     if rotating {
         return Err(ApiProblem::unavailable());
     }
-    let workspace_key = load_workspace_key(&state, current.workspace_id).await?;
+    let workspace_key =
+        load_workspace_key_in_transaction(&state, &mut transaction, current.workspace_id).await?;
     let indexer = BlindIndexer::new(workspace_key.derive(KeyPurpose::Search).map_err(internal)?);
     let words = BlindIndexer::words("und", &query.q);
     if words.is_empty() {

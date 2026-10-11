@@ -15,6 +15,8 @@ pub struct WorkspaceKeyRecord {
     pub previous: Vec<(i32, Vec<u8>, Vec<u8>, i32)>,
 }
 
+type WorkspaceKeyRow = (Uuid, Vec<u8>, Vec<u8>, i32, i32, i32, Vec<u8>, Vec<u8>, i32);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoginUser {
     pub user_id: Uuid,
@@ -210,38 +212,59 @@ impl UserRepository {
         pool: &PgPool,
         workspace_id: Uuid,
     ) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
-        type KeyGenerationRow = (Uuid, Vec<u8>, Vec<u8>, i32, i32, i32, Vec<u8>, Vec<u8>, i32);
-        let rows:Vec<KeyGenerationRow>=sqlx::query_as(
+        let rows: Vec<WorkspaceKeyRow> = sqlx::query_as(
             "SELECT w.id,w.wrapped_key_ciphertext,w.wrapped_key_nonce,w.wrapped_key_version,w.current_key_version,k.version,k.ciphertext,k.nonce,k.master_version FROM workspaces w JOIN workspace_key_generations k ON k.workspace_id=w.id WHERE w.id=$1 ORDER BY k.version",
         )
         .bind(workspace_id)
         .fetch_all(pool)
         .await?;
 
-        let first = rows.first().cloned();
-        first
-            .map(
-                |(workspace_id, ciphertext, nonce, key_version, current_version, _, _, _, _)| {
-                    let nonce = nonce
-                        .try_into()
-                        .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
-                    Ok(WorkspaceKeyRecord {
-                        workspace_id,
-                        ciphertext,
-                        nonce,
-                        key_version,
-                        current_version,
-                        previous: rows
-                            .into_iter()
-                            .filter(|r| r.5 != current_version)
-                            .map(|r| (r.5, r.6, r.7, r.8))
-                            .collect(),
-                    })
-                },
-            )
-            .transpose()
+        workspace_key_record(rows)
     }
 
+    pub async fn workspace_key_in_transaction(
+        transaction: &mut Transaction<'_, Postgres>,
+        workspace_id: Uuid,
+    ) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
+        let rows: Vec<WorkspaceKeyRow> = sqlx::query_as(
+            "SELECT w.id,w.wrapped_key_ciphertext,w.wrapped_key_nonce,w.wrapped_key_version,w.current_key_version,k.version,k.ciphertext,k.nonce,k.master_version FROM workspaces w JOIN workspace_key_generations k ON k.workspace_id=w.id WHERE w.id=$1 ORDER BY k.version",
+        )
+        .bind(workspace_id)
+        .fetch_all(&mut **transaction)
+        .await?;
+
+        workspace_key_record(rows)
+    }
+}
+
+fn workspace_key_record(
+    rows: Vec<WorkspaceKeyRow>,
+) -> Result<Option<WorkspaceKeyRecord>, StoreError> {
+    let first = rows.first().cloned();
+    first
+        .map(
+            |(workspace_id, ciphertext, nonce, key_version, current_version, _, _, _, _)| {
+                let nonce = nonce
+                    .try_into()
+                    .map_err(|_| StoreError::CorruptData("workspace key nonce"))?;
+                Ok(WorkspaceKeyRecord {
+                    workspace_id,
+                    ciphertext,
+                    nonce,
+                    key_version,
+                    current_version,
+                    previous: rows
+                        .into_iter()
+                        .filter(|r| r.5 != current_version)
+                        .map(|r| (r.5, r.6, r.7, r.8))
+                        .collect(),
+                })
+            },
+        )
+        .transpose()
+}
+
+impl UserRepository {
     pub async fn active_login_user(
         pool: &PgPool,
         workspace_id: Uuid,

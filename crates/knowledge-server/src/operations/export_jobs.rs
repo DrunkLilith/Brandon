@@ -32,7 +32,7 @@ use crate::{
     routes::{
         attachments::{attachment_aad, decrypt_text as decrypt_attachment_text},
         pages::page_aad,
-        users::{decrypt_text, load_workspace_key},
+        users::{decrypt_text, load_workspace_key, load_workspace_key_in_transaction},
     },
     state::AppState,
 };
@@ -607,7 +607,7 @@ async fn expire_exports(
         lock_workspace_for_audit(&mut tx, workspace)
             .await
             .map_err(|_| OperationError)?;
-        let key = load_workspace_key(state, workspace)
+        let key = load_workspace_key_in_transaction(state, &mut tx, workspace)
             .await
             .map_err(|_| OperationError)?;
         let eligible:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM exports e JOIN spaces s ON s.workspace_id=e.workspace_id AND s.id=e.space_id WHERE e.id=$1 AND e.workspace_id=$2 AND e.object_key=$3 AND e.status='ready' AND (e.expires_at<=clock_timestamp() OR retention_expired(s.workspace_id,s.archived_at)))").bind(export).bind(workspace).bind(object).fetch_one(&mut *tx).await.map_err(|_|OperationError)?;

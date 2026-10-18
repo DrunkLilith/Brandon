@@ -9,7 +9,7 @@ license.workspace = true
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
-knowledge-vault = { path = "../../../crates/knowledge-vault" }
+knowledge-vault = { path = "../../../crates/knowledge-vault", version = "=0.1.0" }
 notify = "8.2.0"
 serde.workspace = true
 serde_json.workspace = true

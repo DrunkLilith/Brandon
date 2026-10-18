@@ -2,13 +2,21 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 
 const approved = new Set(['MIT'])
+// Exact package/version approvals, not a new blanket license allowance.
+// See docs/dependency-licenses.md; new versions must be reviewed again.
+const packageApprovals = new Map([
+  ['@tauri-apps/api', { version: '2.12.3', license: 'Apache-2.0 OR MIT' }],
+  ['@tauri-apps/plugin-dialog', { version: '2.8.2', license: 'MIT OR Apache-2.0' }],
+  ['@ungap/structured-clone', { version: '1.4.0', license: 'ISC' }],
+])
+const scopedLicenses = new Set([...packageApprovals.values()].map(entry => entry.license))
 
 export function validateLicenseReport(report) {
   if (!report || typeof report !== 'object' || Array.isArray(report)) throw new Error('license report is malformed')
   const groups = Object.entries(report)
   if (groups.length === 0) throw new Error('license report contains no production dependencies')
   for (const [groupLicense, dependencies] of groups) {
-    if (!approved.has(groupLicense)) throw new Error(`production license is not approved: ${groupLicense || '<missing>'}`)
+    if (!approved.has(groupLicense) && !scopedLicenses.has(groupLicense)) throw new Error(`production license is not approved: ${groupLicense || '<missing>'}`)
     if (!Array.isArray(dependencies) || dependencies.length === 0) throw new Error(`license group is malformed: ${groupLicense}`)
     for (const dependency of dependencies) {
       if (
@@ -23,7 +31,10 @@ export function validateLicenseReport(report) {
       ) throw new Error('license entry is malformed')
       if (typeof dependency.license !== 'string' || dependency.license.length === 0) throw new Error(`dependency ${dependency.name} has a missing license`)
       if (dependency.license !== groupLicense) throw new Error(`dependency ${dependency.name} license does not match its group`)
-      if (!approved.has(dependency.license)) throw new Error(`production license is not approved: ${dependency.license}`)
+      const exception = packageApprovals.get(dependency.name)
+      const approvedException = exception?.license === dependency.license
+        && dependency.versions.every(version => version === exception.version)
+      if (!approved.has(dependency.license) && !approvedException) throw new Error(`production license is not approved: ${dependency.license} for ${dependency.name}`)
     }
   }
 }

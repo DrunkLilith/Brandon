@@ -1254,21 +1254,17 @@ fn map_create_error(context: &'static str) -> impl FnOnce(io::Error) -> VaultErr
 #[cfg(test)]
 mod tests {
     use super::{SaveOutcome, Vault, normalized_relative, safe_note_name};
-    use std::{fs, path::PathBuf, time::SystemTime};
+    use std::{fs, path::PathBuf};
 
     struct Fixture(PathBuf);
 
     impl Fixture {
         fn new() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "brandon-vault-test-{}-{unique}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&root).expect("fixture");
+            let root = tempfile::Builder::new()
+                .prefix("brandon-vault-test-")
+                .tempdir()
+                .expect("fixture")
+                .keep();
             Self(root)
         }
     }

@@ -10,7 +10,7 @@ use attachment_commands::{
 #[cfg(not(windows))]
 mod canvas_gpu {
     #[derive(Default)]
-    pub struct GpuCanvasState;
+    pub struct GpuCanvasState {}
     #[tauri::command]
     pub fn canvas_gpu_start() -> Result<(), String> {
         Err("Native canvas is currently available on Windows".into())

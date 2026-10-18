@@ -76,7 +76,7 @@ function Resolve-Bash {
         if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw "Git Bash is required at $gitBash" }
         return $gitBash
     }
-    $bash = Get-Command bash -CommandType Application -ErrorAction Stop
+    $bash = Get-Command bash -CommandType Application -ErrorAction Stop | Select-Object -First 1
     return $bash.Source
 }
 

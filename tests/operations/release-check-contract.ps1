@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../scripts/release-check-utils.ps1')
+& (Join-Path $PSScriptRoot 'native-command-resolution.ps1')
 
 if ((Get-SemanticVersion 'pnpm 11.19.0') -ne '11.19.0') { throw 'exact semantic version was not parsed' }
 if ((Get-SemanticVersion 'node v24.19.0') -ne '24.19.0') { throw 'v-prefixed semantic version was not normalized' }

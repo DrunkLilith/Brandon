@@ -9,7 +9,7 @@ license.workspace = true
 chrono.workspace = true
 hex.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-knowledge-markdown = { path = "../knowledge-markdown" }
+knowledge-markdown = { path = "../knowledge-markdown", version = "=0.1.0" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

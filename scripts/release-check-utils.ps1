@@ -34,10 +34,18 @@ function Assert-ExactVersion {
         [Parameter(Mandatory)][string]$Expected,
         [Parameter()][string[]]$Arguments = @('--version')
     )
-    $command = Get-Command $Name -CommandType Application -ErrorAction Stop
-    $observed = (& $command.Source @Arguments 2>&1 | Out-String).Trim()
+    $executable = Resolve-NativeApplication -Name $Name
+    $observed = (& $executable @Arguments 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) { throw "$Name version probe failed" }
     Assert-ObservedVersion -Name $Name -Expected $Expected -Observed $observed
+}
+
+function Resolve-NativeApplication {
+    param([Parameter(Mandatory)][string]$Name)
+    # Get-Command can return multiple applications with the same name in PATH.
+    # Preserve native PATH precedence; never stringify the collection as a path.
+    $command = Get-Command $Name -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    return $command.Source
 }
 
 function Assert-CleanTree {

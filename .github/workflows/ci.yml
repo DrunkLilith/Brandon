@@ -25,6 +25,17 @@ jobs:
         with:
           node-version: 24.19.0
           package-manager-cache: false
+      - name: Verify release script contracts
+        shell: pwsh
+        run: ./tests/operations/release-check-contract.ps1
+      - name: Install Linux desktop system dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Install pinned project dependencies
         shell: bash
         run: |

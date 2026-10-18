@@ -12,7 +12,7 @@ function Resolve-Bash {
         if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw "Git Bash is required at $gitBash" }
         return $gitBash
     }
-    return (Get-Command bash -CommandType Application -ErrorAction Stop).Source
+    return Resolve-NativeApplication -Name bash
 }
 
 function Invoke-RustTests {
@@ -84,6 +84,9 @@ try {
     Invoke-Native 'Docker Compose availability' docker @('compose', 'version')
     $bash = Resolve-Bash
 
+    Invoke-Native 'Desktop frontend lint' pnpm @('--dir', 'apps/desktop', 'lint')
+    Invoke-Native 'Desktop Canvas unit tests' pnpm @('--dir', 'apps/desktop', 'test:canvas')
+    Invoke-Native 'Desktop frontend production build' pnpm @('--dir', 'apps/desktop', 'build')
     Invoke-Native 'Rust formatting' cargo @('fmt', '--all', '--', '--check')
     Invoke-Native 'Rust lint' cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
     Invoke-RustTests

@@ -947,8 +947,13 @@ fn resolve_links(documents: &mut [DocumentMetadata]) {
 }
 
 fn normalized_relative(path: &str, allow_empty: bool) -> Result<PathBuf> {
-    let candidate = Path::new(path);
-    if (!allow_empty && path.trim().is_empty()) || candidate.is_absolute() {
+    // Vault paths are portable: recognize both separators and drive prefixes
+    // even on Unix, where std::path treats Windows paths as ordinary names.
+    let portable = path.replace('\\', "/");
+    let candidate = Path::new(&portable);
+    let has_drive_prefix =
+        portable.as_bytes().get(1) == Some(&b':') && portable.as_bytes()[0].is_ascii_alphabetic();
+    if (!allow_empty && path.trim().is_empty()) || has_drive_prefix || candidate.is_absolute() {
         return Err(VaultError::InvalidPath("Некорректный путь vault"));
     }
     if candidate.components().any(|component| {
@@ -1324,9 +1329,81 @@ mod tests {
 
     #[test]
     fn rejects_paths_outside_vault() {
-        assert!(normalized_relative("../secret.md", false).is_err());
-        assert!(normalized_relative("C:\\secret.md", false).is_err());
-        assert!(normalized_relative("notes/good.md", false).is_ok());
+        for path in [
+            "../secret.md",
+            "notes/../../secret.md",
+            r"..\secret.md",
+            r"notes\..\secret.md",
+            r"notes/..\secret.md",
+            "/etc/secret.md",
+            r"\secret.md",
+            "C:/secret.md",
+            r"C:\secret.md",
+            "c:secret.md",
+            "D:",
+            r"\\server\share\secret.md",
+            "//server/share/secret.md",
+            r"\\?\C:\secret.md",
+            r"\\.\C:\secret.md",
+        ] {
+            for allow_empty in [false, true] {
+                assert!(
+                    normalized_relative(path, allow_empty).is_err(),
+                    "accepted unsafe path {path:?} with allow_empty={allow_empty}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalizes_portable_relative_paths_on_every_platform() {
+        for path in ["notes/good.md", r"notes\good.md"] {
+            assert_eq!(
+                normalized_relative(path, false).expect("portable relative path"),
+                PathBuf::from("notes").join("good.md")
+            );
+        }
+        assert_eq!(
+            normalized_relative(r"Заметки\Project notes/good.md", false).expect("mixed separators"),
+            PathBuf::from("Заметки")
+                .join("Project notes")
+                .join("good.md")
+        );
+        assert!(normalized_relative("", false).is_err());
+        assert!(normalized_relative("  ", false).is_err());
+        assert_eq!(
+            normalized_relative("", true).expect("allowed empty path"),
+            PathBuf::new()
+        );
+    }
+
+    #[test]
+    fn vault_reads_portable_paths_and_rejects_foreign_roots_before_io() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("notes")).expect("notes");
+        fs::write(fixture.0.join("notes/good.md"), "# Portable\n").expect("note");
+        let vault = Vault::open(&fixture.0).expect("vault");
+        assert_eq!(
+            vault
+                .read_note(r"notes\good.md")
+                .expect("read portable path")
+                .content,
+            "# Portable\n"
+        );
+        for path in [
+            r"C:\secret.md",
+            r"..\secret.md",
+            r"\\server\share\secret.md",
+        ] {
+            assert!(matches!(
+                vault.read_note(path),
+                Err(super::VaultError::InvalidPath(_))
+            ));
+            assert!(matches!(
+                vault.attachment_info(path),
+                Err(super::VaultError::InvalidPath(_))
+            ));
+        }
     }
 
     #[test]

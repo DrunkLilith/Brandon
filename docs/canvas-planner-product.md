@@ -934,18 +934,48 @@ is now implemented and regression-tested, not merely a diagnostic:
   EXE SHA-256: `7EB48D2D6E21DC44AAF492EFBBC13034313B982F85A5797640BA2B8AE2E8F4DE`;
   NSIS SHA-256: `F57160B0D0F0200013FB88DFF1D8AE7D4AE4DF9229732DB961B3BAF9E06E7383`.
 
-Next bounded continuation: ranking/candidate-budget starvation is now reproduced
-by ignored `target/qa/search-ranking-probe.rs`: 10 synthetic matching task notes,
-one with 100 matching sections, Literal `type:task`, limit 20 returns **1**, not 10.
-Canonical task bytes remain unchanged. The probe ran against the built vault
-library without editing source during the gate. Promote this to a red regression
-and fix deduplication before candidate LIMIT, preserving real note/Canvas anchors
-and best task match ranking. Do not call it fixed yet. 50k-source measurements
-remain pending. No need to repeat completed draft/relocation/recovery stages.
-Do not start a large persistent-draft or AI rewrite within the remaining window.
-PDF/media text extraction, vector search, embeddings and agent grants remain
-unimplemented in this slice. Backups intentionally accumulate until an explicit
-future maintenance policy; this operation never silently discards old caches.
+#### Search candidate/ranking checkpoint — 18 October, afternoon
+
+- The ignored `target/qa/search-ranking-probe.rs` first reproduced 10 synthetic
+  matching task notes, one with 100 matching sections: Literal `type:task`, limit
+  20 returned **1**, not 10. The promoted regression in
+  `crates/knowledge-vault/tests/search_ranking.rs` was observed failing before
+  implementation. No source changed during the preceding recovery release gate.
+- Task duplicates now collapse **before** the SQL candidate LIMIT. A materialized
+  matching-ID/rank/anchor set evaluates FTS5 BM25 in its required row context;
+  a window selects the best task chunk with stable tie breaks. Only winners join
+  back to full text. Large body strings are not copied into the materialized set.
+  Weights, word/literal/filter semantics and cache format are unchanged. Notes
+  retain individual matching sections; Canvas retains individual node anchors.
+- **46 Windows / 48 actual Linux vault tests** pass. Two new integration tests
+  check both modes, small limits, mixed queries, unchanged canonical-task bytes,
+  best BM25 task section and distinct note/Canvas anchors. Existing 20k-Canvas
+  regression also checks a query matching all 20k nodes returns 80 distinct IDs.
+- **5 new live native-IPC/UI ranking checks** pass, including the formerly hidden
+  task's actual selected source line, unchanged task database and a broad 20k-card
+  query. All previous **70 live UI checks** were rerun on the new executable and
+  pass, including real GPU/fallback, editor, drafts, relocation and attachments.
+  Original vault restored; clean QA window verified actually closed.
+- `target/qa/search-ranking.json` records the synthetic fixture and diagnostic
+  native-backend elapsed times. Five warm release-build queries matching 20k
+  cards took **35.2–37.7 ms** in the final local run. This is not an old/new
+  comparative benchmark, cold-index time, UI latency/frame time, or a 50k-file
+  measurement. The active query had already indexed the added board; the report
+  records `firstChangedSources: 0` instead of mislabeling it as a cold run.
+- Strict fmt/clippy and the above tests pass. Windows EXE and NSIS rebuilt, not
+  installed; no push. The complete release gate for this ranking source is
+  **pending**; the recovery commit's PASS is not its validation.
+  EXE SHA-256: `1B1D7C627B13893D5CACB8666EB8F11E726604ED8CAD713EC3DC6E20C6478E54`;
+  NSIS SHA-256: `07CE5DA09A09C6569459EB74A8AB21524CBA9BB67B808C5CF33D011373CA8CC7`.
+
+Next bounded continuation: finish the ranking release gate above first, then
+measure the documented 50k-source boundary on synthetic files if time permits;
+record metadata-scan/first-index/warm-query costs rather than promising constant
+time. No further engine/feature work near the 18:20 MSK autonomy deadline.
+Do not repeat completed draft/relocation/recovery/ranking stages. A persistent
+draft journal, PDF/media extraction, vector search, embeddings and agent grants
+remain unimplemented in this slice. Recovery backups intentionally accumulate
+until an explicit future maintenance policy; they are never silently discarded.
 
 ### 4. Brandon tools and external Codex / Claude connections
 

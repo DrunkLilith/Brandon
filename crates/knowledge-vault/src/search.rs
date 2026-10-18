@@ -812,9 +812,9 @@ impl Vault {
         transaction.commit()?;
         let words = mode == SearchMode::Words && !query.terms.is_empty();
         let mut sql = if words {
-            "SELECT c.path,c.title,c.body,c.line,c.kind,c.node_id,c.revision,s.status,bm25(search_fts,8.0,4.0,1.0,1.0) AS rank FROM search_fts JOIN chunks c ON c.id=search_fts.rowid JOIN sources s ON s.path=c.path WHERE search_fts MATCH ?".to_owned()
+            "SELECT c.id AS chunk_id,c.path,c.kind,c.line,bm25(search_fts,8.0,4.0,1.0,1.0) AS rank FROM search_fts JOIN chunks c ON c.id=search_fts.rowid JOIN sources s ON s.path=c.path WHERE search_fts MATCH ?".to_owned()
         } else {
-            "SELECT c.path,c.title,c.body,c.line,c.kind,c.node_id,c.revision,s.status,0.0 AS rank FROM chunks c JOIN sources s ON s.path=c.path WHERE 1=1".to_owned()
+            "SELECT c.id AS chunk_id,c.path,c.kind,c.line,0.0 AS rank FROM chunks c JOIN sources s ON s.path=c.path WHERE 1=1".to_owned()
         };
         let mut values = Vec::<String>::new();
         if words {
@@ -841,7 +841,25 @@ impl Vault {
             // Browsing a type/path/tag lists resources, not duplicate chunks.
             sql.push_str(" GROUP BY c.path");
         }
-        sql.push_str(" ORDER BY rank,c.path,c.line LIMIT ?");
+        // A task may have hundreds of matching description chunks, but it is
+        // one result. Collapse it BEFORE the candidate limit; otherwise those
+        // chunks consume the budget and silently hide other matching tasks.
+        // Materialize only IDs/rank/anchor metadata, not potentially large body
+        // strings. FTS5's bm25 must be evaluated in its matching-row context,
+        // before the window function. Preserve distinct note/Canvas chunks.
+        sql = format!(
+            "WITH matched AS MATERIALIZED ({sql}), ranked AS (
+                SELECT *,row_number() OVER (
+                    PARTITION BY CASE WHEN kind='task' THEN path END,
+                                 CASE WHEN kind!='task' THEN chunk_id END
+                    ORDER BY rank,line,chunk_id) AS occurrence FROM matched
+            ), winners AS (
+                SELECT chunk_id,rank FROM ranked WHERE occurrence=1
+                ORDER BY rank,path,line,chunk_id LIMIT ?
+            ) SELECT c.path,c.title,c.body,c.line,c.kind,c.node_id,c.revision,s.status,w.rank
+              FROM winners w JOIN chunks c ON c.id=w.chunk_id
+              JOIN sources s ON s.path=c.path ORDER BY w.rank,c.path,c.line,c.id"
+        );
         values.push((limit.clamp(1, 200) * 3).to_string());
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params_from_iter(values.iter()), |row| {

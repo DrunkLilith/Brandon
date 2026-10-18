@@ -337,9 +337,23 @@ fn a_twenty_thousand_card_board_remains_content_searchable() {
         .search_local("findlastcard", SearchMode::Words, 20)
         .unwrap();
     assert_eq!(warm.changed_sources, 0);
+    let broad = vault
+        .search_local("renderer", SearchMode::Words, 80)
+        .unwrap();
+    assert_eq!(broad.changed_sources, 0);
+    assert_eq!(broad.hits.len(), 80);
+    assert_eq!(
+        broad
+            .hits
+            .iter()
+            .filter_map(|hit| hit.node_id.as_ref())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        80
+    );
     eprintln!(
-        "20k Canvas: cold {:.1}ms, warm {:.1}ms",
-        result.elapsed_ms, warm.elapsed_ms
+        "20k Canvas: cold {:.1}ms, warm {:.1}ms, broad 20k-match query {:.1}ms",
+        result.elapsed_ms, warm.elapsed_ms, broad.elapsed_ms
     );
 }
 

@@ -3,6 +3,10 @@ FROM rust:1.98.0-bookworm AS build
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
+# Cargo loads every workspace member even when only the server is selected.
+# Copy the desktop manifest and targets, not its vault or build artifacts.
+COPY apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.toml
+COPY apps/desktop/src-tauri/src apps/desktop/src-tauri/src
 RUN cargo build --locked --release -p knowledge-server \
     --bin knowledge-server --bin bootstrap --bin migrate --bin rewrap-keys
 

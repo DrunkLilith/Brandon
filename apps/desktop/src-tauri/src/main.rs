@@ -2,7 +2,7 @@
 
 mod attachment_commands;
 mod search_commands;
-use search_commands::{SearchState, search_vault};
+use search_commands::{SearchState, rebuild_search_index, search_vault};
 #[cfg(windows)]
 mod canvas_gpu;
 use attachment_commands::{
@@ -403,6 +403,7 @@ fn main() {
             create_task,
             update_task,
             search_vault,
+            rebuild_search_index,
             reveal_entry,
             canvas_gpu_start,
             canvas_gpu_scene,
@@ -414,6 +415,22 @@ fn main() {
 }
 
 fn is_search_cache_path(path: &Path) -> bool {
+    if path.ancestors().any(|ancestor| {
+        ancestor
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == ".brandon")
+            && ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.strip_prefix("search-recovery-").is_some_and(|suffix| {
+                        suffix.len() == 6 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    })
+                })
+    }) {
+        return true;
+    }
     path.parent()
         .and_then(Path::file_name)
         .is_some_and(|name| name == ".brandon")
@@ -450,8 +467,16 @@ mod search_watcher_tests {
             "vault/Note.md",
             "vault/search-v1.sqlite3",
             "vault/Board.canvas",
+            "vault/.brandon/search-recovery-tasks.sqlite3",
+            "vault/search-recovery-Ab123c/Note.md",
         ] {
             assert!(!is_search_cache_path(Path::new(path)));
+        }
+        for path in [
+            "vault/.brandon/search-recovery-Ab123c",
+            "vault/.brandon/search-recovery-Ab123c/search-v1.sqlite3",
+        ] {
+            assert!(is_search_cache_path(Path::new(path)));
         }
     }
 }

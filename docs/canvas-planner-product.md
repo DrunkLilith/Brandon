@@ -885,22 +885,60 @@ before adding its create-new path.
   EXE SHA-256: `2E602FB755465ABB2FE02666F9D70113B8FC52CA392E3B197FC70EE1318DED0D`;
   NSIS SHA-256: `AEF615B908716348EB586EDB29D9265884310D7166E7DF16794ABA45E7558078`.
 
-Next bounded continuation: derivative-search cache recovery/rebuild. The isolated
-`target/qa/search-cache-recovery-probe.mjs` / `.json` already reproduces a corrupt
-`.brandon/search-v1.sqlite3`: the UI displays `file is not a database`, returns no
-results and offers only Words/Literal mode buttons, no recovery action. Synthetic
-note and canonical `tasks.sqlite3` hashes remain unchanged; original vault restored
-and clean QA window really closed. This usability gap is reproduced, NOT fixed.
-Promote it to tests, then provide an explicit safe rebuild path serialized with
-the search worker. Preserve the damaged derivative cache rather than deleting
-unknown bytes; reject symlink/reparse/path tricks and keep notes and canonical
-task database untouched. An error originating in `tasks.sqlite3` is NOT permission
-to reset or ignore task data. Check watcher behavior and UI error/race recovery.
-The draft-protection gate above is finished; do not repeat it or start a large
-persistent-draft or AI engine rewrite within the remaining autonomous window.
-Before vector/MCP integration, extend ranking/candidate-budget coverage,
-50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
-vector search, embeddings and agent grants remain unimplemented in this slice.
+#### Explicit search-cache recovery checkpoint — 18 October, afternoon
+
+The corrupt-cache gap reproduced in `target/qa/search-cache-recovery-probe.mjs`
+is now implemented and regression-tested, not merely a diagnostic:
+
+- Search errors offer a compact **Restore index** action with a clear scope.
+  Recovery is explicit, never automatic on an ordinary failed query. The existing
+  search semaphore serializes rebuild and queries; a root check rejects requests
+  targeting another/stale vault. Pending typing and type/mode filters survive;
+  completion reruns the latest query rather than displaying stale captured hits.
+- Only the derivative `search-v1.sqlite3` and its three known SQLite companions
+  move into a newly/exclusively created `.brandon/search-recovery-<random>` folder.
+  Old bytes are retained, without deleting unknown files or pruning older copies.
+  Notes, Canvas, media and canonical `tasks.sqlite3` are not reset or rewritten.
+  The backup path is visible on success and on a partial-move/rebuild error.
+- Private-directory and all DB/companion paths reject symlinks/reparse points and
+  non-files; inaccessible metadata fails closed. Canonical task data is checked
+  read-only before any cache quarantine. A corrupt task DB gets its own error and
+  no cache reset: search does not pretend to repair or silently ignore task data.
+- Exact derivative backup paths are ignored by the watcher, not the whole private
+  directory or canonical tasks. Windows parent-directory metadata notifications
+  can cause one final refresh; the settled UI is checked for no recurring events
+  or query loop. Boundary checks no longer try to create an already-present cache
+  folder. This is not a multi-process/hostile concurrent filesystem transaction;
+  a failed move may leave some old files in place and reports that honestly.
+- **44 vault tests on Windows**, **46 on actual Linux**, 2 native desktop unit
+  tests, 5 Canvas and 4 search-request unit tests pass. New recovery coverage:
+  corrupt main DB and all companion bytes, repeated unique backups, canonical
+  task corruption, malformed/empty query, non-file cache; Windows locked-sidecar
+  partial failure and Linux symlinked private/companion paths.
+- **7 new live WebView2/native-IPC recovery checks** pass, including saved-file
+  and canonical-task hashes, Literal/type preservation, reload, delayed native
+  recovery with later typing/filter changes, no settled watcher loop, stale root,
+  and honest refusal for a corrupt task DB. The previous **63 live UI checks**
+  also pass: 11 draft, 11 search, 7 relocation, 17 editor/navigation, 7 attachments,
+  10 GPU/fallback including real 10k/20k boards. All data was synthetic; the
+  original vault was restored and clean QA window verified actually closed.
+  Reports: `target/qa/search-recovery.json` and the previous stage reports.
+  `target/qa/search-recovery-before.png` / `search-recovery.png` were visually
+  checked at 1360×840; compact-window/macOS recovery is not separately tested.
+- fmt, strict clippy, desktop lint/typecheck pass. Windows EXE and NSIS rebuilt,
+  not installed. Complete release gate for this new source is **pending**, not
+  covered by the green gate of the previous commit; record its result separately.
+  EXE SHA-256: `7EB48D2D6E21DC44AAF492EFBBC13034313B982F85A5797640BA2B8AE2E8F4DE`;
+  NSIS SHA-256: `F57160B0D0F0200013FB88DFF1D8AE7D4AE4DF9229732DB961B3BAF9E06E7383`.
+
+Next bounded continuation: finish the release gate above first; then reproduce
+ranking/candidate-budget starvation when one resource has many matching chunks.
+Do not claim that as fixed without a red regression. 50k-source measurements
+remain pending. No need to repeat completed draft/relocation/recovery stages.
+Do not start a large persistent-draft or AI rewrite within the remaining window.
+PDF/media text extraction, vector search, embeddings and agent grants remain
+unimplemented in this slice. Backups intentionally accumulate until an explicit
+future maintenance policy; this operation never silently discards old caches.
 
 ### 4. Brandon tools and external Codex / Claude connections
 

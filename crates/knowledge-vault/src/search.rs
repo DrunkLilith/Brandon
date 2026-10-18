@@ -15,6 +15,12 @@ use std::{
 };
 
 const CACHE: &str = "search-v1.sqlite3";
+const CACHE_FILES: [&str; 4] = [
+    CACHE,
+    "search-v1.sqlite3-journal",
+    "search-v1.sqlite3-wal",
+    "search-v1.sqlite3-shm",
+];
 const INDEX_POLICY_VERSION: &str = "4";
 // A valid 20k-card Canvas exceeds 2 MiB even with short text. Keep the read
 // bounded without silently demoting the product's supported board sizes.
@@ -56,6 +62,13 @@ pub struct SearchResponse {
     pub changed_sources: usize,
     pub removed_sources: usize,
     pub elapsed_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRebuild {
+    pub search: SearchResponse,
+    pub backup_path: Option<String>,
 }
 
 #[derive(Default, Debug)]
@@ -364,14 +377,21 @@ fn scan(root: &Path, report: &mut SearchResponse) -> Result<Vec<Source>> {
 
 fn cache_directory(vault: &Vault) -> Result<PathBuf> {
     let directory = vault.root().join(".brandon");
-    match fs::create_dir(&directory) {
-        Ok(()) => (),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
-        Err(source) => {
-            return Err(VaultError::Io {
-                context: "Не удалось создать папку поискового кэша",
-                source,
-            });
+    // A read-only boundary check must not keep issuing CreateDirectory against
+    // an existing directory: Windows may emit parent metadata notifications.
+    if !directory.try_exists().map_err(|source| VaultError::Io {
+        context: "Не удалось проверить папку поискового кэша",
+        source,
+    })? {
+        match fs::create_dir(&directory) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(source) => {
+                return Err(VaultError::Io {
+                    context: "Не удалось создать папку поискового кэша",
+                    source,
+                });
+            }
         }
     }
     let metadata = fs::symlink_metadata(&directory).map_err(|source| VaultError::Io {
@@ -393,12 +413,20 @@ fn cache_directory(vault: &Vault) -> Result<PathBuf> {
         "tasks.sqlite3-wal",
         "tasks.sqlite3-shm",
     ] {
-        if let Ok(metadata) = fs::symlink_metadata(directory.join(name))
-            && (attachments::is_link(&metadata) || !metadata.is_file())
-        {
-            return Err(VaultError::InvalidPath(
-                "Локальная база не должна быть ссылкой",
-            ));
+        match fs::symlink_metadata(directory.join(name)) {
+            Ok(metadata) if attachments::is_link(&metadata) || !metadata.is_file() => {
+                return Err(VaultError::InvalidPath(
+                    "Локальная база не должна быть ссылкой",
+                ));
+            }
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(source) => {
+                return Err(VaultError::Io {
+                    context: "Не удалось проверить локальную базу",
+                    source,
+                });
+            }
         }
     }
     Ok(directory)
@@ -547,6 +575,78 @@ fn canvas_chunks(source: &str) -> Option<Vec<Chunk>> {
 }
 
 impl Vault {
+    /// Explicit UI operation, serialized with search by the desktop worker.
+    /// Preserve all old derivative files in an exclusively created directory;
+    /// never remove them, touch task storage, or auto-repair on a normal query.
+    pub fn rebuild_search(
+        &self,
+        query: &str,
+        mode: SearchMode,
+        limit: usize,
+    ) -> Result<SearchRebuild> {
+        let parsed = if mode == SearchMode::Literal {
+            Query::literal(query)?
+        } else {
+            Query::parse(query)?
+        };
+        if parsed.empty() {
+            return Err(VaultError::InvalidPath(
+                "Введите запрос или фильтр перед восстановлением",
+            ));
+        }
+        let directory = cache_directory(self)?;
+        // A corrupt canonical DB is not a reason to quarantine the search DB.
+        task_fields(&directory).map_err(|error| VaultError::SearchTasks(Box::new(error)))?;
+        let has_cache = CACHE_FILES.iter().any(|name| directory.join(name).exists());
+        let backup = if has_cache {
+            Some(
+                tempfile::Builder::new()
+                    .prefix("search-recovery-")
+                    .tempdir_in(&directory)
+                    .map_err(|source| VaultError::Io {
+                        context: "Не удалось сохранить предыдущий индекс",
+                        source,
+                    })?
+                    .keep(),
+            )
+        } else {
+            None
+        };
+        let backup_path = backup
+            .as_ref()
+            .map(|path| relative_display(self.root(), path))
+            .transpose()?;
+        let rebuild = || -> Result<SearchResponse> {
+            if let Some(backup) = &backup {
+                for name in CACHE_FILES {
+                    // Recheck all private DB paths immediately before each move.
+                    cache_directory(self)?;
+                    let source = directory.join(name);
+                    if source.exists() {
+                        fs::rename(source, backup.join(name)).map_err(|source| VaultError::Io {
+                            context: "Не удалось переместить прежний поисковый кэш",
+                            source,
+                        })?;
+                    }
+                }
+            }
+            self.search_local(query, mode, limit)
+        };
+        match rebuild() {
+            Ok(search) => Ok(SearchRebuild {
+                search,
+                backup_path,
+            }),
+            Err(source) => match backup_path {
+                Some(backup) => Err(VaultError::SearchRecovery {
+                    backup,
+                    source: Box::new(source),
+                }),
+                None => Err(source),
+            },
+        }
+    }
+
     pub fn search_local(
         &self,
         query: &str,
@@ -566,7 +666,8 @@ impl Vault {
         let directory = cache_directory(self)?;
         let mut connection = Connection::open(directory.join(CACHE))?;
         schema(&connection)?;
-        let tasks = task_fields(&directory)?;
+        let tasks =
+            task_fields(&directory).map_err(|error| VaultError::SearchTasks(Box::new(error)))?;
         let sources = scan(self.root(), &mut report)?;
         let existing: HashMap<String, (String, String)> = {
             let mut statement = connection.prepare("SELECT path,stamp,status FROM sources")?;

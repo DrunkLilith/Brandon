@@ -25,10 +25,18 @@ export function LocalSearch({ root, revision, query, onQueryChange, inputRef, on
   const [busy, setBusy] = useState(false)
   const [completedKey, setCompletedKey] = useState('')
   const [error, setError] = useState('')
+  const [recovering, setRecovering] = useState(false)
+  const [recoveryMessage, setRecoveryMessage] = useState('')
+  const [recoveryError, setRecoveryError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  const recoveryActive = useRef(false)
+  const currentRoot = useRef(root)
+  currentRoot.current = root
   const panel = useRef<HTMLDivElement>(null)
   const hasQuery = Boolean(query.trim() || kind)
   const requestKey = JSON.stringify({ query, mode, kind })
-  const pending = hasQuery && (busy || completedKey !== requestKey)
+  const pending = hasQuery && (busy || recovering || completedKey !== requestKey)
+  useEffect(() => { setRecoveryMessage(''); setRecoveryError('') }, [root])
   useEffect(() => {
     let stopRequest = () => {}
     setResponse(null); setError(''); setBusy(hasQuery); setCompletedKey('')
@@ -41,7 +49,26 @@ export function LocalSearch({ root, revision, query, onQueryChange, inputRef, on
       })
     }, 220)
     return () => { stopRequest(); window.clearTimeout(timer) }
-  }, [root, revision, query, mode, kind, hasQuery, requestKey])
+  }, [root, revision, query, mode, kind, hasQuery, requestKey, refresh])
+
+  async function rebuild() {
+    if (recoveryActive.current) return
+    recoveryActive.current = true
+    setRecovering(true); setRecoveryError(''); setRecoveryMessage('')
+    try {
+      const result = await invoke<{ search: SearchResponse; backupPath: string | null }>('rebuild_search_index', { root, query: `${query}${kind ? ` type:${kind}` : ''}`, mode, limit: 80 })
+      if (currentRoot.current !== root) return
+      setRecoveryMessage(result.backupPath ? `Индекс восстановлен. Предыдущий кэш сохранён: ${result.backupPath}` : 'Индекс построен заново.')
+      // Always run the current query after recovery, never display the query
+      // captured before the user changed their text or filters.
+      setRefresh((value) => value + 1)
+    } catch (reason) {
+      if (currentRoot.current === root) setRecoveryError(String(reason))
+    } finally {
+      recoveryActive.current = false
+      setRecovering(false)
+    }
+  }
 
   return <div className="local-search" ref={panel} aria-label="Локальный поиск">
     <div className="sidebar-search"><SearchIcon /><input ref={inputRef} aria-label="Поиск по vault" value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder={mode === 'words' ? 'Слова или "точная фраза"…' : 'Точный текст или код…'} onKeyDown={(event) => {
@@ -54,8 +81,11 @@ export function LocalSearch({ root, revision, query, onQueryChange, inputRef, on
         <option value="">Все типы</option><option value="note">Заметки</option><option value="canvas">Холсты</option><option value="task">Задачи</option><option value="file">Файлы</option>
       </select>
     </div>
+    {recovering && <p className="local-search-status" role="status">Восстанавливаю индекс из сохранённых файлов…</p>}
+    {recoveryMessage && <p className="local-search-recovery-message" role="status">{recoveryMessage}</p>}
+    {recoveryError && <p className="local-search-error local-search-recovery-error" role="alert">{recoveryError}</p>}
     <div className="sidebar-content" aria-busy={pending} data-completed-query={completedKey === requestKey ? query : undefined}>
-      {!hasQuery ? <div className="local-search-help"><p>Текст заметок и карточек, названия файлов.</p><p>{mode === 'words' ? <>Фраза: <code>"план на неделю"</code></> : 'Фрагмент целиком: кавычки, переносы и повторные пробелы сохраняются.'}<br />Фильтры: <code>path:Проект</code> <code>tag:работа</code></p><p>Поиск локальный, по сохранённым файлам. «Точно» подходит для кода и частей слов.</p></div> : error && !pending ? <p className="local-search-error" role="alert">{error}</p> : <>
+      {!hasQuery ? <div className="local-search-help"><p>Текст заметок и карточек, названия файлов.</p><p>{mode === 'words' ? <>Фраза: <code>"план на неделю"</code></> : 'Фрагмент целиком: кавычки, переносы и повторные пробелы сохраняются.'}<br />Фильтры: <code>path:Проект</code> <code>tag:работа</code></p><p>Поиск локальный, по сохранённым файлам. «Точно» подходит для кода и частей слов.</p></div> : error && !pending ? <div className="local-search-recovery"><p className="local-search-error" role="alert">{error}</p><button onClick={() => { void rebuild() }} disabled={recovering}>Восстановить индекс</button><p>Только поисковый кэш. Его копия сохранится в .brandon; заметки и база задач не меняются.</p></div> : <>
         <p className="local-search-status" role="status">{pending ? 'Проверяю индекс…' : response ? resultCount(response.hits.length) : ''}</p>
         {response && !pending && <>
           <div className="search-results">{response.hits.map((hit, index) => <button key={`${hit.path}:${hit.nodeId ?? ''}:${hit.line}`} data-path={hit.path} data-node-id={hit.nodeId ?? undefined} onClick={() => onOpen(hit)} onKeyDown={(event) => {

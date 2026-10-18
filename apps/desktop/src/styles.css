@@ -1350,6 +1350,10 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .local-search-status, .local-search-coverage { margin: 6px 10px 9px; color: #969696; font-size: 11px; line-height: 1.6; }
 .local-search-coverage { padding-top: 8px; border-top: 1px solid #333; color: #888; }
 .local-search-error { margin: 8px 10px; color: #e7a6a6; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.local-search-recovery { padding-bottom: 12px; }
+.local-search-recovery > button { margin: 4px 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.local-search-recovery > button:hover { background: var(--surface-3); }
+.local-search-recovery > p:last-child, .local-search-recovery-message { margin: 8px 10px; font-size: 11px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
 .search-results button:focus-visible { outline: 1px solid #a69bcf; outline-offset: -1px; background: #2b2831; }
 .canvas-import-status { position: absolute; z-index: 24; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: calc(100% - 40px); display: flex; align-items: center; gap: 14px; border: 1px solid #45434b; border-radius: 7px; padding: 12px 14px; background: #252428; font-size: 12px; }
 .canvas-import-status > span { max-width: 350px; overflow-wrap: anywhere; }

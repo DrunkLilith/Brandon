@@ -3,7 +3,7 @@
 mod attachments;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
 mod search;
-pub use search::{SearchHit, SearchMode, SearchResponse};
+pub use search::{SearchHit, SearchMode, SearchRebuild, SearchResponse};
 mod relocation;
 pub use relocation::{LinkUpdateReason, LinkUpdateWarning};
 #[cfg(test)]
@@ -39,6 +39,16 @@ pub enum VaultError {
     AlreadyExists,
     #[error("Локальная база данных недоступна: {0}")]
     Database(#[from] rusqlite::Error),
+    #[error("База задач недоступна; восстановление поискового кэша её не исправит: {0}")]
+    SearchTasks(Box<VaultError>),
+    #[error(
+        "Восстановление поиска не завершено. Резервная папка: {backup}; часть прежнего кэша может оставаться на месте: {source}"
+    )]
+    SearchRecovery {
+        backup: String,
+        #[source]
+        source: Box<VaultError>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;

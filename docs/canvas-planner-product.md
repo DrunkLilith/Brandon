@@ -876,13 +876,28 @@ before adding its create-new path.
   Report: `target/qa/draft-recovery.json`. Optional `BRANDON_QA_SCREENSHOT` captures
   synthetic wide/900px views. The banner is visually checked and bounded in both
   viewport sizes; this is not native macOS or physical-window-resize verification.
-- The Windows EXE and NSIS are rebuilt. Complete local release gate for this
-  recovery source is the next check and is NOT claimed yet. Installation/macOS
-  remain untested; changes remain local, without push.
+- The Windows EXE and NSIS are rebuilt. Source **9d10ec0baed253fd7c4453288184ec8b5cb05d52**
+  passed complete local `scripts/release-check.ps1` with exit 0 and explicit
+  `Release gate PASS`, including 115 web tests, both restore drills and all
+  **18 browser E2E**. No policy/advisory exceptions were loosened. This does not
+  replace a future GitHub run on unpublished source. Installation/macOS remain
+  untested; changes remain local, without push.
+  EXE SHA-256: `2E602FB755465ABB2FE02666F9D70113B8FC52CA392E3B197FC70EE1318DED0D`;
+  NSIS SHA-256: `AEF615B908716348EB586EDB29D9265884310D7166E7DF16794ABA45E7558078`.
 
-Next bounded continuation: finish and record this recovery source's local release
-gate first. Then inspect a small derivative-search cache recovery/rebuild scenario;
-do not start a large persistent-draft or AI engine rewrite within the time limit.
+Next bounded continuation: derivative-search cache recovery/rebuild. The isolated
+`target/qa/search-cache-recovery-probe.mjs` / `.json` already reproduces a corrupt
+`.brandon/search-v1.sqlite3`: the UI displays `file is not a database`, returns no
+results and offers only Words/Literal mode buttons, no recovery action. Synthetic
+note and canonical `tasks.sqlite3` hashes remain unchanged; original vault restored
+and clean QA window really closed. This usability gap is reproduced, NOT fixed.
+Promote it to tests, then provide an explicit safe rebuild path serialized with
+the search worker. Preserve the damaged derivative cache rather than deleting
+unknown bytes; reject symlink/reparse/path tricks and keep notes and canonical
+task database untouched. An error originating in `tasks.sqlite3` is NOT permission
+to reset or ignore task data. Check watcher behavior and UI error/race recovery.
+The draft-protection gate above is finished; do not repeat it or start a large
+persistent-draft or AI engine rewrite within the remaining autonomous window.
 Before vector/MCP integration, extend ranking/candidate-budget coverage,
 50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
 vector search, embeddings and agent grants remain unimplemented in this slice.

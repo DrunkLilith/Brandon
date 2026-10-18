@@ -1138,9 +1138,16 @@ explicit synthetic `overflow.md` was moved, not deleted, to its private
 public notes. The modified single-note probe restored the original bytes and
 reindexed them. No personal file was used as benchmark input.
 
-Full local release gate for this implementation: pending below; prior green
-gates are not evidence for this new source. Next steps remain targeted performance
-profiling/queue refinements, not vector/MCP/OCR or an expansion of agent grants.
+Full local release gate for implementation commit
+`d3de6492f73491d25c4a6264ca5364aaa13caa1e` finished with exit 0 and
+**Release gate PASS** (`target/qa/incremental-release-gate.log`). It includes the
+workspace Rust suite, strict formatting/Clippy, 115 web tests, dependency/license
+and secret policies, fresh Compose acceptance, both PowerShell/Bash restore
+drills and all 18 production browser E2E. Generated-file and staged diff checks
+finished clean. This result verifies the new local code, not an older remote CI
+run. The subsequent checkpoint changes documentation only; executable hashes
+above remain unchanged. Next steps remain targeted performance profiling/queue
+refinements, not vector/MCP/OCR or an expansion of agent grants.
 
 ### 4. Brandon tools and external Codex / Claude connections
 

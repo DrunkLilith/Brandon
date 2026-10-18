@@ -9,6 +9,9 @@ import { CanvasOverview, type RenderEdge } from './canvas-overview'
 import { useNativeCanvas } from './use-native-canvas'
 import { canvasColors, parseCanvasDocument } from './canvas-document'
 import { AttachmentDetails, AttachmentImage, isRasterPath, useCanvasAttachments } from './canvas-attachments'
+import { CommandMenu } from './command-menu'
+import { createCommandRegistry } from './commands'
+import { MarkdownPreview } from './markdown-preview'
 
 export type CanvasNode = {
   id: string
@@ -84,12 +87,15 @@ function additiveSelection(event: { ctrlKey: boolean; metaKey: boolean; shiftKey
   return event.ctrlKey || event.metaKey || event.shiftKey
 }
 
-export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, focusTarget, onMissingSearchTarget }: {
+export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget }: {
   value: string
   index: VaultIndex | null
   onChange: (value: string) => void
   onOpen: (path: string) => void
   initialZoom?: number
+  initialCamera?: Camera
+  onCameraChange?: (camera: Camera) => void
+  nativeEnabled?: boolean
   focusTarget?: { nodeId: string | null; nonce: string } | null
   onMissingSearchTarget?: () => void
 }) {
@@ -97,7 +103,9 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
   const stored = validation.document
   const [gestureDocument, setGestureDocument] = useState<CanvasDocument | null>(null)
   const parsed = gestureDocument ?? stored
-  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: initialZoom })
+  const [camera, setCamera] = useState<Camera>(initialCamera ?? { x: 0, y: 0, zoom: initialZoom })
+  const cameraChanged = useRef(onCameraChange); cameraChanged.current = onCameraChange
+  useEffect(() => { cameraChanged.current?.(camera) }, [camera])
   const [tool, setTool] = useState<'select' | 'pan'>('select')
   const [spacePanning, setSpacePanning] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
@@ -108,6 +116,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 })
   const [editingId, setEditingId] = useState<string | null>(null)
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null)
+  const [context, setContext] = useState<{x:number;y:number;id:string|null} | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const lastSearchFocus = useRef<string | null>(null)
   const documentRef = useRef(parsed)
@@ -117,7 +126,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
   const undoStack = useRef<string[]>([])
   const redoStack = useRef<string[]>([])
   const clipboard = useRef<{ nodes: CanvasNode[]; edges: CanvasEdge[] } | null>(null)
-  const native = useNativeCanvas(viewport, { document: parsed, camera, selected, editing: editingId, linking }, !validation.error)
+  const native = useNativeCanvas(viewport, { document: parsed, camera, selected, editing: editingId, linking }, nativeEnabled && !validation.error)
   const spatial = useMemo(() => new CanvasSpatialIndex(parsed.nodes), [parsed.nodes])
   const worldBounds = useMemo(() => ({ x: (-viewportSize.width / 2 - camera.x - 80) / camera.zoom, y: (-viewportSize.height / 2 - camera.y - 80) / camera.zoom, width: (viewportSize.width + 160) / camera.zoom, height: (viewportSize.height + 160) / camera.zoom }), [camera, viewportSize])
   const visibleNodes = useMemo(() => spatial.query(worldBounds), [spatial, worldBounds])
@@ -135,7 +144,8 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
   const maskPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '')
   const nodeOrder = useMemo(() => new Map(parsed.nodes.map((node, index) => [node.id, index])), [parsed.nodes])
   const imageMasks = useMemo(() => imageNodes.size ? visibleNodes.filter((node) => imageNodes.has(node.id)).map((node) => ({ node, above: spatial.query(node).filter((higher) => nodeOrder.get(higher.id)! > nodeOrder.get(node.id)!) })) : [], [visibleNodes, imageNodes, spatial, nodeOrder])
-  const domNodes = useMemo(() => native.active ? visibleNodes.filter((node) => node.id === editingId || imageNodes.has(node.id)) : overview ? [] : visibleNodes, [native.active, overview, visibleNodes, editingId, imageNodes])
+  const richCards = native.active && parsed.nodes.length <= 200 && camera.zoom >= .5
+  const domNodes = useMemo(() => native.active && !richCards ? visibleNodes.filter((node) => node.id === editingId || imageNodes.has(node.id)) : overview ? [] : visibleNodes, [native.active, richCards, overview, visibleNodes, editingId, imageNodes])
   const attachments = useCanvasAttachments(viewport, (attachment, position) => {
     const document = documentRef.current
     const point = screenToWorld(position ?? { x: viewportSize.width / 2, y: viewportSize.height / 2 })
@@ -371,7 +381,8 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
     event.preventDefault()
     viewport.current?.focus()
     const point = localPoint(event.clientX, event.clientY)
-    if (tool === 'pan' || spacePanning || event.button === 1 || event.button === 2 || event.altKey) {
+    if (event.button === 2) return
+    if (tool === 'pan' || spacePanning || event.button === 1 || event.altKey) {
       event.preventDefault()
       event.currentTarget.setPointerCapture(event.pointerId)
       drag.current = { type: 'pan', start: point, camera }
@@ -499,6 +510,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
     return () => { element.removeEventListener('wheel', wheel); cancelAnimationFrame(raf) }
   }, [])
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey){event.preventDefault();const rect=viewport.current!.getBoundingClientRect();setContext({x:rect.left+rect.width/2,y:rect.top+Math.min(180,rect.height/2),id:[...selected][0]??null});return}
     if (event.key === 'Escape') { setAttachmentPath(null); setEditingId(null); setLinking(null); setSelected(new Set()); viewport.current?.focus(); return }
     if ((event.target as HTMLElement).closest('textarea, input, [contenteditable="true"]')) return
     const control = event.ctrlKey || event.metaKey
@@ -557,7 +569,20 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
     onPointerMove={pointerMove}
     onPointerUp={finishPointer}
     onPointerCancel={finishPointer}
-    onContextMenu={(event) => event.preventDefault()}
+    onContextMenu={(event) => {
+      if ((event.target as HTMLElement).closest('textarea,input,.command-menu,.image-viewer')) return
+      event.preventDefault();event.stopPropagation();finishPointer()
+      const element=(event.target as HTMLElement).closest<HTMLElement>('[data-node-id]')
+      const point=screenToWorld(localPoint(event.clientX,event.clientY))
+      const id=element?.dataset.nodeId ?? spatial.query({...point,width:0,height:0}).at(-1)?.id ?? null
+      if(id && !selected.has(id))setSelected(new Set([id]))
+      setContext({x:event.clientX,y:event.clientY,id})
+    }}
+    onClick={event=>{
+      if(event.target!==event.currentTarget || !spatialInput || suppressNodeClick.current || linking!==null || tool==='pan') { suppressNodeClick.current=false;return }
+      const point=screenToWorld(localPoint(event.clientX,event.clientY)),hit=spatial.query({...point,width:0,height:0}).at(-1)
+      if(hit?.type==='file' && hit.file && isRasterPath(hit.file))openFile(hit.file)
+    }}
     onDragOver={(event) => { if (event.dataTransfer.types.includes('application/x-brandon-vault-path')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }}
     onDrop={(event) => { const path = event.dataTransfer.getData('application/x-brandon-vault-path'); if (path) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); void attachments.referenceFile(path, { x: event.clientX - rect.left, y: event.clientY - rect.top }) } }}
     onDoubleClick={(event) => {
@@ -590,20 +615,22 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
       {!native.active && !overview && <svg className="canvas-edges" viewBox="-50000 -50000 100000 100000"><g>{visibleEdges.map((edge) => <line key={edge.id} x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />)}</g></svg>}
       {domNodes.map((node) => <div
         key={node.id}
-        className={`canvas-node type-${node.type} ${native.active ? 'native-editing' : ''} ${imageNodes.has(node.id) ? 'has-image-preview' : ''} ${linking === node.id ? 'link-source' : ''} ${selected.has(node.id) ? 'selected' : ''}`}
+        className={`canvas-node type-${node.type} ${native.active ? 'native-editing' : ''} ${richCards ? 'rich-card' : ''} ${imageNodes.has(node.id) ? 'has-image-preview' : ''} ${linking === node.id ? 'link-source' : ''} ${selected.has(node.id) ? 'selected' : ''}`}
         data-node-id={node.id}
         style={{ left: node.x, top: node.y, width: node.width, height: node.height, backgroundColor: canvasColors(node).fill, borderColor: selected.has(node.id) ? '#aca1ee' : canvasColors(node).border, mask: native.active && imageNodes.has(node.id) ? `url(#clip-${maskPrefix}-${nodeOrder.get(node.id)})` : undefined }}
         onPointerDown={(event) => nodePointerDown(event, node.id)}
+        onDoubleClick={()=>{if(node.type==='text')setEditingId(node.id)}}
         onClick={(event) => {
           if (suppressNodeClick.current) { suppressNodeClick.current = false; return }
           if (linking !== null) chooseForLink(node.id)
+          else if (node.type === 'file' && node.file && isRasterPath(node.file)) openFile(node.file)
           else if ((event.target as HTMLElement).closest('textarea, button, a')) setSelected((current) => additiveSelection(event)
             ? new Set(current.has(node.id) ? [...current].filter((item) => item !== node.id) : [...current, node.id])
             : new Set([node.id]))
         }}
       >
         <div className="canvas-node-grip"><span>{node.type === 'text' ? 'Текст' : node.type === 'file' ? 'Заметка' : node.type === 'group' ? 'Группа' : 'Ссылка'}</span><button title="Удалить карточку" onClick={(event) => { event.stopPropagation(); const document = documentRef.current; commit({ ...document, nodes: document.nodes.filter((item) => item.id !== node.id), edges: document.edges.filter((edge) => edge.fromNode !== node.id && edge.toNode !== node.id) }); setSelected((current) => new Set([...current].filter((id) => id !== node.id))) }}>×</button></div>
-        {node.type === 'text' && <textarea value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />}
+        {node.type === 'text' && (richCards&&editingId!==node.id?<div className="canvas-rich-text"><MarkdownPreview source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">Двойной клик — редактировать</small></div>:<textarea autoFocus={editingId===node.id} value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
         {node.type === 'file' && <div className="canvas-file-card" role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <AttachmentImage path={node.file} /> : <FileIcon />}<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong><small>{node.file}</small></div>}
         {node.type === 'link' && <a href={node.url} target="_blank" rel="noreferrer">{node.url}</a>}
         {node.type === 'group' && <strong className="canvas-group-label">{node.label || 'Группа'}</strong>}
@@ -612,6 +639,16 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, fo
     </div>
     {native.active && imageNodes.size > 0 && <svg className="canvas-preview-masks" aria-hidden="true"><defs>{imageMasks.map(({ node, above }) => <mask key={node.id} id={`clip-${maskPrefix}-${nodeOrder.get(node.id)}`} maskUnits="userSpaceOnUse" x="0" y="0" width={node.width} height={node.height}><rect width={node.width} height={node.height} fill="white" />{above.length > 64 ? <rect width={node.width} height={node.height} fill="black" /> : above.map((higher) => <rect key={higher.id} x={higher.x - node.x} y={higher.y - node.y} width={higher.width} height={higher.height} rx="8" fill="black" />)}</mask>)}</defs></svg>}
     {attachmentPath && <AttachmentDetails path={attachmentPath} onClose={() => setAttachmentPath(null)} />}
+    {context && <CommandMenu x={context.x} y={context.y} registry={createCommandRegistry([
+      {id:'open',label:context.id && nodes.get(context.id)?.type==='text'?'Редактировать текст':'Открыть',enabled:Boolean(context.id),run:()=>{const node=context.id?nodes.get(context.id):null;if(node?.type==='file'&&node.file)openFile(node.file);else if(node?.type==='text')setEditingId(node.id)}},
+      {id:'duplicate',label:'Дублировать',enabled:Boolean(context.id),run:duplicateSelection},
+      {id:'copy',label:'Копировать карточки',enabled:Boolean(context.id),run:copySelection},
+      {id:'paste',label:'Вставить карточки',run:pasteSelection},
+      {id:'delete',label:'Убрать с доски',enabled:Boolean(context.id),run:deleteSelection},
+      {id:'new-text',label:'Добавить текстовую карточку',run:addText},
+      {id:'fit',label:'Показать всю доску',run:fitToContent},
+      {id:'undo',label:'Отменить',defaultShortcut:'Mod+KeyZ',enabled:Boolean(undoStack.current.length),run:undo},
+    ])} ids={['open','duplicate','copy','paste','delete',null,'new-text','fit','undo']} onClose={(restore=true)=>{setContext(null);if(restore)viewport.current?.focus()}} onExecute={id=>{setContext(null);viewport.current?.focus();const node=context.id?nodes.get(context.id):null;if(id==='open'){if(node?.type==='file'&&node.file)openFile(node.file);else if(node?.type==='text')setEditingId(node.id)}else if(id==='duplicate')duplicateSelection();else if(id==='copy')copySelection();else if(id==='paste')pasteSelection();else if(id==='delete')deleteSelection();else if(id==='new-text')addText();else if(id==='fit')fitToContent();else undo()}} />}
     {attachments.progress && <div className="canvas-import-status" onPointerDown={(event) => event.stopPropagation()}><span>{attachments.progress.name}</span><progress value={attachments.progress.copied} max={Math.max(1, attachments.progress.total)} /><button onClick={attachments.cancel}>Отменить</button></div>}
     {attachments.error && <div className="canvas-import-status" role="alert"><span>{attachments.error}</span><button onClick={attachments.dismissError}>Закрыть</button></div>}
     {attachments.dragOver && <div className="canvas-drop-hint">Добавить файлы на холст<span>Оригиналы будут скопированы в Attachments</span></div>}

@@ -2,7 +2,11 @@
 
 mod attachment_commands;
 mod search_commands;
+mod workspace_commands;
 use search_commands::{SearchState, rebuild_search_index, reconcile_search_index, search_vault};
+use workspace_commands::{
+    WorkspaceState, document_versions, load_workspace, put_draft, remove_draft, save_workspace,
+};
 #[cfg(windows)]
 mod canvas_gpu;
 use attachment_commands::{
@@ -52,6 +56,20 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[tauri::command]
 fn canvas_gpu_supported() -> bool {
     cfg!(windows)
+}
+
+/// Final phase of the UI's save/session flush. A renderer reload can leave
+/// native JS-close listener IDs behind; destroy only the requesting main window.
+#[tauri::command]
+fn complete_workspace_close(
+    window: tauri::WebviewWindow,
+    state: State<'_, VaultState>,
+    root: String,
+) -> Result<(), String> {
+    if window.label() != "main" || current_vault(&state)?.root().to_string_lossy() != root {
+        return Err("Окно или vault изменились; закрытие отменено".into());
+    }
+    window.destroy().map_err(|error| error.to_string())
 }
 
 #[derive(Default)]
@@ -394,6 +412,7 @@ fn main() {
         .manage(GpuCanvasState::default())
         .manage(AttachmentState::default())
         .manage(SearchState::default())
+        .manage(WorkspaceState::default())
         .setup(|app| {
             search_commands::start_worker(app.handle().clone());
             Ok(())
@@ -406,6 +425,12 @@ fn main() {
             cancel_attachment_import,
             open_vault,
             restore_vault,
+            complete_workspace_close,
+            load_workspace,
+            save_workspace,
+            put_draft,
+            remove_draft,
+            document_versions,
             refresh_vault,
             read_note,
             read_resource,

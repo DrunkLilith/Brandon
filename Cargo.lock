@@ -2590,6 +2590,7 @@ dependencies = [
  "glyphon",
  "knowledge-vault",
  "notify",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",

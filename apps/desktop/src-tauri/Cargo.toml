@@ -13,6 +13,7 @@ knowledge-vault = { path = "../../../crates/knowledge-vault", version = "=0.1.0"
 notify = "8.2.0"
 serde.workspace = true
 serde_json.workspace = true
+rusqlite.workspace = true
 tauri = { version = "2.12.3", features = [] }
 tauri-plugin-dialog = "2.8.2"
 tokio.workspace = true

@@ -334,6 +334,14 @@ impl Vault {
 
     /// Normalized PNG, never SVG/HTML or original unbounded media bytes.
     pub fn attachment_thumbnail(&self, relative: &str) -> Result<Vec<u8>> {
+        self.raster_preview(relative, 640, 400)
+    }
+
+    pub fn attachment_preview(&self, relative: &str) -> Result<Vec<u8>> {
+        self.raster_preview(relative, 2560, 2560)
+    }
+
+    fn raster_preview(&self, relative: &str, width: u32, height: u32) -> Result<Vec<u8>> {
         let path = self.public_attachment_path(relative)?;
         let metadata = fs::metadata(&path).map_err(io_error("Вложение недоступно"))?;
         if metadata.len() > MAX_PREVIEW_BYTES {
@@ -369,8 +377,10 @@ impl Vault {
             VaultError::InvalidPath("Изображение повреждено или превышает лимиты превью")
         })?;
         let mut result = Cursor::new(Vec::new());
+        let width = width.min(image.width());
+        let height = height.min(image.height());
         image
-            .thumbnail(640, 400)
+            .thumbnail(width, height)
             .write_to(&mut result, image::ImageFormat::Png)
             .map_err(|_| VaultError::InvalidPath("Не удалось подготовить превью"))?;
         Ok(result.into_inner())

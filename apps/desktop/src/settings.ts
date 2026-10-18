@@ -11,11 +11,15 @@ export type DesktopSettings = {
   lineNumbers: boolean
   spellcheck: boolean
   previewModifier: 'ctrl' | 'none'
+  dailyFolder: string
+  dailyFormat: 'YYYY-MM-DD' | 'DD-MM-YYYY' | 'YYYY.MM.DD'
+  dailyTemplate: string
+  templatesFolder: string
   hotkeys: HotkeyOverrides
 }
 
 export function defaultSettings(): DesktopSettings {
-  return { version: 1, editorMode: 'visual', defaultViewMode: 'edit', readableLineWidth: true, lineNumbers: false, spellcheck: true, previewModifier: 'ctrl', hotkeys: {} }
+  return { version: 1, editorMode: 'visual', defaultViewMode: 'edit', readableLineWidth: true, lineNumbers: false, spellcheck: true, previewModifier: 'ctrl',dailyFolder:'Daily',dailyFormat:'YYYY-MM-DD',dailyTemplate:'',templatesFolder:'', hotkeys: {} }
 }
 
 export function parseSettings(raw: string | null, legacy: string | null = null): DesktopSettings {
@@ -27,6 +31,8 @@ export function parseSettings(raw: string | null, legacy: string | null = null):
       if (value.editorMode === 'visual' || value.editorMode === 'source') settings.editorMode = value.editorMode
       if (value.defaultViewMode === 'edit' || value.defaultViewMode === 'split' || value.defaultViewMode === 'preview') settings.defaultViewMode = value.defaultViewMode
       if (value.previewModifier === 'ctrl' || value.previewModifier === 'none') settings.previewModifier = value.previewModifier
+      for(const key of ['dailyFolder','dailyTemplate','templatesFolder'] as const) if(typeof value[key]==='string' && value[key].length<=1024 && (!value[key] || !/^[\/]|[\\:\0]/.test(value[key]) && value[key].split('/').every(part=>part&&part!=='.'&&part!=='..'))) settings[key]=value[key]
+      if(value.dailyFormat==='YYYY-MM-DD'||value.dailyFormat==='DD-MM-YYYY'||value.dailyFormat==='YYYY.MM.DD')settings.dailyFormat=value.dailyFormat
       for (const key of ['readableLineWidth', 'lineNumbers', 'spellcheck'] as const) if (typeof value[key] === 'boolean') settings[key] = value[key]
       if (value.hotkeys && typeof value.hotkeys === 'object' && !Array.isArray(value.hotkeys)) {
         for (const [id, binding] of Object.entries(value.hotkeys).slice(0, 256)) {

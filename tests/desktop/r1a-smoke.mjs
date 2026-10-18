@@ -18,7 +18,7 @@ const pass = text => { passed.push(text); console.log(`PASS ${text}`) }
 const contentSelector = '.codemirror-host > .cm-editor > .cm-scroller > .cm-content'
 async function reload() { await send('Page.reload'); await delay(100); await waitFor("Boolean(document.querySelector('.tree-row'))") }
 async function openFile(path) { await click('button[aria-label="Файлы"]'); await click(`.tree-row[title=${JSON.stringify(path)}]`); await waitFor(`document.querySelector('.title-tab.active')?.getAttribute('title') === ${JSON.stringify(path.split('/').at(-1).replace(/\.(md|canvas)$/i, ''))}`) }
-async function focusEnd() { await evaluate(`document.querySelector(${JSON.stringify(contentSelector)}).focus()`); await key('End', 'End', 2) }
+async function focusEnd() { if(!await evaluate(`Boolean(document.querySelector(${JSON.stringify(contentSelector)}))`)) await click('.view-switcher button[title="Редактор"]'); await evaluate(`document.querySelector(${JSON.stringify(contentSelector)}).focus()`); await key('End', 'End', 2) }
 async function focusStart() { await evaluate(`document.querySelector(${JSON.stringify(contentSelector)}).focus()`); await key('Home', 'Home', 2) }
 async function save() { if (await evaluate("Boolean(document.querySelector('.settings-dialog'))")) await key('Escape', 'Escape'); if (await evaluate("Boolean(document.querySelector('.command-menu'))")) await key('Escape', 'Escape'); await click('.save-button'); await waitFor("!document.querySelector('.title-tab.active i') && !document.querySelector('.save-button')?.textContent.includes('Сохраняю')") }
 async function settings() { await click('button[aria-label="Настройки"]'); await waitFor("Boolean(document.querySelector('.settings-dialog'))") }
@@ -30,6 +30,7 @@ try {
   await mkdir(join(scratch, 'Folder'))
   await writeFile(join(scratch, 'First.md'), first)
   await writeFile(join(scratch, 'Second.md'), second)
+  await writeFile(join(scratch, 'Preferences.md'), '# Preferences\n')
   await writeFile(join(scratch, 'Links.md'), '[[Second#Target|Jump]]\n\n[[#^self]]\n\nLocal body ^self\n\n[[Second#Absent]]\n')
   await writeFile(join(scratch, 'Folder', 'Relative.md'), '# Relative\n\n[Parent](../Second.md#Target)\n')
   await writeFile(join(scratch, 'Code.md'), '# Code\n\n```rust\nlet answer = 42;\n```\n\n| A | B |\n| --- | --- |\n| one | two |\n')
@@ -149,7 +150,7 @@ try {
   await waitFor("document.querySelector('.local-search input')?.value === 'tag:r1a' || document.querySelector('.sidebar input')?.value === 'tag:r1a'")
   pass('Clicking a note tag opens the shared local search with that filter')
 
-  await openFile('First.md'); await settings()
+  await openFile('First.md'); await click('.view-switcher button[title="Редактор"]'); await settings()
   await click('input[aria-label="Номера строк"]')
   await click('input[aria-label="Ограничивать длину строки"]')
   await selectValue('Предпросмотр при наведении', 'none')
@@ -186,7 +187,8 @@ try {
   pass('Preferences and custom assignments survive reload; a command can reset to its default binding')
 
   await settings(); await selectValue('Режим новых документов', 'preview'); await click('button[aria-label="Закрыть настройки"]')
-  await openFile('Second.md')
+  // R1B restores a previously opened tab's own view; use a fresh document here.
+  await openFile('Preferences.md')
   await waitFor("Boolean(document.querySelector('.editor-grid.mode-preview'))")
   await settings(); await selectValue('Режим новых документов', 'edit'); await click('button[aria-label="Закрыть настройки"]')
   await openFile('First.md')

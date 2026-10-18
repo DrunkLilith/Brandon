@@ -5,6 +5,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEve
 import type { VaultIndex } from './types'
 import { highlightedCode } from './code-language'
 import { sourceStructure } from './note-navigation'
+import { anchorLine,resolveNoteTarget } from './note-navigation'
+import { invoke } from '@tauri-apps/api/core'
+import type { NoteDocument } from './types'
+import { AttachmentImage,isRasterPath } from './canvas-attachments'
 
 function CodePreview({ code, language }: { code: string; language: string }) {
   const [tokens, setTokens] = useState([{ text: code, className: '' }])
@@ -33,7 +37,7 @@ function withWikiLinks(source: string) {
   return source.replace(/(?<embed>!)?\[\[(?<body>[^\]]+)\]\]/g, (full, embed: string | undefined, body: string, offset: number) => {
     if (codeRanges.some((range) => offset >= range.from && offset < range.to)) return full
     const [destination, label] = body.split('|', 2)
-    if (embed) return `\`${label ?? destination}\``
+    if (embed) return `[${label ?? destination}](#brandon-embed=${encodeURIComponent(destination)})`
     return `[${label ?? destination}](#brandon-wiki=${encodeURIComponent(destination)})`
   })
 }
@@ -130,11 +134,18 @@ function SmartTable({ children, source, startLine, endLine, onChange }: {
   </div>
 }
 
-export function MarkdownPreview({ source, onOpen, onChange, focusLine }: { source: string; index: VaultIndex | null; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
+function NoteEmbed({destination,index,resourcePath,onOpen}:{destination:string;index:VaultIndex|null;resourcePath:string;onOpen:(path:string,kind?:'wiki'|'markdown')=>void}) {
+  const [text,setText]=useState('Загружаю локальную заметку…')
+  useEffect(()=>{let alive=true;const resolved=resolveNoteTarget(destination,resourcePath,index?.documents??[]);if(resolved.status!=='resolved'){setText('Вложенная заметка не найдена или неоднозначна');return}void invoke<NoteDocument>('read_note',{relativePath:resolved.path}).then(document=>{if(!alive)return;const line=anchorLine(document.content,resolved);setText(line===null?'Указанный якорь не найден':document.content.split('\n').slice(Math.max(0,line-1),line+35).join('\n').slice(0,4000))}).catch(()=>{if(alive)setText('Вложенная заметка недоступна')});return()=>{alive=false}},[destination,index,resourcePath])
+  if(isRasterPath(destination))return <span className="note-embed"><AttachmentImage path={destination.replace(/^\//,'')}/></span>
+  return <span className="note-embed"><button onClick={()=>onOpen(destination,'wiki')}>↗ {destination}</button><span>{text}</span></span>
+}
+
+export function MarkdownPreview({ source, index, resourcePath='', onOpen, onChange, focusLine }: { source: string; index: VaultIndex | null; resourcePath?:string; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
   const renderedSource = withWikiLinks(source || '*Пустая заметка*')
   const structure = useMemo(() => sourceStructure(source), [source])
-  const current = useRef({ source, onOpen, onChange, focusLine, structure })
-  current.current = { source, onOpen, onChange, focusLine, structure }
+  const current = useRef({ source, onOpen, onChange, focusLine, structure,index,resourcePath })
+  current.current = { source, onOpen, onChange, focusLine, structure,index,resourcePath }
   // Stable renderer types keep anchors, table editors and hover targets mounted
   // when the parent updates a notice, metadata, or an anchor highlight.
   const components = useMemo<Components>(() => {
@@ -162,6 +173,7 @@ export function MarkdownPreview({ source, onOpen, onChange, focusLine }: { sourc
       return <CodePreview code={code} language={language} />
     },
     a: ({ href, children }) => {
+      if(href?.startsWith('#brandon-embed=')){let destination='';try{destination=decodeURIComponent(href.slice('#brandon-embed='.length))}catch{/* invalid URI stays unresolved */}return <NoteEmbed destination={destination} index={current.current.index} resourcePath={current.current.resourcePath} onOpen={current.current.onOpen}/>}
       const wiki = href?.startsWith('#brandon-wiki=')
       let destination = href ?? ''
       if (wiki) { try { destination = decodeURIComponent(destination.slice('#brandon-wiki='.length)) } catch { destination = '' } }

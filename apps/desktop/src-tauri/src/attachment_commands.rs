@@ -138,6 +138,7 @@ pub async fn attachment_info(
 #[tauri::command]
 pub async fn attachment_thumbnail(
     relative_path: String,
+    large: Option<bool>,
     state: State<'_, VaultState>,
     jobs: State<'_, AttachmentState>,
 ) -> Result<tauri::ipc::Response, String> {
@@ -148,10 +149,13 @@ pub async fn attachment_thumbnail(
         .map_err(|_| "Превью недоступно")?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        vault
-            .attachment_thumbnail(&relative_path)
-            .map(tauri::ipc::Response::new)
-            .map_err(|error| error.to_string())
+        (if large == Some(true) {
+            vault.attachment_preview(&relative_path)
+        } else {
+            vault.attachment_thumbnail(&relative_path)
+        })
+        .map(tauri::ipc::Response::new)
+        .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?

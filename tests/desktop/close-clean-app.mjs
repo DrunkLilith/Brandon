@@ -4,7 +4,7 @@ const target = targets.find(entry => entry.type === 'page' && entry.title === 'B
 if (!target) throw new Error('No Brandon QA window found')
 const socket = new WebSocket(target.webSocketDebuggerUrl)
 await new Promise((resolve, reject) => { socket.addEventListener('open', resolve); socket.addEventListener('error', reject) })
-socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: "({dirty:Boolean(document.querySelector('.title-tab.active i') || document.querySelector('.save-button:not(:disabled)') || document.querySelector('.source-recovery') || document.querySelector('.save-button')?.textContent.includes('Сохраняю')), conflict:Boolean(document.querySelector('.conflict-dialog'))})", returnByValue: true } }))
+socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: "({dirty:Boolean(document.querySelector('.title-tab.active i, .side-save:not(:disabled), .workspace-dialog, .side-conflict') || document.querySelector('.save-button:not(:disabled)') || document.querySelector('.source-recovery') || document.querySelector('.save-button')?.textContent.includes('Сохраняю')), conflict:Boolean(document.querySelector('.conflict-dialog'))})", returnByValue: true } }))
 socket.addEventListener('message', ({data}) => {
   const result = JSON.parse(data)
   if (result.id !== 1) return

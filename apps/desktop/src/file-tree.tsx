@@ -57,7 +57,7 @@ export function FileTree({ entries, activePath, query, onOpen, onOpenResource, o
 }
 
 function isWorkspaceResource(entry: VaultEntry) {
-  return entry.kind === 'file' && (entry.extension === 'canvas' || entry.extension === 'base')
+  return entry.kind === 'file'
 }
 
 function TreeRow({ entry, depth, activePath, collapsed, onActivate, onContext }: {

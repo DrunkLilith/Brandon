@@ -3,6 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { App } from './app'
 import './styles.css'
 
+// UI chrome has no browser actions. Keep native editing menus in text fields;
+// editor and Canvas handlers still receive the event and render their own menus.
+document.addEventListener('contextmenu', event => {
+  const target = event.target
+  if (target instanceof Element && target.closest('input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]')) return
+  event.preventDefault()
+})
+
 class FatalErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
 

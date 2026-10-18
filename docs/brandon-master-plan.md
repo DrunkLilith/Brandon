@@ -438,6 +438,28 @@ B774899412BF66F5D138B8FF78944C2D2895B4F1F0D4539B397C7ACEC437F32F
 
 **Выход:** сбой во время редактирования и внешний конфликт воспроизводимо восстанавливаются; несколько разных документов и доска открываются после перезапуска с сохранённым view-state.
 
+**Checkpoint — 18 октября 2026, реализован поверх R1A commit `f9e48e863e8465aa5d02038de8ff1cb6fa13221d`.**
+
+- Две независимые панели вправо/вниз с изменяемым разделителем, своими вкладками, закреплением, режимом чтения/редактирования, курсором/прокруткой и камерой доски. Основные editor/save/tab hotkeys адресуются активной панели. Это ровно две панели, не произвольное дерево; native Canvas surface принадлежит основной, Canvas второй использует DOM renderer.
+- Сессии, закладки, аварийные черновики и история хранятся отдельно для canonical vault root в машинно-локальной `%LOCALAPPDATA%/dev.brandon.knowledge/workspace-v1.sqlite3`. Это пользовательское состояние, не сбрасываемый поисковый кэш: для переноса нужна отдельная резервная копия. Исходные Markdown, JSON Canvas, вложения и task DB остаются в vault.
+- Черновики записываются SQLite-транзакциями `synchronous=FULL`, до 100 записей / 64 MiB на vault; content и base ограничены 8 MiB каждый. Подтверждение сохранения очищает только соответствующую версию, не более новый ввод. Восстановление показывает сохранённую и внешнюю версии рядом; удалённый источник можно восстановить в новый файл. Автоматического merge нет. История ограничена 20 версиями на документ и 128 MiB на vault.
+- Закладки документов, заголовков и поисков можно открыть, переименовать, переставить и удалить. Звезда документа стала переключателем с заполненным состоянием и доступным `aria-pressed`: повторное нажатие убирает только обычную закладку документа, не heading/block/search targets. Системное WebView-меню отключено на оболочке; рабочие ПКМ редактора/Canvas и нативные меню текстовых полей сохранены.
+- Настройки Daily/Templates применяют папку, формат даты и шаблон. Inline local note embeds ограничены 36 строками / 4,000 символами и не выполняют рекурсивные вставки. Растровые вложения открываются одним кликом из дерева и доски в zoom/Escape viewer, с нормализованным preview до 2560 px без увеличения и изменения оригинала. Canvas получил меню карточки/фона и Markdown overlays для небольших native boards до 200 nodes; большие доски остаются GPU-oriented.
+- Windows standalone Tauri/WebView2: **138 UI-сценариев** — 19 R1B, 6 карточки/картинки, 25 R1A и 88 прежних regression checks. R1B включает три принудительных остановки принадлежащего тесту процесса, конфликт внешней версии, side draft и удалённый источник. Проверены повторный клик звезды, сохранение удаления после reload, независимость search bookmark, отсутствие browser context menu и сохранение custom/native text menus. В старом local-search smoke устранено гоняющееся с прогревом индекса ожидание: count/path проверяются атомарно после появления фактического результата.
+- **27 frontend tests** (11 R1A, 7 R1B, 5 Canvas, 4 search), **72 Rust tests** (12 desktop, 5 Markdown, 55 vault), lint, typecheck, production build, fmt и strict clippy прошли. Существующий release-check дополнен R1B unit checks. Полный серверный release gate не запускался.
+- Пользователь вручную принял R1B и правки Canvas в Windows-приложении. Последняя звезда визуально перепроверена в standalone; synthetic screenshot `target/qa/r1b-final-bookmarks.png`. Предыдущая проверка 125/150% WebView UI zoom не является проверкой системного/mixed DPI. Native macOS, установка NSIS, 10k-note startup budget и настоящий OS clipboard end-to-end здесь не заявляются; R1A smoke использует clipboard adapter. Vite chunk >500 kB остаётся предупреждением, не ошибкой сборки.
+
+После упаковки дважды повторно прошли все 19 R1B UI-сценариев. Тестовый ввод теперь ждёт первого отрисованного восстановления позиции перед `Ctrl+End`, чтобы стартовый requestAnimationFrame не переносил искусственно ранний ввод перед заголовком. Диагностика ошибок ограничена synthetic fixture.
+
+Собраны `target/release/knowledge-desktop.exe` и новый `target/release/bundle/nsis/Brandon_0.1.0_x64-setup.exe` (6.41 MiB, не установлен). SHA-256 соответственно:
+
+```text
+E7BEA37D8D8553630DBABCFDE7DCC59043AE96A1CF3100B51C73F08CB894C86A
+01E993AF9BAF1BA764CA36BA9572483A6317666BAB55E81E6453BE4EE58D2147
+```
+
+Логи в игнорируемой `target/qa/`: `r1b-ui-final.log`, `r1b-final-*-smoke.log`, `r1b-contracts-final.log`, `r1b-r1a-unit-final.log`, `r1b-rust-final.log`, `r1b-lint-final.log`, `r1b-clippy-final.log`, `r1b-build-final.log`, `r1b-bundle-final.log`. Прежние промежуточные логи сохранены; synthetic fixtures и локальное состояние не включаются в Git.
+
 ### R2A. Общий incremental metadata pipeline
 
 Убрать полный `loadIndex` на одиночное изменение; дать общие ревизии tree/backlinks/outline/Bases/graph. Виртуализировать большие списки и уменьшить ожидание search inventory без ослабления read-time validation. Сохранить reconciliation и наблюдаемые состояния прогрева.

@@ -615,10 +615,10 @@ impl Renderer {
                 continue;
             }
             if !self.buffers.contains_key(*id) {
-                let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(14., 21.));
+                let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(16., 25.));
                 buffer.set_size(
-                    Some((node.width - 28.).max(1.)),
-                    Some((node.height - 28.).max(1.)),
+                    Some((node.width - 40.).max(1.)),
+                    Some((node.height - 40.).max(1.)),
                 );
                 buffer.set_text(
                     &node.text,
@@ -650,7 +650,7 @@ impl Renderer {
                     return None;
                 }
                 let buffer = self.buffers.get(*id)?;
-                let position = screen(node.x + 14., node.y + 14.);
+                let position = screen(node.x + 20., node.y + 20.);
                 Some(TextArea {
                     buffer,
                     left: position[0],
@@ -660,7 +660,7 @@ impl Renderer {
                         left: (vp.x * ratio).max(position[0]) as i32,
                         top: (vp.y * ratio).max(position[1]) as i32,
                         right: ((vp.x + vp.width) * ratio)
-                            .min(position[0] + (node.width - 28.) * scale)
+                            .min(position[0] + (node.width - 40.) * scale)
                             as i32,
                         bottom: ((vp.y + vp.height) * ratio)
                             .min(position[1] + (node.height - 28.) * scale)

@@ -36,5 +36,5 @@ export function canvasColors(node: Pick<CanvasNode, 'type' | 'color'>) {
     const parts = [value >> 16, value >> 8 & 255, value & 255].map((channel) => Math.round(channel * .18 + 30 * .82).toString(16).padStart(2, '0'))
     return { fill: `#${parts.join('')}`, border: node.color }
   }
-  return { fill: node.type === 'group' ? '#222128' : '#28282b', border: '#4a484f' }
+  return { fill: node.type === 'group' ? '#211e27' : node.type === 'file' ? '#292531' : '#2b2732', border: '#51465f' }
 }

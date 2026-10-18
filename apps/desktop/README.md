@@ -55,8 +55,55 @@ They do not modify the vault or require new native capabilities.
   numbers, spellcheck and previews. Hotkeys use physical keys across RU/EN,
   detect collisions, support unassign/reset, and preserve native editing keys.
 
-Undo remains scoped to the mounted document editor. Persistent history, durable
-crash drafts and session layouts belong to R1B, not this preferences layer.
+Undo remains scoped to the mounted document editor. R1B additionally provides
+two independent document panes, pinned tabs, vault-scoped session restoration,
+bookmarks, crash drafts and a bounded source-version history.
+
+## Workspace and recovery
+
+Use the pane buttons beside the document actions (or the command palette) to
+split right/down. Each pane has its own documents, tabs, view mode and position;
+the separator supports dragging and arrow keys. The primary Canvas retains its
+native renderer; a Canvas in the second pane uses the ordinary renderer because
+the current native surface has one owner. This release supports two panes, not
+an arbitrary nested layout tree.
+
+Pins protect a tab from closing until unpinned. The star sidebar stores document,
+heading and search bookmarks; bookmarks can be renamed, reordered and removed.
+The document-toolbar star toggles its plain document bookmark and shows a filled
+star while bookmarked; removing it leaves heading, block and search bookmarks
+intact. Browser context menus are suppressed on non-editable shell surfaces,
+while editor/Canvas custom menus and native text-field menus remain available.
+Physical hotkeys route editor operations, save, tab cycling and read/edit
+switching to the focused pane. Settings also configure Daily folder/date/template
+and the template folder. Reading view supports bounded local note embeds
+(up to 36 source lines / 4,000 characters, without recursive execution).
+
+Workspace state is machine-local and scoped by the canonical vault root. On
+Windows it is stored in `%LOCALAPPDATA%/dev.brandon.knowledge/workspace-v1.sqlite3`.
+This database contains bookmarks, session state, crash drafts and source history:
+it is **not** a disposable search cache. Back it up separately if those local
+records are needed; copying only the vault does not transfer them. Notes,
+boards, attachments and canonical task state remain in the vault.
+
+Draft writes use SQLite transactions with full synchronization; recovery never
+silently overwrites a changed source. The recovery center offers the retained
+buffer; conflicts show both versions, and a missing source can be saved as a
+separate copy. Drafts are limited to 8 MiB each, 100 records / 64 MiB per vault.
+Source history retains up to 20 versions per file within a 128 MiB per-vault
+budget. History records the source before edits, not every keystroke or every
+external version. A forced crash can still precede an unacknowledged journal
+write; this is not a claim of zero-loss storage under every hardware failure.
+
+## Canvas cards and images
+
+A single click opens raster attachments on the board or in the file tree.
+The image viewer supports zoom and Escape, with normalized previews up to
+2560 px (never upscaled), existing decoder/size limits, and no source-byte changes.
+Card/background context menus work with the mouse or keyboard. On native boards
+of at most 200 nodes, visible text cards use formatted Markdown overlays; larger
+boards keep the GPU-oriented representation. This is not a full rich-text Canvas
+format or a PDF/video viewer.
 
 ## Verify
 
@@ -66,6 +113,7 @@ pnpm --dir apps/desktop lint
 pnpm --dir apps/desktop test:canvas
 pnpm --dir apps/desktop test:search
 pnpm --dir apps/desktop test:r1a
+pnpm --dir apps/desktop test:r1b
 cargo fmt --all -- --check
 cargo test -p knowledge-vault -p knowledge-markdown -p knowledge-desktop
 cargo clippy -p knowledge-vault -p knowledge-desktop --all-targets -- -D warnings
@@ -89,7 +137,12 @@ node tests/desktop/canvas-attachments-smoke.mjs
 pnpm --dir apps/desktop test:render
 pnpm --dir apps/desktop test:smoke
 pnpm --dir apps/desktop test:r1a:ui
+pnpm --dir apps/desktop test:cards:ui
 ```
+
+`pnpm --dir apps/desktop test:r1b:ui` owns and restarts its own child process,
+including forced-crash checks in generated fixture vaults. Close a clean QA app
+first; do not run another desktop suite concurrently with this lifecycle test.
 
 Restart without the debug environment variable for normal use. Tests and GPU
 measurements are development checks, not a universal frame-rate guarantee.

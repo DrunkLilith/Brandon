@@ -65,29 +65,40 @@ export function useCanvasAttachments(viewport: RefObject<HTMLDivElement | null>,
   return { progress, error, dragOver, choose, cancel, referenceFile, dismissError: () => setError('') }
 }
 
-export function AttachmentImage({ path }: { path: string }) {
+export function AttachmentImage({ path, large = false }: { path: string; large?: boolean }) {
   const [source, setSource] = useState(''), [error, setError] = useState('')
   useEffect(() => {
     let active = true, url = ''
     setSource(''); setError('')
-    void invoke<ArrayBuffer>('attachment_thumbnail', { relativePath: path }).then((bytes) => {
+    void invoke<ArrayBuffer>('attachment_thumbnail', { relativePath: path, large }).then((bytes) => {
       url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
       if (active) setSource(url); else URL.revokeObjectURL(url)
     }).catch((reason: unknown) => { if (active) setError(String(reason)) })
     return () => { active = false; if (url) URL.revokeObjectURL(url) }
-  }, [path])
+  }, [path, large])
   return source ? <img className="canvas-image-preview" src={source} alt={path.split('/').at(-1)} draggable={false} /> : <span className="canvas-preview-placeholder" title={error}><FileIcon />{error ? 'Превью недоступно' : 'Загружаю изображение…'}</span>
 }
 
 export function AttachmentDetails({ path, onClose }: { path: string; onClose: () => void }) {
   const [info, setInfo] = useState<AttachmentInfo | null>(null), [error, setError] = useState('')
   useEffect(() => { let active = true; setInfo(null); setError(''); void invoke<AttachmentInfo>('attachment_info', { relativePath: path }).then((value) => { if (active) setInfo(value) }).catch((reason: unknown) => { if (active) setError(String(reason)) }); return () => { active = false } }, [path])
+  if (info?.kind === 'image') return <ImageViewer path={path} onClose={onClose} />
   return <aside className="canvas-attachment-details" onPointerDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key !== 'Escape') event.stopPropagation() }}>
     <header><strong>Вложение</strong><button onClick={onClose} aria-label="Закрыть вложение">×</button></header>
     <h3>{info?.name ?? path.split('/').at(-1)}</h3><p className="attachment-path">{path}</p>
-    {info?.kind === 'image' && <AttachmentImage path={path} />}
     {info && <p>{new Intl.NumberFormat('ru', { style: 'unit', unit: 'megabyte', maximumFractionDigits: 2 }).format(info.sizeBytes / 1024 / 1024)} · {{ image: 'Изображение', video: 'Видео', audio: 'Аудио', pdf: 'PDF', file: 'Файл' }[info.kind]}</p>}
     {error && <p role="alert">{error}</p>}
     {info && <><button className="secondary" onClick={() => { void invoke('reveal_entry', { relativePath: path }).catch((reason: unknown) => setError(String(reason))) }}>Показать в папке</button><small>Оригинал хранится в vault. Удаление карточки не удаляет файл. Проигрыватель видео и PDF-просмотр появятся следующим этапом.</small></>}
   </aside>
+}
+
+function ImageViewer({path,onClose}: {path:string;onClose:()=>void}) {
+  const [zoom,setZoom]=useState(1)
+  const ref=useRef<HTMLDivElement>(null)
+  useEffect(() => { const previous=document.activeElement as HTMLElement | null; ref.current?.querySelector<HTMLButtonElement>('button')?.focus(); return () => { if(previous?.isConnected) previous.focus() } },[])
+  return <div className="image-viewer-backdrop" onPointerDown={event=>{event.stopPropagation();if(event.target===event.currentTarget)onClose()}}><div ref={ref} className="image-viewer" role="dialog" aria-modal="true" aria-label="Просмотр изображения" onKeyDown={event=>{
+    event.stopPropagation()
+    if(event.key==='Escape'){event.preventDefault();onClose()}
+    if(event.key==='Tab'){const buttons=Array.from(ref.current?.querySelectorAll<HTMLButtonElement>('button')??[]);const index=buttons.indexOf(document.activeElement as HTMLButtonElement);event.preventDefault();buttons[(index+(event.shiftKey?-1:1)+buttons.length)%buttons.length]?.focus()}
+  }}><header><div><strong>{path.split('/').at(-1)}</strong><small>Локальное изображение · предпросмотр до 2560 px</small></div><nav><button aria-label="Уменьшить изображение" onClick={()=>setZoom(z=>Math.max(.5,z-.25))}>−</button><button onClick={()=>setZoom(1)}>{Math.round(zoom*100)}%</button><button aria-label="Увеличить изображение" onClick={()=>setZoom(z=>Math.min(3,z+.25))}>+</button><button aria-label="Закрыть вложение" onClick={onClose}>×</button></nav></header><div className={`image-viewer-stage ${zoom===1?'fit':''}`}><div style={{width:`${zoom*100}%`}}><AttachmentImage path={path} large /></div></div></div></div>
 }

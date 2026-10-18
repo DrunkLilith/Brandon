@@ -31,8 +31,9 @@ try {
   await waitFor("Boolean(document.querySelector('.tree-row'))")
   await click('button[aria-label="Поиск"]')
   await query('"привет мир" tag:работа')
-  assert.equal(await evaluate("document.querySelectorAll('.search-results button').length"), 1)
-  assert.equal(await evaluate("document.querySelector('.search-results button').dataset.path"), 'Docs/План.md')
+  // A completed query may still describe the index's initial warm-up snapshot.
+  // Wait for the watcher-driven result and validate count/path in one snapshot.
+  await waitFor("document.querySelector('.local-search .sidebar-content')?.getAttribute('aria-busy')==='false' && document.querySelectorAll('.search-results button').length===1 && document.querySelector('.search-results button')?.dataset.path==='Docs/План.md'")
   pass('Russian phrase and tag filter return the actual saved note')
 
   await query('needlejump path:Docs')
@@ -89,8 +90,9 @@ try {
   await command('create_task', { title: 'Проверить дедлайн', scheduled: '2026-10-21' })
   await query('', false)
   await evaluate("(()=>{ const select=document.querySelector('select[aria-label=\"Тип результатов\"]'); select.value='task'; select.dispatchEvent(new Event('change',{bubbles:true})); })()")
-  await waitFor("document.querySelector('.search-results button')?.dataset.path === 'Tasks/Проверить дедлайн.md'")
-  assert.equal(await evaluate("document.querySelectorAll('.search-results button').length"), 1)
+  // Check the snapshot atomically: a watcher refresh may clear the previous
+  // response between two separate CDP evaluations while the index catches up.
+  await waitFor("document.querySelector('.local-search .sidebar-content')?.getAttribute('aria-busy')==='false' && document.querySelector('.search-results button')?.dataset.path==='Tasks/Проверить дедлайн.md' && document.querySelectorAll('.search-results button').length===1")
   await click('.local-search-options button:nth-child(2)')
   await query('2026-10-21')
   await click('.search-results button')

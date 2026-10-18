@@ -9,12 +9,21 @@ sections below are historical, not the current implementation queue. Operational
 task state is canonical in `.brandon/tasks.sqlite3`; only derived task/search
 projections are rebuildable, while task descriptions remain Markdown.
 
-R1A is implemented in the working tree: shared commands, editor context menu,
+R1A is implemented: shared commands, editor context menu,
 live outline and heading/block navigation, clickable metadata targets, local
 previews, typed editor preferences and configurable physical-key hotkeys. See
 the [R1A checkpoint](brandon-master-plan.md#r1a-команды-и-навигация-заметки) for
 current verification and explicit platform/clipboard limits; older checkpoints
 below remain historical.
+
+R1B adds two independent panes, protected pinned tabs, vault-scoped session
+restoration, bookmark toggling, durable crash drafts and bounded source history
+with explicit external-conflict comparison. Daily/Templates settings and bounded
+local note embeds are also implemented. Canvas image opening, card context menus
+and small-board Markdown card styling are included. See the
+[R1B checkpoint](brandon-master-plan.md#r1b-рабочее-пространство-и-восстановление)
+for tested scope and remaining platform/performance limits; this is not a claim
+of full Obsidian or Miro parity.
 
 Brandon Desktop is a local-first, open-source knowledge workspace. The target is practical feature and file-format compatibility with Obsidian while keeping Brandon's own name, visual identity, implementation, and AGPL license.
 

@@ -15,10 +15,26 @@ export async function connect() {
     pending.delete(result.id); clearTimeout(entry.timer)
     if (result.error) entry.reject(new Error(result.error.message)); else entry.resolve(result.result)
   })
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const rawSend = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence, timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)) }, 30000)
     pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }))
   })
+  const send = async (method, params = {}) => {
+    if (method !== 'Page.reload') return rawSend(method, params)
+    // A reload acknowledgement is not a new document: otherwise a selector can
+    // match the outgoing tree and disappear before the following click.
+    const marker = crypto.randomUUID()
+    await rawSend('Runtime.evaluate', { expression: `window.__brandonQaReload=${JSON.stringify(marker)}` })
+    const response = await rawSend(method, params)
+    for (let attempt = 0; attempt < 200; attempt++) {
+      try {
+        const result = await rawSend('Runtime.evaluate', { expression: `document.readyState==='complete'&&window.__brandonQaReload!==${JSON.stringify(marker)}`, returnByValue: true })
+        if (result.result?.value === true) return response
+      } catch { /* execution context is being replaced */ }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Reload did not reach a fresh complete document')
+  }
   const evaluate = async expression => {
     const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)

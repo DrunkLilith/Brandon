@@ -26,6 +26,8 @@ type MarkdownEditorProps = {
 }
 
 export type MarkdownEditorHandle = {
+  position: () => { anchor: number; head: number; top: number; left: number } | undefined
+  restorePosition: (position: { anchor: number; head: number; top: number; left: number }) => void
   insertText: (value: string) => void
   insertSnippet: (value: string, cursorOffset?: number) => void
   insertBlock: (value: string, cursorOffset?: number) => void
@@ -644,6 +646,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   }
 
   useImperativeHandle(forwardedRef, () => ({
+    position() { const view = viewRef.current; if (!view) return; const {anchor,head} = view.state.selection.main; return {anchor,head,top:view.scrollDOM.scrollTop,left:view.scrollDOM.scrollLeft} },
+    restorePosition(position) { const view = viewRef.current; if (!view) return; view.dispatch({selection:{anchor:Math.min(position.anchor,view.state.doc.length),head:Math.min(position.head,view.state.doc.length)}}); view.scrollDOM.scrollTop=position.top; view.scrollDOM.scrollLeft=position.left },
     execute,
     currentLink() { const view = activeEditor(); return view && view === viewRef.current ? linkAtPosition(view.state.doc.toString(), view.state.selection.main.head) : null },
     insertInlineCode() {

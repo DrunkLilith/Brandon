@@ -14,8 +14,11 @@ import { CommandMenu } from './command-menu'
 import { MarkdownEditor, type EditorAction, type EditorContext, type MarkdownEditorHandle } from './editor'
 import { readSettings, writeSettings } from './settings'
 import { SettingsDialog } from './settings-dialog'
-import { anchorLine, resolveNoteTarget, type NoteLocation } from './note-navigation'
+import { anchorLine, resolveNoteTarget, sourceStructure, type NoteLocation } from './note-navigation'
 import { NoteHoverPreview } from './note-hover-preview'
+import { SecondaryPane, type SecondaryHandle } from './secondary-pane'
+import { emptyPane, parseSession, remapPane, useCrashDraft, workspaceWrite, flushWorkspaceWrites, validTab, isDocumentBookmark, type Bookmark, type CrashDraft, type PaneState, type TabView, type WorkspaceData } from './workspace-state'
+import { RecoveryCenter, VersionHistory, TextComparison } from './workspace-dialogs'
 import { FileTree } from './file-tree'
 import { GraphView } from './graph-view'
 import {
@@ -34,7 +37,7 @@ import type {
 } from './types'
 
 type Notice = { kind: 'error' | 'success' | 'warning'; message: string; details?: string[] }
-type SidebarMode = 'files' | 'search' | 'tags'
+type SidebarMode = 'files' | 'search' | 'tags' | 'bookmarks'
 type PaletteMode = 'commands' | 'notes' | null
 type WorkspaceView = 'note' | 'graph' | 'canvas' | 'base' | 'planner'
 type EntryDialog = { kind: 'note' | 'folder' | 'canvas' | 'base' | 'rename' | 'move' | 'recover'; entry?: VaultEntry; value: string; parent: string }
@@ -103,6 +106,22 @@ function parentPath(path: string | null) {
 }
 
 export function App() {
+  const [pinned,setPinned]=useState<string[]>([])
+  const [sideState,setSideState]=useState<PaneState>(emptyPane)
+  const [layout,setLayout]=useState<'none'|'vertical'|'horizontal'>('none')
+  const [splitRatio,setSplitRatio]=useState(.5)
+  const [bookmarks,setBookmarks]=useState<Bookmark[]>([])
+  const [crashDrafts,setCrashDrafts]=useState<CrashDraft[]>([])
+  const [recoveryOpen,setRecoveryOpen]=useState(false)
+  const [historyTarget,setHistoryTarget]=useState<{path:string;pane:'main'|'side'}|null>(null)
+  const [readyRoot,setReadyRoot]=useState<string|null>(null)
+  const [viewRevision,setViewRevision]=useState(0)
+  const viewsRef=useRef<Record<string,TabView>>({})
+  const loadedRoot=useRef<string|null>(null)
+  const secondary=useRef<SecondaryHandle>(null)
+  const primarySurface=useRef<HTMLElement>(null)
+  const focusedPane=useRef<'main'|'side'>('main')
+  const sessionFailure=useRef(false)
   const [settings, setSettings] = useState(readSettings)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
@@ -186,6 +205,21 @@ export function App() {
     setNotice(next)
     if (!next.details) window.setTimeout(() => setNotice((current) => current === next ? null : current), 3000)
   }, [])
+  const workspaceError=useCallback((message:string)=>showNotice({kind:'error',message,details:['Файлы не перезаписаны. Сохраните работу; журнал и сессия требуют проверки.']}),[showNotice])
+  const {acknowledge:acknowledgeDraft,transfer:transferDraft}=useCrashDraft(vault?.root,'main',note?.path,content,persistedContent,note?.fingerprint,readyRoot===vault?.root&&!recoveryOpen,workspaceError)
+  const captureMainView=useCallback(()=>{
+    const path=activeTabRef.current
+    if(path&&!path.startsWith('brandon://'))viewsRef.current[path]={...viewsRef.current[path],mode:viewMode,editor:editorRef.current?.position()??viewsRef.current[path]?.editor,previewTop:primarySurface.current?.querySelector('.preview-pane')?.scrollTop??viewsRef.current[path]?.previewTop}
+  },[viewMode])
+  const sessionRef=useRef<unknown>(null)
+  sessionRef.current={version:1,main:{tabs:openTabs,active:activeTab,pinned,views:viewsRef.current},side:sideState,split:layout,ratio:splitRatio,sidebarOpen,rightOpen,bookmarks}
+  useEffect(()=>{
+    if(!vault||readyRoot!==vault.root||sessionFailure.current)return
+    const root=vault.root
+    const timer=window.setTimeout(()=>void workspaceWrite('save_workspace',{root,session:sessionRef.current}).catch(workspaceError),120)
+    return()=>window.clearTimeout(timer)
+  },[vault?.root,readyRoot,openTabs,activeTab,pinned,sideState,layout,splitRatio,sidebarOpen,rightOpen,bookmarks,viewMode,viewRevision,workspaceError])
+  const persistSession=useCallback(async()=>{captureMainView();if(loadedRoot.current&&!sessionFailure.current)await workspaceWrite('save_workspace',{root:loadedRoot.current,session:sessionRef.current});await flushWorkspaceWrites()},[captureMainView])
 
   const runCommand = useCallback((id: string) => {
     try { void Promise.resolve(registryRef.current?.execute(id)).catch((error) => showNotice({ kind: 'error', message: errorMessage(error) })) }
@@ -233,7 +267,7 @@ export function App() {
     const current = noteRef.current
     if (!current) return true
     if (missingSourceRef.current && expectedFingerprint === undefined) { beginRecoveryCopy(); return false }
-    if (conflictRef.current && expectedFingerprint === undefined) return false
+    if (conflictRef.current && expectedFingerprint === undefined) { setConflict(conflictRef.current); return false }
     if (contentRef.current === persistedRef.current && expectedFingerprint === undefined) return true
     const contents = contentRef.current
     setSaving(true)
@@ -250,6 +284,7 @@ export function App() {
           return false
         }
         setVault(outcome.snapshot)
+        acknowledgeDraft(current.path,contents)
         // A completed save only acknowledges the submitted text, never later typing.
         if (noteRef.current?.path === current.path) {
           noteRef.current = outcome.document
@@ -276,7 +311,7 @@ export function App() {
       savePromise.current = null
       setSaving(false)
     }
-  }, [beginRecoveryCopy, loadIndex, markMissingSource, showNotice])
+  }, [beginRecoveryCopy, loadIndex, markMissingSource, showNotice,acknowledgeDraft])
 
   const flushDocument = useCallback(async () => {
     if (savePromise.current && !await savePromise.current) return false
@@ -288,24 +323,24 @@ export function App() {
   }, [beginRecoveryCopy, saveNote])
 
   useEffect(() => {
-    // A clean window needs no JS close listener. Besides avoiding needless IPC,
-    // this leaves ordinary close/reload on Tauri's native path.
-    if (!closeGuardActive) return
+    // Even a clean document can have unsaved workspace metadata. Flush both
+    // panes and the journal before the scoped native final-close handshake.
+    if (!vault) return
     let disposed = false, closing = false
     let unlisten: (() => void) | undefined
     const register = async () => {
       const stop = await appWindow.onCloseRequested(async (event) => {
-        // Always prevent the API helper's default destroy path. After a safe
-        // flush, remove this listener and use the ALREADY granted close command.
-        // No destroy permission or new window capability is needed.
+        // The final native command also handles orphan JS listener IDs left by
+        // renderer reloads; it cannot target another window or another vault.
         event.preventDefault()
         if (closing) return
         closing = true
         try {
-          if (!await flushDocument()) return
+          if (!await flushDocument() || secondary.current && !await secondary.current.flush()) return
+          await persistSession()
           await unlisten?.()
           unlisten = undefined
-          await appWindow.close()
+          await invoke('complete_workspace_close',{root:vault.root})
         } catch (error) {
           showNotice({ kind: 'error', message: errorMessage(error) })
           if (!disposed && !unlisten) void register().catch((failure) => showNotice({ kind: 'error', message: errorMessage(failure) }))
@@ -318,7 +353,7 @@ export function App() {
     const release = () => { disposed = true; void Promise.resolve(unlisten?.()).catch(() => {}) }
     window.addEventListener('beforeunload', release)
     return () => { window.removeEventListener('beforeunload', release); release() }
-  }, [closeGuardActive, flushDocument, showNotice])
+  }, [closeGuardActive, flushDocument, showNotice, vault?.root, persistSession])
 
   const recordVisit = useCallback((path: string, record = true) => {
     activeTabRef.current = path
@@ -343,7 +378,7 @@ export function App() {
   }, [])
 
   const applyDocument = useCallback((document: NoteDocument, view: WorkspaceView = 'note', record = true) => {
-    if (noteRef.current?.path !== document.path) setViewMode(settingsRef.current.defaultViewMode)
+    if (noteRef.current?.path !== document.path) setViewMode(viewsRef.current[document.path]?.mode ?? settingsRef.current.defaultViewMode)
     markMissingSource(null)
     setDiscardDraftOpen(false)
     attachTab(document.path)
@@ -378,6 +413,7 @@ export function App() {
   }, [markMissingSource])
 
   const activateTab = useCallback(async (path: string, record = true): Promise<boolean> => {
+    captureMainView()
     setSearchTarget(null)
     setPreviewFocus(null)
     setSearchAttachment(null)
@@ -407,20 +443,28 @@ export function App() {
       showNotice({ kind: 'error', message: errorMessage(error) })
       return false
     }
-  }, [applyDocument, attachTab, clearDocument, flushDocument, recordVisit, showNotice])
+  }, [applyDocument, attachTab, clearDocument, flushDocument, recordVisit, showNotice, captureMainView])
 
-  const loadNote = useCallback((path: string) => activateTab(path), [activateTab])
-  const loadResource = loadNote
+  const loadNote = useCallback((path: string) => {
+    if(crashDrafts.some(d=>d.path===path)){setRecoveryOpen(true);return Promise.resolve(false)}
+    return focusedPane.current==='side'&&secondary.current ? secondary.current.open(path) : activateTab(path)
+  }, [activateTab,crashDrafts])
+  const loadResource = useCallback((path:string)=>{
+    if(/\.(md|canvas|base)$/i.test(path))return loadNote(path)
+    if(vault){setSearchAttachment({path,root:vault.root});return Promise.resolve(true)}
+    return Promise.resolve(false)
+  },[loadNote,vault])
 
   const navigateNote = useCallback(async (path: string, location: NoteLocation = {}) => {
-    if (!await loadNote(path) || noteRef.current?.path !== path) return
+    focusedPane.current='main'
+    if (!await activateTab(path) || noteRef.current?.path !== path) return
     if (viewForPath(path) !== 'note') return
     const line = anchorLine(contentRef.current, location)
     if (line === null) { showNotice({ kind: 'warning', message: 'Заметка открыта, но указанный заголовок или блок не найден. Файл не изменён.' }); return }
     const nonce = crypto.randomUUID()
     setPreviewFocus({ path, line, nonce })
     setSearchTarget({ path, line, nodeId: null, nonce })
-  }, [loadNote, showNotice])
+  }, [activateTab, showNotice])
 
   const openNoteLink = useCallback((target: string, kind: 'wiki' | 'markdown' = 'wiki') => {
     const current = noteRef.current
@@ -460,13 +504,18 @@ export function App() {
     setHistory(next)
   }, [activateTab])
 
-  const remapWorkspacePaths = useCallback((oldPath: string, nextPath: string) => {
+  const remapWorkspacePaths = useCallback(async (oldPath: string, nextPath: string) => {
     const remap = (path: string) => path === oldPath || path.startsWith(`${oldPath}/`) ? `${nextPath}${path.slice(oldPath.length)}` : path
     setOpenTabs((tabs) => tabs.map(remap))
     const next = { ...historyRef.current, entries: historyRef.current.entries.map(remap) }
     historyRef.current = next
     setHistory(next)
     closedTabs.current = closedTabs.current.map(remap)
+    setPinned(paths=>paths.map(remap))
+    viewsRef.current=Object.fromEntries(Object.entries(viewsRef.current).map(([path,view])=>[remap(path),view]))
+    setSideState(pane=>remapPane(pane,oldPath,nextPath))
+    await secondary.current?.remap(oldPath,nextPath)
+    setBookmarks(items=>items.map(item=>({...item,path:remap(item.path)})))
   }, [])
 
   const pruneWorkspacePaths = useCallback((entries: VaultEntry[]) => {
@@ -479,6 +528,7 @@ export function App() {
     historyRef.current = next
     setHistory(next)
     closedTabs.current = closedTabs.current.filter(exists)
+    setPinned(items=>items.filter(exists))
   }, [])
 
   const refreshVault = useCallback(async (external = false) => {
@@ -523,6 +573,7 @@ export function App() {
   const discardMissingDraft = useCallback(() => {
     const current = noteRef.current
     if (!current || !missingSourceRef.current || savePromise.current) return
+    acknowledgeDraft(current.path,contentRef.current)
     setDiscardDraftOpen(false)
     conflictRef.current = null
     setConflict(null)
@@ -530,43 +581,54 @@ export function App() {
     setOpenTabs((tabs) => [...tabs.filter((path) => path !== current.path && path !== HOME_TAB), HOME_TAB])
     pruneWorkspacePaths(vault?.entries ?? [])
     recordVisit(HOME_TAB)
-  }, [clearDocument, pruneWorkspacePaths, recordVisit, vault])
+  }, [clearDocument, pruneWorkspacePaths, recordVisit, vault,acknowledgeDraft])
+
+  const restoreWorkspace=useCallback(async(snapshot:VaultSnapshot)=>{
+    loadedRoot.current=null;setReadyRoot(null);sessionFailure.current=false
+    focusedPane.current='main';setVault(snapshot);setOpenTabs([]);clearDocument();setIndex(null)
+    historyRef.current={entries:[],cursor:-1};setHistory(historyRef.current);closedTabs.current=[]
+    try {
+      const data=await invoke<WorkspaceData>('load_workspace',{root:snapshot.root})
+      if(data.session&&typeof data.session==='object'&&'version' in data.session&&data.session.version!==1)throw new Error('Сессия создана более новой версией приложения; исходные данные сессии сохранены без изменений')
+      const saved=parseSession(data.session)
+      const exists=(path:string)=>path.startsWith('brandon://')||snapshot.entries.some(entry=>entry.path===path)
+      viewsRef.current=saved.main.views;setPinned(saved.main.pinned.filter(exists));setBookmarks(saved.bookmarks);setLayout(saved.split);setSplitRatio(saved.ratio);setSidebarOpen(saved.sidebarOpen);setRightOpen(saved.rightOpen)
+      setSideState({...saved.side,tabs:saved.side.tabs.filter(path=>validTab(path)&&exists(path)),active:saved.side.active&&exists(saved.side.active)?saved.side.active:saved.side.tabs.find(exists)??null})
+      setCrashDrafts(data.drafts);setRecoveryOpen(data.drafts.length>0)
+      const tabs=saved.main.tabs.filter(exists),path=saved.main.active&&exists(saved.main.active)?saved.main.active:tabs[0]??snapshot.files[0]?.path
+      if(path){if(path.startsWith('brandon://')){setEmptyTab(path.startsWith(EMPTY_TAB_PREFIX)?path:null);setWorkspaceView(viewForPath(path));recordVisit(path)}else applyDocument(await invoke<NoteDocument>(viewForPath(path)==='note'?'read_note':'read_resource',{relativePath:path}),viewForPath(path));setOpenTabs(tabs.includes(path)?tabs:[...tabs,path])}
+      loadedRoot.current=snapshot.root;setReadyRoot(snapshot.root)
+    }catch(error){sessionFailure.current=true;workspaceError(`Не удалось восстановить workspace: ${errorMessage(error)}`);if(snapshot.files[0])applyDocument(await invoke<NoteDocument>('read_note',{relativePath:snapshot.files[0].path}))}
+    await loadIndex()
+  },[applyDocument,clearDocument,loadIndex,recordVisit,workspaceError])
 
   const openVault = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false, title: 'Открыть локальный vault' })
     if (!selected || Array.isArray(selected)) return
-    if (!await flushDocument()) return
+    if (!await flushDocument() || secondary.current && !await secondary.current.flush()) return
+    await persistSession()
     try {
       const snapshot = await invoke<VaultSnapshot>('open_vault', { path: selected })
-      setVault(snapshot)
-      setOpenTabs([])
-      historyRef.current = { entries: [], cursor: -1 }
-      setHistory(historyRef.current)
-      closedTabs.current = []
-      clearDocument()
       setSidebarQuery('')
       setSidebarMode('files')
-      if (snapshot.files[0]) applyDocument(await invoke<NoteDocument>('read_note', { relativePath: snapshot.files[0].path }))
-      await loadIndex()
+      await restoreWorkspace(snapshot)
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, clearDocument, flushDocument, loadIndex, showNotice])
+  }, [flushDocument, persistSession, restoreWorkspace, showNotice])
 
   useEffect(() => {
-    if (!dirty || !note || saving || conflict || missingSource) return
+    if (!dirty || !note || saving || conflict || missingSource || recoveryOpen) return
     const timeout = window.setTimeout(() => void saveNote(true), 850)
     return () => window.clearTimeout(timeout)
-  }, [conflict, content, dirty, missingSource, note, saveNote, saving])
+  }, [conflict, content, dirty, missingSource, note, saveNote, saving, recoveryOpen])
 
   useEffect(() => {
     void (async () => {
       try {
         const snapshot = await invoke<VaultSnapshot | null>('restore_vault')
         if (snapshot) {
-          setVault(snapshot)
-          if (snapshot.files[0]) applyDocument(await invoke<NoteDocument>('read_note', { relativePath: snapshot.files[0].path }))
-          await loadIndex()
+          await restoreWorkspace(snapshot)
         }
       } catch (error) {
         showNotice({ kind: 'error', message: errorMessage(error) })
@@ -574,7 +636,14 @@ export function App() {
         setLoading(false)
       }
     })()
-  }, [applyDocument, loadIndex, showNotice])
+  }, [restoreWorkspace, showNotice])
+
+  useEffect(()=>{
+    if(!note)return
+    const view=viewsRef.current[note.path]
+    const frame=window.requestAnimationFrame(()=>{if(view?.editor)editorRef.current?.restorePosition(view.editor);const preview=primarySurface.current?.querySelector('.preview-pane');if(preview)preview.scrollTop=view?.previewTop??0})
+    return()=>window.cancelAnimationFrame(frame)
+  },[note?.path,readyRoot,viewMode])
 
   useEffect(() => {
     if (!vault) return
@@ -648,6 +717,8 @@ export function App() {
             return false
           }
           const latest = contentRef.current
+          acknowledgeDraft(current.path,submitted)
+          transferDraft(current.path,copy.path)
           setVault(result.snapshot)
           setOpenTabs((tabs) => tabs.filter((path) => path !== current.path))
           conflictRef.current = null
@@ -670,7 +741,7 @@ export function App() {
       try { await pending } finally { savePromise.current = null; setSaving(false) }
       return
     }
-    if (!await flushDocument()) return
+    if (!await flushDocument() || secondary.current && !await secondary.current.flush()) return
     try {
       if (dialog.kind === 'note') {
         const result = await invoke<VaultMutation>('create_note', { title: dialog.value, folder: dialog.parent || null })
@@ -692,7 +763,7 @@ export function App() {
         const oldPath = dialog.entry.path
         const result = await invoke<VaultMutation>('rename_entry', { relativePath: oldPath, newName: dialog.value, updateLinks: true })
         setVault(result.snapshot)
-        remapWorkspacePaths(oldPath, result.path)
+        await remapWorkspacePaths(oldPath, result.path)
         reportLinkWarnings(result)
         if (noteRef.current?.path === oldPath || noteRef.current?.path.startsWith(`${oldPath}/`)) {
           const nextPath = `${result.path}${noteRef.current.path.slice(oldPath.length)}`
@@ -703,7 +774,7 @@ export function App() {
         const oldPath = dialog.entry.path
         const result = await invoke<VaultMutation>('move_entry', { relativePath: oldPath, destinationFolder: dialog.parent || null, updateLinks: true })
         setVault(result.snapshot)
-        remapWorkspacePaths(oldPath, result.path)
+        await remapWorkspacePaths(oldPath, result.path)
         reportLinkWarnings(result)
         if (noteRef.current?.path === oldPath || noteRef.current?.path.startsWith(`${oldPath}/`)) {
           const nextPath = `${result.path}${noteRef.current.path.slice(oldPath.length)}`
@@ -716,10 +787,11 @@ export function App() {
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, dialog, flushDocument, loadIndex, remapWorkspacePaths, reportLinkWarnings, showNotice, vault])
+  }, [applyDocument, dialog, flushDocument, loadIndex, remapWorkspacePaths, reportLinkWarnings, showNotice, vault,acknowledgeDraft,transferDraft])
 
   const trashEntry = useCallback(async (entry: VaultEntry) => {
     if (!window.confirm(`Переместить «${entry.name}» в локальную корзину vault?`)) return
+    if(!await flushDocument()||secondary.current&&!await secondary.current.flush())return
     try {
       const snapshot = await invoke<VaultSnapshot>('trash_entry', { relativePath: entry.path })
       setVault(snapshot)
@@ -729,9 +801,10 @@ export function App() {
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [clearDocument, loadIndex, pruneWorkspacePaths, showNotice])
+  }, [clearDocument, loadIndex, pruneWorkspacePaths, showNotice,flushDocument])
 
   const closeTab = useCallback(async (path: string) => {
+    if(pinned.includes(path)){showNotice({kind:'warning',message:'Сначала открепите вкладку'});return}
     const tabs = openTabsRef.current
     const position = tabs.indexOf(path)
     if (position < 0) return
@@ -742,7 +815,7 @@ export function App() {
     }
     setOpenTabs((current) => current.filter((item) => item !== path && (next.length > 0 || item !== HOME_TAB)))
     closedTabs.current = [...closedTabs.current, path].slice(-20)
-  }, [activateTab])
+  }, [activateTab,pinned,showNotice])
 
   const reopenTab = useCallback(async () => {
     const path = closedTabs.current.at(-1)
@@ -762,6 +835,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if(event.target instanceof Element&&event.target.closest('.workspace-dialog,.image-viewer,.secondary-pane .command-menu'))return
       if (settingsOpen || editorMenu) {
         if (registryRef.current?.forEvent(event) || closeGuardActive && (event.code === 'F5' || (event.ctrlKey || event.metaKey) && event.code === 'KeyR')) event.preventDefault()
         return // modal/menu owns Escape, focus and capture; dirty reload stays guarded
@@ -785,7 +859,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [beginRecoveryCopy, closeGuardActive, conflict, dialog, discardDraftOpen, editorMenu, palette, quickInsertOpen, runCommand, saveNote, settingsOpen, templatePicker])
 
-  const templateFiles = useMemo(() => vault?.files.filter((file) => /(^|\/)(templates?|шаблоны)(\/|$)/i.test(file.path)) ?? [], [vault])
+  const templateFiles = useMemo(() => vault?.files.filter((file) => settings.templatesFolder ? file.path.startsWith(`${settings.templatesFolder}/`) : /(^|\/)(templates?|шаблоны)(\/|$)/i.test(file.path)) ?? [], [vault,settings.templatesFolder])
 
   const insertTemplate = useCallback(async (path: string) => {
     if (!note || workspaceView !== 'note') return
@@ -823,38 +897,35 @@ export function App() {
     if (!await flushDocument()) return
     try {
       let snapshot = vault
-      let templateFolder = vault.entries.find((entry) => entry.kind === 'folder' && entry.path.toLocaleLowerCase('ru') === 'templates')?.path
-      if (!templateFolder) {
-        const folder = await invoke<VaultMutation>('create_folder', { name: 'Templates', parent: null })
-        snapshot = folder.snapshot
-        templateFolder = folder.path
-      }
+      let templateFolder = ''
+      const configured=settings.templatesFolder||'Templates'
+      if(/^[\/]|[\\:\0]/.test(configured)||configured.split('/').some(part=>!part||part==='.'||part==='..'))throw new Error('Некорректная папка шаблонов')
+      for(const part of configured.split('/')){const next=templateFolder?`${templateFolder}/${part}`:part;if(vault.entries.some(entry=>entry.kind==='folder'&&entry.path===next)){templateFolder=next;continue}const folder=await invoke<VaultMutation>('create_folder',{name:part,parent:templateFolder||null});snapshot=folder.snapshot;templateFolder=folder.path}
       const result = await invoke<VaultMutation>('create_note', { title: 'Шаблон заметки', folder: templateFolder })
       setVault(result.snapshot ?? snapshot)
       setTemplatePicker(false)
       applyDocument(await invoke<NoteDocument>('read_note', { relativePath: result.path }), 'note')
-      showNotice({ kind: 'success', message: 'Создан Templates/Шаблон заметки.md' })
+      showNotice({ kind: 'success', message: `Создан ${result.path}` })
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, flushDocument, showNotice, vault])
+  }, [applyDocument, flushDocument, showNotice, vault,settings.templatesFolder])
 
   const openDailyNote = useCallback(async () => {
     if (!vault) return
     if (!await flushDocument()) return
-    const title = localDateStamp()
-    const relativePath = `Daily/${title}.md`
+    const stamp=localDateStamp(),[year,month,day]=stamp.split('-')
+    const title = settings.dailyFormat==='DD-MM-YYYY'?`${day}-${month}-${year}`:settings.dailyFormat==='YYYY.MM.DD'?stamp.replaceAll('-','.'):stamp
+    const relativePath = `${settings.dailyFolder?`${settings.dailyFolder}/`:''}${title}.md`
     const existing = vault.files.find((file) => file.path.toLocaleLowerCase('ru') === relativePath.toLocaleLowerCase('ru'))
     if (existing) { await loadNote(existing.path); return }
     try {
-      let dailyFolder = vault.entries.find((entry) => entry.kind === 'folder' && entry.path.toLocaleLowerCase('ru') === 'daily')?.path
-      if (!dailyFolder) {
-        const folder = await invoke<VaultMutation>('create_folder', { name: 'Daily', parent: null })
-        dailyFolder = folder.path
-      }
+      let dailyFolder = ''
+      if(settings.dailyFolder && (/^[\/]|[\\:\0]/.test(settings.dailyFolder)||settings.dailyFolder.split('/').some(part=>!part||part==='.'||part==='..')))throw new Error('Некорректная папка ежедневных заметок')
+      for(const part of settings.dailyFolder.split('/').filter(Boolean)){const next=dailyFolder?`${dailyFolder}/${part}`:part;if(vault.entries.some(entry=>entry.kind==='folder'&&entry.path===next)){dailyFolder=next;continue}const folder=await invoke<VaultMutation>('create_folder',{name:part,parent:dailyFolder||null});dailyFolder=folder.path}
       const result = await invoke<VaultMutation>('create_note', { title, folder: dailyFolder })
       let document = await invoke<NoteDocument>('read_note', { relativePath: result.path })
-      const dailyTemplate = templateFiles.find((file) => /(^|\/)(daily|ежедневн(?:ая|ик))\.md$/i.test(file.path))
+      const dailyTemplate = settings.dailyTemplate?{path:settings.dailyTemplate}:templateFiles.find((file) => /(^|\/)(daily|ежедневн(?:ая|ик))\.md$/i.test(file.path))
       if (dailyTemplate) {
         const template = await invoke<NoteDocument>('read_note', { relativePath: dailyTemplate.path })
         const outcome = await invoke<SaveOutcome>('save_note', { relativePath: result.path, contents: expandTemplate(template.content, title), expectedFingerprint: document.fingerprint })
@@ -866,7 +937,7 @@ export function App() {
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, flushDocument, loadIndex, loadNote, showNotice, templateFiles, vault])
+  }, [applyDocument, flushDocument, loadIndex, loadNote, showNotice, templateFiles, vault,settings.dailyFolder,settings.dailyFormat,settings.dailyTemplate])
 
   const createTask = useCallback(async (title: string, scheduled: string | null) => {
     try {
@@ -925,17 +996,83 @@ export function App() {
   }, [])
 
   const folders = useMemo(() => vault?.entries.filter((entry) => entry.kind === 'folder') ?? [], [vault])
+  const splitWorkspace=useCallback(async(direction:'vertical'|'horizontal')=>{
+    captureMainView()
+    if(!await flushDocument())return
+    if(!sideState.tabs.length&&noteRef.current)setSideState({tabs:[noteRef.current.path],active:noteRef.current.path,pinned:[],views:{[noteRef.current.path]:viewsRef.current[noteRef.current.path]??{}}})
+    setLayout(direction)
+  },[captureMainView,flushDocument,sideState.tabs.length])
+  const addBookmark=useCallback((query=false,heading=false)=>{
+    const document=focusedPane.current==='side'?secondary.current?.document():noteRef.current
+    const path=query?'':document?.path
+    if(!path&&!query)return
+    const label=query?sidebarQuery.trim():noteTitle(path??null)
+    if(!label)return
+    const source=focusedPane.current==='side'?document?.content??'':contentRef.current
+    const position=(focusedPane.current==='side'?secondary.current?.editor():editorRef.current)?.position(),line=position?source.slice(0,position.head).split('\n').length:1
+    const anchor=heading?sourceStructure(source).headings.filter(h=>h.line<=line).at(-1):undefined
+    const item:Bookmark={id:crypto.randomUUID(),label:anchor?.text??label,path:path??'',heading:anchor?.slug,query:query?sidebarQuery:undefined}
+    setBookmarks(items=>items.some(b=>b.path===item.path&&b.query===item.query&&(b.heading??null)===(item.heading??null))?items:[...items,item]);setSidebarMode('bookmarks');setSidebarOpen(true)
+  },[sidebarQuery])
+  const toggleDocumentBookmark=useCallback((path:string|null)=>{
+    if(!path)return
+    const item:Bookmark={id:crypto.randomUUID(),label:noteTitle(path),path}
+    setBookmarks(items=>items.some(bookmark=>isDocumentBookmark(bookmark,path))?items.filter(bookmark=>!isDocumentBookmark(bookmark,path)):[...items,item])
+    setSidebarMode('bookmarks');setSidebarOpen(true)
+  },[])
+  const documentBookmarked=Boolean(note&&bookmarks.some(bookmark=>isDocumentBookmark(bookmark,note.path)))
+  const changeDocumentMode=useCallback((mode:ViewMode)=>{if(focusedPane.current==='side'&&secondary.current)secondary.current.changeMode(mode);else setViewMode(mode)},[])
+  const openHistory=useCallback(()=>{const pane=focusedPane.current,document=pane==='side'?secondary.current?.document():noteRef.current;if(document)setHistoryTarget({path:document.path,pane})},[])
+  const openCursorLink=useCallback(()=>{
+    const other=focusedPane.current==='side'?secondary.current:null
+    const link=(other?.editor()??editorRef.current)?.currentLink()
+    if(!link){showNotice({kind:'warning',message:'Под курсором нет внутренней ссылки.'});return}
+    if(!other){openNoteLink(link.target,link.kind);return}
+    const document=other.document();if(!document)return
+    const resolved=resolveNoteTarget(link.target,document.path,index?.documents??[],link.kind)
+    if(resolved.status==='resolved')void other.open(resolved.path,resolved)
+    else showNotice({kind:'warning',message:'Ссылка не найдена или неоднозначна. Файл не создан.'})
+  },[index,openNoteLink,showNotice])
+  const restoreCrashDraft=useCallback(async(draft:CrashDraft)=>{
+    if(!await flushDocument())return
+    if(draft.pane==='side'){
+      if(layout==='none')setLayout('vertical')
+      window.setTimeout(()=>{void secondary.current?.recover(draft).then(()=>{setCrashDrafts(items=>items.filter(item=>item.version!==draft.version));setRecoveryOpen(false)})},50)
+      return
+    }
+    let disk:NoteDocument
+    try{disk=await invoke<NoteDocument>(viewForPath(draft.path)==='note'?'read_note':'read_resource',{relativePath:draft.path})}catch{disk={path:draft.path,content:draft.baseContent,fingerprint:draft.fingerprint,modifiedUnixMs:0}}
+    applyDocument(disk,viewForPath(draft.path));contentRef.current=draft.content;setContent(draft.content);setViewMode('edit')
+    if(disk.content===draft.content&&vault)void workspaceWrite('remove_draft',{root:vault.root,path:draft.path,pane:draft.pane,version:draft.version}).catch(workspaceError)
+    if(disk.modifiedUnixMs===0)markMissingSource(draft.path)
+    else if(disk.fingerprint!==draft.fingerprint){conflictRef.current=disk;setConflict(disk)}
+    setCrashDrafts(items=>items.filter(item=>item.version!==draft.version));setRecoveryOpen(false)
+  },[applyDocument,flushDocument,layout,markMissingSource,vault,workspaceError])
+  const discardCrashDraft=useCallback(async(draft:CrashDraft)=>{
+    if(!vault)return
+    try{await workspaceWrite('remove_draft',{root:vault.root,path:draft.path,pane:draft.pane,version:draft.version});setCrashDrafts(items=>items.filter(item=>item.version!==draft.version));if(crashDrafts.length===1)setRecoveryOpen(false)}catch(error){workspaceError(String(error))}
+  },[crashDrafts.length,vault,workspaceError])
   const commands = useMemo<Command[]>(() => {
     const hasVault = Boolean(vault), hasNote = Boolean(note && workspaceView === 'note'), editable = hasNote && viewMode !== 'preview'
     return [
       { id: 'palette', label: 'Открыть палитру команд', defaultShortcut: 'Mod+KeyP', run: () => setPalette('commands') },
       { id: 'settings', label: 'Открыть настройки', detail: 'Редактор и горячие клавиши', defaultShortcut: 'Mod+Shift+Comma', run: () => setSettingsOpen(true) },
-      { id: 'save', label: 'Сохранить документ', defaultShortcut: 'Mod+KeyS', enabled: Boolean(note && !['graph', 'planner'].includes(workspaceView)), run: () => saveNote() },
-      { id: 'new-tab', label: 'Новая вкладка', defaultShortcut: 'Mod+KeyT', enabled: hasVault, run: newTab },
-      { id: 'close-tab', label: 'Закрыть текущую вкладку', defaultShortcut: 'Mod+KeyW', enabled: hasVault, run: () => closeTab(activeTabRef.current) },
+      { id: 'save', label: 'Сохранить документ', defaultShortcut: 'Mod+KeyS', enabled: Boolean(note && !['graph', 'planner'].includes(workspaceView)) || layout!=='none', run: () => focusedPane.current==='side'&&secondary.current?secondary.current.save():saveNote() },
+      {id:'split-vertical',label:'Разделить рабочее пространство вправо',enabled:hasVault,run:()=>splitWorkspace('vertical')},
+      {id:'split-horizontal',label:'Разделить рабочее пространство вниз',enabled:hasVault,run:()=>splitWorkspace('horizontal')},
+      {id:'close-pane',label:'Закрыть вторую панель',enabled:layout!=='none',run:async()=>{if(await secondary.current?.flush()){setLayout('none');focusedPane.current='main'}}},
+      {id:'pin-tab',label:'Закрепить / открепить вкладку',enabled:hasVault,run:()=>{if(focusedPane.current==='side'&&secondary.current)secondary.current.pinActive();else setPinned(items=>items.includes(activeTab)?items.filter(path=>path!==activeTab):[...items,activeTab])}},
+      {id:'bookmark',label:'Добавить текущий документ в закладки',enabled:Boolean(note),run:()=>addBookmark()},
+      {id:'bookmark-heading',label:'Добавить текущий заголовок в закладки',enabled:Boolean(note&&workspaceView==='note'),run:()=>addBookmark(false,true)},
+      {id:'bookmark-search',label:'Добавить поиск в закладки',enabled:Boolean(sidebarQuery.trim()),run:()=>addBookmark(true)},
+      {id:'show-bookmarks',label:'Показать закладки',enabled:hasVault,run:()=>{setSidebarMode('bookmarks');setSidebarOpen(true)}},
+      {id:'recovery-center',label:'Восстановление аварийных черновиков',enabled:crashDrafts.length>0,run:()=>setRecoveryOpen(true)},
+      {id:'version-history',label:'История документа',enabled:Boolean(note)||layout!=='none',run:openHistory},
+      { id: 'new-tab', label: 'Новая вкладка', defaultShortcut: 'Mod+KeyT', enabled: hasVault, run: ()=>focusedPane.current==='side'&&secondary.current?secondary.current.newTab():newTab() },
+      { id: 'close-tab', label: 'Закрыть текущую вкладку', defaultShortcut: 'Mod+KeyW', enabled: hasVault, run: () => focusedPane.current==='side'&&secondary.current?secondary.current.closeActive():closeTab(activeTabRef.current) },
       { id: 'reopen-tab', label: 'Вернуть закрытую вкладку', defaultShortcut: 'Mod+Shift+KeyT', enabled: hasVault, run: reopenTab },
-      { id: 'next-tab', label: 'Следующая вкладка', defaultShortcut: 'Mod+Tab', enabled: hasVault, run: () => cycleTab(1) },
-      { id: 'previous-tab', label: 'Предыдущая вкладка', defaultShortcut: 'Mod+Shift+Tab', enabled: hasVault, run: () => cycleTab(-1) },
+      { id: 'next-tab', label: 'Следующая вкладка', defaultShortcut: 'Mod+Tab', enabled: hasVault, run: () => focusedPane.current==='side'&&secondary.current?secondary.current.cycle(1):cycleTab(1) },
+      { id: 'previous-tab', label: 'Предыдущая вкладка', defaultShortcut: 'Mod+Shift+Tab', enabled: hasVault, run: () => focusedPane.current==='side'&&secondary.current?secondary.current.cycle(-1):cycleTab(-1) },
       { id: 'navigate-back', label: 'Вернуться назад', defaultShortcut: 'Alt+ArrowLeft', enabled: history.cursor > 0, run: () => navigateHistory(-1) },
       { id: 'navigate-forward', label: 'Перейти вперёд', defaultShortcut: 'Alt+ArrowRight', enabled: history.cursor < history.entries.length - 1, run: () => navigateHistory(1) },
       { id: 'new-note', label: 'Новая заметка', detail: selectedFolder || 'Корень vault', defaultShortcut: 'Mod+KeyN', enabled: hasVault, run: () => setDialog({ kind: 'note', value: '', parent: selectedFolder }) },
@@ -950,10 +1087,10 @@ export function App() {
       { id: 'open-note', label: 'Быстрый переход к заметке', defaultShortcut: 'Mod+KeyO', enabled: hasVault, run: () => setPalette('notes') },
       { id: 'search', label: 'Поиск по содержимому', defaultShortcut: 'Mod+KeyK', enabled: hasVault, run: () => { setSidebarMode('search'); setSidebarOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0) } },
       { id: 'toggle-right', label: 'Показать или скрыть контекст', defaultShortcut: 'Mod+Comma', enabled: hasNote, run: () => setRightOpen((value) => !value) },
-      { id: 'mode-edit', label: 'Режим редактора', enabled: hasNote, run: () => setViewMode('edit') },
-      { id: 'mode-split', label: 'Разделённый режим', enabled: hasNote, run: () => setViewMode('split') },
-      { id: 'mode-preview', label: 'Режим чтения', enabled: hasNote, run: () => setViewMode('preview') },
-      { id: 'mode-read', label: 'Переключить редактор и чтение', defaultShortcut: 'Mod+KeyE', enabled: hasNote, run: () => setViewMode((mode) => mode === 'preview' ? 'edit' : 'preview') },
+      { id: 'mode-edit', label: 'Режим редактора', enabled: hasNote||layout!=='none', run: () => changeDocumentMode('edit') },
+      { id: 'mode-split', label: 'Разделённый режим', enabled: hasNote||layout!=='none', run: () => changeDocumentMode('split') },
+      { id: 'mode-preview', label: 'Режим чтения', enabled: hasNote||layout!=='none', run: () => changeDocumentMode('preview') },
+      { id: 'mode-read', label: 'Переключить редактор и чтение', defaultShortcut: 'Mod+KeyE', enabled: hasNote||layout!=='none', run: () => changeDocumentMode((focusedPane.current==='side'?secondary.current?.mode():viewMode)==='preview'?'edit':'preview') },
       { id: 'mode-visual', label: 'Визуальный редактор', enabled: hasNote, run: () => { setVisualEditing(true); setViewMode('edit') } },
       { id: 'mode-source', label: 'Исходный Markdown', enabled: hasNote, run: () => { setVisualEditing(false); setViewMode('edit') } },
       { id: 'zoom-in', label: 'Увеличить интерфейс', defaultShortcut: 'Mod+Equal', run: () => changeUiZoom(UI_ZOOM_STEP) },
@@ -965,10 +1102,10 @@ export function App() {
         ['copy', 'Копировать'], ['cut', 'Вырезать'], ['paste', 'Вставить'], ['select-all', 'Выделить всё'],
         ['bold', 'Жирный', 'Mod+KeyB'], ['italic', 'Курсив', 'Mod+KeyI'], ['strike', 'Зачёркнутый', 'Mod+Shift+KeyS'],
         ['inline-code', 'Встроенный код', 'Mod+Backquote'], ['insert-link', 'Вставить внутреннюю ссылку'],
-      ] as const).map(([action, label, shortcut]) => ({ id: `editor-${action}`, label, defaultShortcut: shortcut, enabled: editable, run: () => editorRef.current?.execute(action as EditorAction) })),
-      { id: 'editor-open-link', label: 'Открыть ссылку под курсором', defaultShortcut: 'Mod+Enter', enabled: editable, run: () => { const link = editorRef.current?.currentLink(); if (link) openNoteLink(link.target, link.kind); else showNotice({ kind: 'warning', message: 'Под курсором нет внутренней ссылки.' }) } },
+      ] as const).map(([action, label, shortcut]) => ({ id: `editor-${action}`, label, defaultShortcut: shortcut, enabled: editable||layout!=='none', run: () => (focusedPane.current==='side'?secondary.current?.editor():editorRef.current)?.execute(action as EditorAction) })),
+      { id: 'editor-open-link', label: 'Открыть ссылку под курсором', defaultShortcut: 'Mod+Enter', enabled: editable||layout!=='none', run: openCursorLink },
     ]
-  }, [vault, note, workspaceView, viewMode, saveNote, newTab, closeTab, reopenTab, cycleTab, history, navigateHistory, selectedFolder, openDailyNote, openPlanner, openGraph, setVisualEditing, changeUiZoom, openVault, openNoteLink, showNotice])
+  }, [vault, note, workspaceView, viewMode, saveNote, newTab, closeTab, reopenTab, cycleTab, history, navigateHistory, selectedFolder, openDailyNote, openPlanner, openGraph, setVisualEditing, changeUiZoom, openVault, openNoteLink, showNotice,layout,splitWorkspace,pinned,activeTab,addBookmark,sidebarQuery,crashDrafts.length,changeDocumentMode,openCursorLink,openHistory])
   const registry = useMemo(() => createCommandRegistry(commands, settings.hotkeys), [commands, settings.hotkeys])
   registryRef.current = registry
   const commandActions = useMemo<PaletteAction[]>(() => commands.filter((command) => command.enabled !== false).map((command) => ({ id: command.id, label: command.label, detail: command.detail, shortcut: registry.shortcut(command.id), run: () => runCommand(command.id) })), [commands, registry, runCommand])
@@ -983,11 +1120,12 @@ export function App() {
         <button className={sidebarMode === 'files' ? 'active' : ''} aria-label="Файлы" onClick={() => { setSidebarMode('files'); setSidebarOpen(true) }}><FolderIcon /></button>
         <button className={sidebarMode === 'search' ? 'active' : ''} aria-label="Поиск" onClick={() => { setSidebarMode('search'); setSidebarOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0) }}><SearchIcon /></button>
         <button className={`top-hash ${sidebarMode === 'tags' ? 'active' : ''}`} aria-label="Теги" onClick={() => { setSidebarMode('tags'); setSidebarOpen(true) }}>#</button>
+        <button className={`top-hash ${sidebarMode === 'bookmarks' ? 'active' : ''}`} aria-label="Закладки" onClick={()=>runCommand('show-bookmarks')}>☆</button>
       </nav>
       <div className="titlebar-tabs" role="tablist" aria-label="Открытые вкладки">{vault && openTabs.length === 0 && <div className="title-tab title-tab-empty active" role="tab" aria-selected="true"><span>Новая вкладка</span></div>}{openTabs.map((path) => {
         const view = viewForPath(path)
         const icon = path.startsWith(EMPTY_TAB_PREFIX) ? <PlusIcon /> : view === 'graph' ? <GraphIcon /> : view === 'planner' ? <CalendarIcon /> : view === 'canvas' ? <CanvasIcon /> : view === 'base' ? <DatabaseIcon /> : <FileIcon />
-        return <div key={path} className={`title-tab ${path === activeTab ? 'active' : ''}`} role="tab" aria-selected={path === activeTab} tabIndex={path === activeTab ? 0 : -1} title={noteTitle(path)} onClick={() => { void activateTab(path) }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void activateTab(path) } }} onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); void closeTab(path) } }}>{icon}<span>{noteTitle(path)}</span>{path === activeTab && dirty ? <i /> : <span className="tab-clean" />}<button className="tab-close" aria-label={`Закрыть вкладку «${noteTitle(path)}»`} onClick={(event) => { event.stopPropagation(); void closeTab(path) }}><CloseIcon /></button></div>
+        return <div key={path} className={`title-tab ${path === activeTab ? 'active' : ''} ${pinned.includes(path)?'pinned':''}`} role="tab" aria-selected={path === activeTab} tabIndex={path === activeTab ? 0 : -1} title={noteTitle(path)} onClick={() => { focusedPane.current='main';void activateTab(path) }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); focusedPane.current='main';void activateTab(path) } }} onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); void closeTab(path) } }}>{icon}<span>{pinned.includes(path)&&'◆ '}{noteTitle(path)}</span>{path === activeTab && dirty ? <i /> : <span className="tab-clean" />}<button className="tab-close" disabled={pinned.includes(path)} aria-label={`Закрыть вкладку «${noteTitle(path)}»`} onClick={(event) => { event.stopPropagation(); void closeTab(path) }}><CloseIcon /></button></div>
       })}{vault && <button className="title-new-tab" aria-label="Новая вкладка" title={`Новая вкладка (${registry.shortcut('new-tab')})`} onClick={() => runCommand('new-tab')}><PlusIcon /></button>}</div>
       <div className="window-controls"><button aria-label="Свернуть" onClick={() => void appWindow.minimize()}><MinimizeIcon /></button><button aria-label="Развернуть" onClick={() => void appWindow.toggleMaximize()}><MaximizeIcon /></button><button aria-label="Закрыть" className="close-window" onClick={() => void appWindow.close()}><CloseIcon /></button></div>
     </header>
@@ -1013,6 +1151,7 @@ export function App() {
           {sidebarMode !== 'search' && <>
           <div className="sidebar-content">{sidebarMode === 'files' && <FileTree entries={vault.entries} activePath={[GRAPH_TAB, PLANNER_TAB].includes(activeTab ?? '') ? null : activeTab} query="" onOpen={(path) => void loadNote(path)} onOpenResource={(path) => void loadResource(path)} onSelectFolder={setSelectedFolder} onContextMenu={(entry, x, y) => setContextMenu({ entry, x, y })} />}
             {sidebarMode === 'tags' && <TagBrowser index={index} query={sidebarQuery} onChoose={(tag) => { setSidebarMode('search'); setSidebarQuery(`tag:${tag}`) }} />}
+            {sidebarMode === 'bookmarks' && <div className="bookmarks-panel"><header><strong>Закладки</strong><button onClick={()=>addBookmark()} disabled={!note}>+ Документ</button><button disabled={!sidebarQuery.trim()} onClick={()=>addBookmark(true)}>+ Поиск</button></header>{bookmarks.map((item,index)=><div className="bookmark-row" key={item.id}><button title={item.path||item.query} onClick={()=>{if(item.query){setSidebarMode('search');setSidebarQuery(item.query)}else if(focusedPane.current==='side'&&secondary.current)void secondary.current.open(item.path,item);else void (item.heading||item.block?navigateNote(item.path,item):activateTab(item.path))}}><span>{item.query?'⌕':'◇'}</span><div><strong>{item.label}</strong><small>{item.path||item.query}</small></div></button><div><button aria-label={`Переименовать закладку: ${item.label}`} onClick={()=>{const label=window.prompt('Название закладки',item.label);if(label?.trim())setBookmarks(items=>items.map(b=>b.id===item.id?{...b,label:label.trim().slice(0,300)}:b))}}>✎</button><button aria-label={`Выше: ${item.label}`} disabled={index===0} onClick={()=>setBookmarks(items=>{const next=[...items];[next[index-1],next[index]]=[next[index],next[index-1]];return next})}>↑</button><button aria-label={`Убрать закладку: ${item.label}`} onClick={()=>setBookmarks(items=>items.filter(b=>b.id!==item.id))}>×</button></div></div>)}{!bookmarks.length&&<p>Сохраняйте документы и поисковые запросы. Закладки принадлежат этому vault на этом устройстве.</p>}</div>}
           </div>
           </>}
           <button className="sidebar-vault-footer" onClick={() => void openVault()}><span>{vault.name}</span><MoreIcon /></button>
@@ -1021,9 +1160,11 @@ export function App() {
       </aside>
 
       <div className={`main-area ${rightOpen && note && workspaceView === 'note' ? 'right-open' : ''}`}>
-        <section className={`content-shell${hasRecovery ? ' has-recovery' : ''}`}>
+        <div className={`workspace-panes layout-${layout}`} style={layout==='vertical'?{gridTemplateColumns:`minmax(0,${splitRatio}fr) 7px minmax(0,${1-splitRatio}fr)`}:layout==='horizontal'?{gridTemplateRows:`minmax(0,${splitRatio}fr) 7px minmax(0,${1-splitRatio}fr)`}:undefined}>
+        <section ref={primarySurface} data-pane="main" className={`content-shell${hasRecovery ? ' has-recovery' : ''}`} onPointerDownCapture={()=>{focusedPane.current='main';captureMainView()}} onFocusCapture={()=>{focusedPane.current='main'}} onKeyUpCapture={()=>{captureMainView();setViewRevision(v=>v+1)}} onScrollCapture={()=>{captureMainView();setViewRevision(v=>v+1)}}>
           <div className="commandbar"><div className="toolbar-start"><button className="history-button" disabled={history.cursor <= 0} aria-label="Назад" title="Назад (Alt ←)" onClick={() => { void navigateHistory(-1) }}>‹</button><button className="history-button" disabled={history.cursor >= history.entries.length - 1} aria-label="Вперёд" title="Вперёд (Alt →)" onClick={() => { void navigateHistory(1) }}>›</button>{vault && <div className="breadcrumbs"><strong>{noteTitle(activeTab)}</strong></div>}</div>
             <div className="commandbar-actions">
+              {vault&&<div className="workspace-tools"><button title="Разделить вправо" aria-label="Разделить рабочее пространство вправо" onClick={()=>runCommand('split-vertical')}>◫</button><button title="Разделить вниз" aria-label="Разделить рабочее пространство вниз" onClick={()=>runCommand('split-horizontal')}>⬒</button><button title="Закрепить вкладку" aria-label="Закрепить вкладку" aria-pressed={pinned.includes(activeTab)} onClick={()=>runCommand('pin-tab')}>⌖</button><button title={documentBookmarked?"Убрать из закладок":"Добавить в закладки"} aria-label={documentBookmarked?"Убрать из закладок":"Добавить в закладки"} aria-pressed={documentBookmarked} disabled={!note} onClick={()=>toggleDocumentBookmark(note?.path??null)}>{documentBookmarked?'★':'☆'}</button>{crashDrafts.length>0&&<button aria-label="Восстановление черновиков" onClick={()=>setRecoveryOpen(true)}>↺ {crashDrafts.length}</button>}<button title="История документа" aria-label="История документа" disabled={!note} onClick={openHistory}>◷</button></div>}
               {note && workspaceView === 'note' && <div className="view-switcher"><ModeButton active={viewMode === 'edit'} label="Редактор" onClick={() => runCommand('mode-edit')}><EditIcon /></ModeButton><ModeButton active={viewMode === 'split'} label="Разделить" onClick={() => runCommand('mode-split')}><ColumnsIcon /></ModeButton><ModeButton active={viewMode === 'preview'} label="Чтение" onClick={() => runCommand('mode-preview')}><PreviewIcon /></ModeButton></div>}
               <div className="ui-zoom-control" aria-label="Масштаб интерфейса"><button aria-label="Уменьшить масштаб" disabled={uiZoom <= UI_ZOOM_MIN} onClick={() => changeUiZoom(-UI_ZOOM_STEP)}>−</button><button className="ui-zoom-value" title="Сбросить масштаб" onClick={() => changeUiZoom('reset')}>{Math.round(uiZoom * 100)}%</button><button aria-label="Увеличить масштаб" disabled={uiZoom >= UI_ZOOM_MAX} onClick={() => changeUiZoom(UI_ZOOM_STEP)}>+</button></div>
               {note && !['graph', 'planner'].includes(workspaceView) && <button className="save-button" disabled={(!dirty && !missingSource) || saving} onClick={() => runCommand('save')}><SaveIcon /><span>{saving ? 'Сохраняю' : missingSource ? 'Сохранить копию' : dirty ? 'Сохранить' : 'Сохранено'}</span></button>}
@@ -1037,17 +1178,19 @@ export function App() {
             <button className="source-recovery-check" disabled={saving} onClick={() => void checkRecoverySource()}>Проверить источник</button>
             <button className="source-recovery-discard" disabled={saving} onClick={() => setDiscardDraftOpen(true)}>Отбросить черновик…</button>
           </div>}
-          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
+          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} initialCamera={viewsRef.current[note.path]?.camera} onCameraChange={camera=>{viewsRef.current[note.path]={...viewsRef.current[note.path],camera};setViewRevision(v=>v+1)}} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
             <div className="writing-toolbar">
               <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-visual')}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-source')}>Markdown</button></div></div>
               <button className="quick-insert-button" onClick={() => runCommand('quick-insert')}><PlusIcon /><span>Быстрая вставка</span><kbd>{registry.shortcut('quick-insert')}</kbd></button>
             </div>
             <div className={`editor-grid mode-${viewMode}`}>
               {viewMode !== 'preview' && <div className="editor-pane"><div className="pane-label">{visualEditing ? 'ВИЗУАЛЬНО' : 'MARKDOWN'}</div><MarkdownEditor key={note.path} ref={editorRef} value={content} notePaths={vault.files.map((file) => file.path)} visual={visualEditing} settings={settings} onContext={openEditorMenu} onOpenLink={openNoteLink} onChange={setContent} /></div>}
-              {viewMode !== 'edit' && <div className="preview-pane"><div className="pane-label">ЧТЕНИЕ</div><MarkdownPreview source={content} index={index} onOpen={openNoteLink} onChange={setContent} focusLine={previewFocus?.path === note.path ? previewFocus.line : undefined} /></div>}
+              {viewMode !== 'edit' && <div className="preview-pane"><div className="pane-label">ЧТЕНИЕ</div><MarkdownPreview key={`${vault.root}:${note.path}`} resourcePath={note.path} source={content} index={index} onOpen={openNoteLink} onChange={setContent} focusLine={previewFocus?.path === note.path ? previewFocus.line : undefined} /></div>}
             </div>
           </article>}
         </section>
+        {vault&&layout!=='none'&&readyRoot===vault.root&&<><div className="pane-separator" role="separator" aria-label="Размер панелей" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(splitRatio*100)} aria-orientation={layout==='vertical'?'vertical':'horizontal'} tabIndex={0} onKeyDown={event=>{if(['ArrowLeft','ArrowUp','ArrowRight','ArrowDown'].includes(event.key)){event.preventDefault();setSplitRatio(r=>Math.min(.75,Math.max(.25,r+(['ArrowLeft','ArrowUp'].includes(event.key)?-.05:.05))))}}} onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId)}} onPointerMove={event=>{if(!event.currentTarget.hasPointerCapture(event.pointerId))return;const bounds=event.currentTarget.parentElement!.getBoundingClientRect();setSplitRatio(Math.min(.75,Math.max(.25,layout==='vertical'?(event.clientX-bounds.left)/bounds.width:(event.clientY-bounds.top)/bounds.height)))}} onPointerUp={event=>event.currentTarget.releasePointerCapture(event.pointerId)}/><SecondaryPane key={vault.root} ref={secondary} root={vault.root} state={sideState} onState={setSideState} index={index} settings={settings} onClose={()=>{setLayout('none');focusedPane.current='main'}} onFocus={()=>{focusedPane.current='side'}} onError={workspaceError} onSaved={loadIndex}/></>}
+        </div>
         {rightOpen && note && workspaceView === 'note' && <RightSidebar activePath={note.path} source={content} index={index} onOpen={(path, location) => void navigateNote(path, location)} onNavigate={(location) => void navigateNote(note.path, location)} onTag={filterTag} />}
         {searchAttachment?.root === vault?.root && searchAttachment && <AttachmentDetails key={searchAttachment.path} path={searchAttachment.path} onClose={() => setSearchAttachment(null)} />}
       </div>
@@ -1055,6 +1198,8 @@ export function App() {
 
     {vault && note && workspaceView === 'note' && !settingsOpen && !palette && !editorMenu && <NoteHoverPreview modifier={settings.previewModifier} root={vault.root} path={note.path} source={content} index={index} />}
     {settingsOpen && <SettingsDialog settings={settings} commands={commands} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
+    {recoveryOpen&&<RecoveryCenter drafts={crashDrafts} onRestore={draft=>void restoreCrashDraft(draft)} onDiscard={draft=>void discardCrashDraft(draft)} onClose={()=>{if(crashDrafts.some(d=>d.path===note?.path))workspaceError('Сначала выберите восстановление или явно отбросьте копию этого документа.');else setRecoveryOpen(false)}}/>}
+    {historyTarget&&vault&&<VersionHistory root={vault.root} path={historyTarget.path} onClose={()=>setHistoryTarget(null)} onRestore={text=>{if(historyTarget.pane==='side')secondary.current?.restoreText(text);else setContent(text);setHistoryTarget(null);showNotice({kind:'success',message:'Версия открыта как правка. Текущий файл защищён обычной проверкой конфликта.'})}}/>}
     {editorMenu && <CommandMenu x={editorMenu.x} y={editorMenu.y} registry={registry} ids={['editor-undo', 'editor-redo', null, 'editor-cut', 'editor-copy', 'editor-paste', 'editor-select-all', null, 'editor-bold', 'editor-italic', 'editor-strike', 'editor-inline-code', 'editor-insert-link', 'editor-open-link', null, 'quick-insert']} disabled={[...(!editorMenu.hasSelection ? ['editor-copy', 'editor-cut'] : []), ...(!editorMenu.canUndo ? ['editor-undo'] : []), ...(!editorMenu.canRedo ? ['editor-redo'] : []), ...(!editorMenu.canFormat ? ['editor-bold', 'editor-italic', 'editor-strike', 'editor-inline-code', 'editor-insert-link', 'quick-insert'] : []), ...(!editorMenu.link ? ['editor-open-link'] : [])]} onClose={closeEditorMenu} onExecute={(id) => { setEditorMenu(null); runCommand(id) }} />}
     {dialog && <EntryDialogView dialog={dialog} folders={folders} inputRef={dialogRef} onChange={setDialog} onClose={() => setDialog(null)} onSubmit={() => void submitDialog()} />}
     {discardDraftOpen && <div className="dialog-backdrop"><div className="dialog discard-draft-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-draft-title"><h2 id="discard-draft-title">Отбросить черновик?</h2><p>Несохранённый текст будет убран из редактора. Файлы на диске не изменятся.</p><div><button className="secondary" autoFocus onClick={() => setDiscardDraftOpen(false)}>Отмена</button><button className="primary" onClick={discardMissingDraft}>Отбросить черновик</button></div></div></div>}
@@ -1062,13 +1207,13 @@ export function App() {
     {templatePicker && <TemplatePicker templates={templateFiles} onClose={() => setTemplatePicker(false)} onInsert={(path) => void insertTemplate(path)} onCreate={() => void createTemplateStarter()} />}
     {quickInsertOpen && <QuickInsertPalette onClose={() => setQuickInsertOpen(false)} onInsert={insertQuick} />}
     {contextMenu && <EntryContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onRename={() => setDialog({ kind: 'rename', entry: contextMenu.entry, value: contextMenu.entry.name.replace(/\.(md|canvas|base)$/i, ''), parent: contextMenu.entry.parent })} onMove={() => setDialog({ kind: 'move', entry: contextMenu.entry, value: '', parent: contextMenu.entry.parent })} onReveal={() => void invoke('reveal_entry', { relativePath: contextMenu.entry.path })} onTrash={() => void trashEntry(contextMenu.entry)} />}
-    {conflict && <ConflictDialog disk={conflict} onLoad={() => { applyDocument(conflict, viewForPath(conflict.path)); conflictRef.current = null; setConflict(null) }} onOverwrite={() => void saveNote(false, conflict.fingerprint)} onClose={() => setConflict(null)} />}
+    {conflict && <ConflictDialog disk={conflict} mine={content} onLoad={() => { acknowledgeDraft(conflict.path,content);applyDocument(conflict, viewForPath(conflict.path)); conflictRef.current = null; setConflict(null) }} onOverwrite={() => void saveNote(false, conflict.fingerprint)} onClose={() => setConflict(null)} />}
     {notice && <div role="status" className={`notice ${notice.kind}`}><span /><div>{notice.message}{notice.details && <details><summary>Какие документы проверить</summary><ul>{notice.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul></details>}</div>{notice.details && <button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button>}</div>}
   </div>
 }
 
 function SidebarHeading({ mode, onRefresh, onNewNote, onNewFolder }: { mode: SidebarMode; onRefresh: () => void; onNewNote: () => void; onNewFolder: () => void }) {
-  return <div className="section-heading"><span>{mode === 'files' ? '' : mode === 'search' ? 'Поиск' : 'Теги'}</span><div>{mode === 'files' && <><button title="Новая заметка" onClick={onNewNote}><EditIcon /></button><button title="Новая папка" onClick={onNewFolder}><FolderIcon /></button></>}<button title="Обновить" onClick={onRefresh}><RefreshIcon /></button></div></div>
+  return <div className="section-heading"><span>{mode === 'files' ? '' : mode === 'search' ? 'Поиск' : mode === 'bookmarks' ? 'Закладки' : 'Теги'}</span><div>{mode === 'files' && <><button title="Новая заметка" onClick={onNewNote}><EditIcon /></button><button title="Новая папка" onClick={onNewFolder}><FolderIcon /></button></>}<button title="Обновить" onClick={onRefresh}><RefreshIcon /></button></div></div>
 }
 
 function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; query: string; onChoose: (tag: string) => void }) {
@@ -1108,8 +1253,8 @@ function EntryContextMenu({ menu, onClose, onRename, onMove, onReveal, onTrash }
   return <div className="entry-menu" style={{ left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 190) }} onClick={(event) => event.stopPropagation()}><header>{menu.entry.name}</header><button onClick={() => run(onRename)}>Переименовать <kbd>F2</kbd></button><button onClick={() => run(onMove)}>Переместить…</button><button onClick={() => run(onReveal)}>Показать в Проводнике</button><hr /><button className="danger" onClick={() => run(onTrash)}>В корзину</button></div>
 }
 
-function ConflictDialog({ disk, onLoad, onOverwrite, onClose }: { disk: NoteDocument; onLoad: () => void; onOverwrite: () => void; onClose: () => void }) {
-  return <div className="dialog-backdrop"><div className="dialog conflict-dialog"><span className="eyebrow">ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ</span><h2>Файл изменён снаружи</h2><p>После открытия заметку изменило другое приложение. Brandon не будет молча затирать новую версию на диске.</p><div className="conflict-preview">{disk.content.slice(0, 500)}</div><div><button className="secondary" onClick={onClose}>Решить позже</button><button className="secondary" onClick={onLoad}>Загрузить с диска</button><button className="primary" onClick={onOverwrite}>Перезаписать моей</button></div></div></div>
+function ConflictDialog({ disk, mine, onLoad, onOverwrite, onClose }: { disk: NoteDocument; mine:string; onLoad: () => void; onOverwrite: () => void; onClose: () => void }) {
+  return <div className="dialog-backdrop"><div className="dialog conflict-dialog"><span className="eyebrow">ЗАЩИТА ОТ ПОТЕРИ ДАННЫХ</span><h2>Файл изменён снаружи</h2><p>После открытия заметку изменило другое приложение. Brandon не будет молча затирать новую версию на диске.</p><div className="conflict-preview"><TextComparison left={disk.content} right={mine}/></div><div><button className="secondary" onClick={onClose}>Решить позже</button><button className="secondary" onClick={onLoad}>Загрузить с диска</button><button className="primary" onClick={onOverwrite}>Перезаписать моей</button></div></div></div>
 }
 
 function ModeButton({ active, children, label, onClick }: { active: boolean; children: ReactNode; label: string; onClick: () => void }) {

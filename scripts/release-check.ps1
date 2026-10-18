@@ -112,6 +112,7 @@ try {
     } else {
         Invoke-Native 'Fresh Compose acceptance (Bash)' $bash @('tests/operations/compose-smoke.sh', '--delete-volumes')
     }
+    Invoke-Native 'Compose maintenance tmpfs ownership' pwsh @('-NoProfile', '-File', 'tests/operations/compose-maintenance.ps1')
     Invoke-Native 'PowerShell restore drill' pwsh @('-NoProfile', '-File', 'scripts/verify-backup.ps1', '-TestMode')
     Invoke-Native 'Bash restore drill' $bash @('scripts/verify-backup.sh', '--test-mode')
     Invoke-Native 'Production browser E2E' pnpm @('exec', 'playwright', 'test', '--workers=1')

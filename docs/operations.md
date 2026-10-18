@@ -136,6 +136,8 @@ The bundle contains `postgres/database.sql`, encrypted objects under `objects/`,
 
 On native Linux, run backup and restore as the account that owns the private `0700` bundle directory. The scripts run bind-mounted helper containers with that account's UID/GID and enforce no group/other permissions on the resulting plaintext database dump and metadata. Do not relax the bundle directory to make a container write to it.
 
+The MinIO helper's private tmpfs is configured in Compose, not through the unsupported `docker compose run --tmpfs` flag. Maintenance scripts scope `KNOWLEDGE_MAINTENANCE_UID` / `KNOWLEDGE_MAINTENANCE_GID` to the mounted operation so its `0700` tmpfs belongs to the invoking Linux account; ordinary initialization retains UID/GID `10002`. `pwsh -NoProfile -File tests/operations/compose-maintenance.ps1` runs real helper containers with both ownership modes and checks private config permissions without using production data.
+
 If the backend was running, backup stops it for the database/object snapshot, restarts it, and waits boundedly for `/ready` through the container health check. A restart failure or readiness timeout makes the backup command fail even when the bundle files were written; investigate the backend before treating that bundle as an accepted backup.
 
 ## Restore

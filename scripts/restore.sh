@@ -197,8 +197,8 @@ run_with_mount() {
   else
     local host_uid host_gid
     host_uid="$(id -u)"; host_gid="$(id -g)"
-    compose run --rm -T --user "$host_uid:$host_gid" \
-      --tmpfs "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$host_uid,gid=$host_gid" \
+    KNOWLEDGE_MAINTENANCE_UID="$host_uid" KNOWLEDGE_MAINTENANCE_GID="$host_gid" \
+      compose run --rm -T --user "$host_uid:$host_gid" \
       --volume "$host_path:$container_path" "$@"
   fi
 }

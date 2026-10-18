@@ -30,6 +30,7 @@ case "$joined" in
     [[ "${FAKE_DOCKER_MODE:-}" != primary-and-restart-fail ]] || { echo 'SECONDARY_RESTART_FAILURE' >&2; exit 1; }
     ;;
   *' run '*)
+    [[ "$joined" != *' --tmpfs '* ]] || { echo 'unsupported compose run flag: --tmpfs' >&2; exit 125; }
     [[ "${FAKE_DOCKER_MODE:-}" != primary-and-restart-fail || "$joined" != *' postgres '* ]] || { echo 'PRIMARY_BACKUP_FAILURE' >&2; exit 17; }
     mount=''
     previous=''

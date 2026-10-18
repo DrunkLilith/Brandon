@@ -22,6 +22,10 @@ if ($joined -like '* start backend *') {
     exit 0
 }
 if ($joined -like '* run *') {
+    if ($args -contains '--tmpfs') { [Console]::Error.WriteLine('unsupported compose run flag: --tmpfs'); exit 125 }
+    if ($IsLinux -and $args -contains '--user' -and ($env:KNOWLEDGE_MAINTENANCE_UID -ne (& id -u).Trim() -or $env:KNOWLEDGE_MAINTENANCE_GID -ne (& id -g).Trim())) {
+        [Console]::Error.WriteLine('maintenance tmpfs owner does not match host'); exit 125
+    }
     if ($env:FAKE_DOCKER_MODE -eq 'primary-and-restart-fail' -and $joined -like '* postgres *') {
         [Console]::Error.WriteLine('PRIMARY_BACKUP_FAILURE'); exit 17
     }

@@ -36,14 +36,25 @@ if ($IsLinux) {
 
 function Invoke-Compose {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & docker compose -f $ComposeFile -p $ProjectName @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
+    $previousUid = $env:KNOWLEDGE_MAINTENANCE_UID
+    $previousGid = $env:KNOWLEDGE_MAINTENANCE_GID
+    try {
+        if ($IsLinux -and $Arguments -contains '--user') {
+            $env:KNOWLEDGE_MAINTENANCE_UID = $hostUid
+            $env:KNOWLEDGE_MAINTENANCE_GID = $hostGid
+        }
+        & docker compose -f $ComposeFile -p $ProjectName @Arguments
+        if ($LASTEXITCODE -ne 0) { throw "docker compose failed: $($Arguments -join ' ')" }
+    } finally {
+        $env:KNOWLEDGE_MAINTENANCE_UID = $previousUid
+        $env:KNOWLEDGE_MAINTENANCE_GID = $previousGid
+    }
 }
 $nativeRun = @()
 if ($IsLinux) {
     $hostUid = (& id -u).Trim(); $hostGid = (& id -g).Trim()
     if ($LASTEXITCODE -ne 0 -or $hostUid -notmatch '^\d+$' -or $hostGid -notmatch '^\d+$') { throw 'could not resolve invoking Linux UID/GID' }
-    $nativeRun = @('--user', "${hostUid}:${hostGid}", '--tmpfs', "/tmp:rw,noexec,nosuid,size=8m,mode=0700,uid=$hostUid,gid=$hostGid")
+    $nativeRun = @('--user', "${hostUid}:${hostGid}")
 }
 
 $postgres = (& docker compose -f $ComposeFile -p $ProjectName ps -q postgres).Trim()

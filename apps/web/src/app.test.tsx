@@ -189,7 +189,9 @@ describe('application shell', () => {
     await user.click(screen.getByRole('button', { name: 'Создать пространство' }))
 
     await waitFor(() => expect(window.location.pathname).toBe('/app/spaces/space-1'))
-    expect(screen.getByRole('combobox', { name: 'Пространство' })).toHaveValue('space-1')
+    // History updates before React commits the new route on a loaded CI runner.
+    // Wait for the visible selector as well, not only the synchronous URL change.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Пространство' })).toHaveValue('space-1'))
     expect(await screen.findByRole('heading', { name: 'Начните с первой страницы' })).toBeVisible()
     const creation = requests.find((request) => request.method === 'POST' && new URL(request.url).pathname === '/api/v1/spaces')
     expect(await creation?.json()).toEqual({ name: 'Команда', description: 'База знаний' })

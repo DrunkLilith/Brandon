@@ -2,7 +2,7 @@
 
 mod attachment_commands;
 mod search_commands;
-use search_commands::{SearchState, rebuild_search_index, search_vault};
+use search_commands::{SearchState, rebuild_search_index, reconcile_search_index, search_vault};
 #[cfg(windows)]
 mod canvas_gpu;
 use attachment_commands::{
@@ -42,7 +42,10 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -66,15 +69,6 @@ fn user_error(context: &str, error: impl std::fmt::Display) -> String {
     format!("{context}: {error}")
 }
 
-fn set_vault(state: &State<'_, VaultState>, vault: Vault) -> Result<(), String> {
-    let mut current = state
-        .vault
-        .write()
-        .map_err(|_| "Не удалось получить доступ к открытому vault".to_owned())?;
-    *current = Some(vault);
-    Ok(())
-}
-
 fn current_vault(state: &State<'_, VaultState>) -> Result<Vault, String> {
     state
         .vault
@@ -86,14 +80,23 @@ fn current_vault(state: &State<'_, VaultState>) -> Result<Vault, String> {
 
 fn start_watcher(
     app: &AppHandle,
-    state: &State<'_, VaultState>,
     root: &Path,
-) -> Result<(), String> {
+    generation: Arc<AtomicU64>,
+) -> Result<RecommendedWatcher, String> {
     let app_handle = app.clone();
+    let search = app.state::<SearchState>().inner().clone();
+    let watcher_root = root.to_path_buf();
     let mut watcher = RecommendedWatcher::new(
         move |result: notify::Result<notify::Event>| {
+            let epoch = generation.load(Ordering::SeqCst);
+            if epoch == 0 || !search.is_current(epoch) {
+                return;
+            }
+            search.observe(epoch, &result);
             if let Ok(event) = result {
-                if matches!(event.kind, notify::EventKind::Access(_)) {
+                if matches!(event.kind, notify::EventKind::Access(_))
+                    || search_commands::private_parent_metadata(&event, &watcher_root)
+                {
                     return;
                 }
                 let paths: Vec<String> = event
@@ -105,6 +108,8 @@ fn start_watcher(
                 if !paths.is_empty() {
                     let _ = app_handle.emit("vault-changed", paths);
                 }
+            } else {
+                let _ = app_handle.emit("vault-changed", Vec::<String>::new());
             }
         },
         Config::default(),
@@ -113,12 +118,7 @@ fn start_watcher(
     watcher
         .watch(root, RecursiveMode::Recursive)
         .map_err(|error| user_error("Не удалось наблюдать за vault", error))?;
-    let mut current = state
-        .watcher
-        .lock()
-        .map_err(|_| "Не удалось обновить наблюдение за vault".to_owned())?;
-    *current = Some(watcher);
-    Ok(())
+    Ok(watcher)
 }
 
 fn recent_vault_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -147,9 +147,23 @@ fn activate_vault(
     vault: Vault,
 ) -> Result<VaultSnapshot, String> {
     let snapshot = vault.snapshot().map_err(|error| error.to_string())?;
+    let mut current = state
+        .vault
+        .write()
+        .map_err(|_| "Не удалось обновить vault")?;
+    let mut watcher_slot = state
+        .watcher
+        .lock()
+        .map_err(|_| "Не удалось обновить наблюдение за vault")?;
+    // Stage fallible setup before changing the selected root or cancelling its
+    // search worker. Initial reconciliation covers events before activation.
+    let generation = Arc::new(AtomicU64::new(0));
+    let watcher = start_watcher(app, vault.root(), Arc::clone(&generation))?;
     remember_vault(app, vault.root())?;
-    start_watcher(app, state, vault.root())?;
-    set_vault(state, vault)?;
+    let epoch = app.state::<SearchState>().activate(vault.clone());
+    *current = Some(vault);
+    generation.store(epoch, Ordering::SeqCst);
+    *watcher_slot = Some(watcher);
     Ok(snapshot)
 }
 
@@ -380,6 +394,10 @@ fn main() {
         .manage(GpuCanvasState::default())
         .manage(AttachmentState::default())
         .manage(SearchState::default())
+        .setup(|app| {
+            search_commands::start_worker(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             canvas_gpu_supported,
             attachment_info,
@@ -403,6 +421,7 @@ fn main() {
             create_task,
             update_task,
             search_vault,
+            reconcile_search_index,
             rebuild_search_index,
             reveal_entry,
             canvas_gpu_start,

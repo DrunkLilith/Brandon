@@ -2,16 +2,17 @@
 //! Never open referenced Canvas paths, URLs, binary contents or canonical task DB
 //! for writing. The cache is separate from authoritative task storage.
 use super::{
-    Result, Vault, VaultError, attachments, fingerprint, parse_document, relative_display,
+    Result, Vault, VaultError, attachments, fingerprint, normalized_relative, parse_document,
+    relative_display,
 };
-use rusqlite::{Connection, OpenFlags, params, params_from_iter};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
-    time::{Instant, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 const CACHE: &str = "search-v1.sqlite3";
@@ -62,6 +63,27 @@ pub struct SearchResponse {
     pub changed_sources: usize,
     pub removed_sources: usize,
     pub elapsed_ms: f64,
+    pub scanned_sources: usize,
+    pub last_reconciled_unix_ms: Option<u64>,
+    pub syncing: bool,
+    pub pending_sources: usize,
+    pub stale_sources: usize,
+    #[serde(skip)]
+    pub stale_paths: Vec<String>,
+    #[serde(skip)]
+    pub bytes_read: u64,
+}
+
+#[derive(Clone, Debug)]
+pub enum SearchUpdate {
+    Full,
+    Paths(Vec<String>),
+}
+
+pub struct SearchInventory {
+    pub paths: Vec<String>,
+    pub skipped_sources: usize,
+    pub failed_sources: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,7 +254,6 @@ struct Chunk {
 struct Source {
     path: String,
     absolute: PathBuf,
-    metadata: fs::Metadata,
 }
 
 // Compatibility helper for callers expecting a Markdown-only Vec<SearchHit>.
@@ -321,12 +342,29 @@ pub(super) fn markdown_search(vault: &Vault, value: &str, limit: usize) -> Resul
     Ok(hits)
 }
 
-fn scan(root: &Path, report: &mut SearchResponse) -> Result<Vec<Source>> {
+fn scan(
+    root: &Path,
+    start: &Path,
+    report: &mut SearchResponse,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<Source>> {
     let mut result = Vec::new();
-    let mut pending = vec![(root.to_path_buf(), 0)];
+    let mut pending = vec![(start.to_path_buf(), 0)];
     while let Some((directory, depth)) = pending.pop() {
+        if cancel() {
+            return Err(VaultError::SearchCancelled);
+        }
         if depth > 64 {
             report.skipped_sources += 1;
+            continue;
+        }
+        if !fs::symlink_metadata(&directory)
+            .is_ok_and(|metadata| metadata.is_dir() && !attachments::is_link(&metadata))
+            || !directory
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(root))
+        {
+            report.failed_sources += 1;
             continue;
         }
         let entries = match fs::read_dir(directory) {
@@ -337,6 +375,9 @@ fn scan(root: &Path, report: &mut SearchResponse) -> Result<Vec<Source>> {
             }
         };
         for entry in entries {
+            if cancel() {
+                return Err(VaultError::SearchCancelled);
+            }
             let Ok(entry) = entry else {
                 report.failed_sources += 1;
                 continue;
@@ -361,7 +402,6 @@ fn scan(root: &Path, report: &mut SearchResponse) -> Result<Vec<Source>> {
                 result.push(Source {
                     path: relative_display(root, &path)?,
                     absolute: path,
-                    metadata,
                 });
             }
             if result.len() + pending.len() > MAX_SOURCES {
@@ -467,8 +507,11 @@ fn task_fields(directory: &Path) -> Result<HashMap<String, String>> {
 fn schema(connection: &Connection) -> Result<()> {
     connection.execute_batch("PRAGMA busy_timeout=3000;
         CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, stamp TEXT NOT NULL, revision TEXT NOT NULL, status TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS sources_status ON sources(status);
+        CREATE TABLE IF NOT EXISTS search_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, path TEXT NOT NULL, path_folded TEXT NOT NULL, kind TEXT NOT NULL, node_id TEXT, line INTEGER NOT NULL, revision TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, tags TEXT NOT NULL, literal TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
+        CREATE INDEX IF NOT EXISTS chunks_kind ON chunks(kind);
         CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(title, path, body, tags, content='chunks', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
         CREATE TRIGGER IF NOT EXISTS chunks_insert AFTER INSERT ON chunks BEGIN INSERT INTO search_fts(rowid,title,path,body,tags) VALUES(new.id,new.title,new.path,new.body,new.tags); END;
         CREATE TRIGGER IF NOT EXISTS chunks_delete AFTER DELETE ON chunks BEGIN INSERT INTO search_fts(search_fts,rowid,title,path,body,tags) VALUES('delete',old.id,old.title,old.path,old.body,old.tags); END;
@@ -574,7 +617,251 @@ fn canvas_chunks(source: &str) -> Option<Vec<Chunk>> {
     Some(result)
 }
 
+fn meta(connection: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(connection
+        .query_row("SELECT value FROM search_meta WHERE key=?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
+fn set_meta(connection: &Connection, key: &str, value: impl ToString) -> Result<()> {
+    connection.execute("INSERT INTO search_meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key,value.to_string()])?;
+    Ok(())
+}
+
+fn task_fingerprint(tasks: &HashMap<String, String>) -> String {
+    let mut entries: Vec<_> = tasks.iter().collect();
+    entries.sort_by_key(|(path, _)| *path);
+    let mut text = String::new();
+    for (path, fields) in entries {
+        text.push_str(&format!("{}:{path}{}:{fields}", path.len(), fields.len()));
+    }
+    fingerprint(text.as_bytes())
+}
+
+fn stamp(metadata: &fs::Metadata, task: Option<&String>) -> String {
+    format!(
+        "{INDEX_POLICY_VERSION}:{}:{}:{}",
+        metadata.len(),
+        metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |value| value.as_nanos()),
+        task.map(|value| fingerprint(value.as_bytes()))
+            .unwrap_or_default()
+    )
+}
+
+fn task_changes(connection: &Connection, tasks: &HashMap<String, String>) -> Result<Vec<String>> {
+    if meta(connection, "tasks")?.as_deref() == Some(&task_fingerprint(tasks)) {
+        return Ok(Vec::new());
+    }
+    let mut statement=connection.prepare("SELECT DISTINCT s.path,s.stamp FROM sources s JOIN chunks c ON c.path=s.path WHERE c.kind='task'")?;
+    let previous: HashMap<String, String> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    let mut changed: HashSet<String> = previous
+        .keys()
+        .filter(|path| !tasks.contains_key(*path))
+        .cloned()
+        .collect();
+    for (path, fields) in tasks {
+        if !previous
+            .get(path)
+            .is_some_and(|stamp| stamp.ends_with(&format!(":{}", fingerprint(fields.as_bytes()))))
+        {
+            changed.insert(path.clone());
+        }
+    }
+    Ok(changed.into_iter().collect())
+}
+
+fn public_relative(path: &str) -> Result<PathBuf> {
+    let relative = normalized_relative(path, false)?;
+    if relative.components().any(|part| {
+        let value = part.as_os_str().to_string_lossy();
+        attachments::private_name(&value) || matches!(value.as_ref(), "node_modules" | "target")
+    }) {
+        return Err(VaultError::InvalidPath("Служебный путь не индексируется"));
+    }
+    Ok(relative)
+}
+
+fn targeted_sources(
+    vault: &Vault,
+    paths: &[String],
+    report: &mut SearchResponse,
+    cancel: &dyn Fn() -> bool,
+) -> Result<Vec<Source>> {
+    let mut found = HashMap::new();
+    for path in paths {
+        if cancel() {
+            return Err(VaultError::SearchCancelled);
+        }
+        let Ok(relative) = public_relative(path) else {
+            continue;
+        };
+        let mut absolute = vault.root().to_path_buf();
+        let mut safe = true;
+        for part in relative.components() {
+            absolute.push(part.as_os_str());
+            if !fs::symlink_metadata(&absolute).is_ok_and(|value| !attachments::is_link(&value)) {
+                safe = false;
+                break;
+            }
+        }
+        if !safe {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&absolute) else {
+            continue;
+        };
+        if metadata.is_file() {
+            found.insert(
+                path.clone(),
+                Source {
+                    path: path.clone(),
+                    absolute,
+                },
+            );
+        } else if metadata.is_dir() {
+            for source in scan(vault.root(), &absolute, report, cancel)? {
+                found.insert(source.path.clone(), source);
+            }
+        }
+        if found.len() > MAX_SOURCES {
+            return Err(VaultError::InvalidPath(
+                "Первый локальный индекс ограничен 50 000 объектами; сузьте vault",
+            ));
+        }
+    }
+    let mut sources: Vec<_> = found.into_values().collect();
+    sources.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(sources)
+}
+
+fn coverage(connection: &Connection, report: &mut SearchResponse) -> Result<()> {
+    let mut statement =
+        connection.prepare("SELECT status,COUNT(*) FROM sources GROUP BY status")?;
+    for row in statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })? {
+        let (status, count) = row?;
+        match status.as_str() {
+            "indexed" => report.indexed_sources = count,
+            "names" => report.name_only_sources = count,
+            _ => report.failed_sources += count,
+        }
+    }
+    report.last_reconciled_unix_ms =
+        meta(connection, "reconciled")?.and_then(|value| value.parse().ok());
+    Ok(())
+}
+
+fn verify_hit(
+    vault: &Vault,
+    hit: &SearchHit,
+    stored_stamp: &str,
+    tasks: &HashMap<String, String>,
+    bytes_read: &mut u64,
+) -> Result<bool> {
+    if public_relative(&hit.path).is_err() {
+        return Ok(false);
+    }
+    let Ok(path) = vault.public_attachment_path(&hit.path) else {
+        return Ok(false);
+    };
+    let Ok(mut file) = fs::File::open(&path) else {
+        return Ok(false);
+    };
+    let Ok(metadata) = file.metadata() else {
+        return Ok(false);
+    };
+    if !metadata.is_file()
+        || attachments::is_link(&metadata)
+        || stamp(&metadata, tasks.get(&hit.path)) != stored_stamp
+    {
+        return Ok(false);
+    }
+    if hit.content_indexed {
+        if metadata.len() > MAX_SOURCE_BYTES {
+            return Ok(false);
+        }
+        if bytes_read.saturating_add(metadata.len()) > MAX_TOTAL_BYTES {
+            return Err(VaultError::InvalidPath(
+                "Слишком много данных для безопасной проверки результатов; сузьте поиск",
+            ));
+        }
+        let mut bytes = Vec::new();
+        if file
+            .by_ref()
+            .take(MAX_SOURCE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        *bytes_read += bytes.len() as u64;
+        if bytes.len() as u64 > MAX_SOURCE_BYTES || fingerprint(&bytes) != hit.revision {
+            return Ok(false);
+        }
+    }
+    Ok(vault
+        .public_attachment_path(&hit.path)
+        .is_ok_and(|current| current == path)
+        && fs::metadata(&path)
+            .is_ok_and(|current| stamp(&current, tasks.get(&hit.path)) == stored_stamp))
+}
+
 impl Vault {
+    pub fn prepare_search_cache(&self) -> Result<()> {
+        schema(&Connection::open(cache_directory(self)?.join(CACHE))?)
+    }
+
+    /// Inventory is a separate reconciliation operation, never a cached query.
+    /// Missing cached paths go first, so replacing a 50k vault does not briefly
+    /// exceed the index's source cap while inserting its new names.
+    pub fn search_inventory(&self, cancel: &dyn Fn() -> bool) -> Result<SearchInventory> {
+        let mut report = SearchResponse::default();
+        let sources = scan(self.root(), self.root(), &mut report, cancel)?;
+        let mut paths: Vec<_> = sources.into_iter().map(|source| source.path).collect();
+        let actual: HashSet<_> = paths.iter().cloned().collect();
+        let connection = Connection::open_with_flags(
+            cache_directory(self)?.join(CACHE),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let mut statement = connection.prepare("SELECT path FROM sources")?;
+        let mut removed = Vec::new();
+        for path in statement.query_map([], |row| row.get::<_, String>(0))? {
+            let path = path?;
+            if !actual.contains(&path) {
+                removed.push(path);
+            }
+        }
+        removed.append(&mut paths);
+        Ok(SearchInventory {
+            paths: removed,
+            skipped_sources: report.skipped_sources,
+            failed_sources: report.failed_sources,
+        })
+    }
+
+    pub fn mark_search_reconciled(&self, skipped: usize, failed: usize) -> Result<()> {
+        let connection = Connection::open(cache_directory(self)?.join(CACHE))?;
+        set_meta(
+            &connection,
+            "reconciled",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+        )?;
+        set_meta(&connection, "skipped", skipped)?;
+        set_meta(&connection, "scan_failed", failed)
+    }
+
     /// Explicit UI operation, serialized with search by the desktop worker.
     /// Preserve all old derivative files in an exclusively created directory;
     /// never remove them, touch task storage, or auto-repair on a normal query.
@@ -584,6 +871,20 @@ impl Vault {
         mode: SearchMode,
         limit: usize,
     ) -> Result<SearchRebuild> {
+        self.rebuild_search_cancellable(query, mode, limit, &|| false)
+    }
+
+    pub fn rebuild_search_cancellable(
+        &self,
+        query: &str,
+        mode: SearchMode,
+        limit: usize,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<SearchRebuild> {
+        let started = Instant::now();
+        if cancel() {
+            return Err(VaultError::SearchCancelled);
+        }
         let parsed = if mode == SearchMode::Literal {
             Query::literal(query)?
         } else {
@@ -619,6 +920,9 @@ impl Vault {
         let rebuild = || -> Result<SearchResponse> {
             if let Some(backup) = &backup {
                 for name in CACHE_FILES {
+                    if cancel() {
+                        return Err(VaultError::SearchCancelled);
+                    }
                     // Recheck all private DB paths immediately before each move.
                     cache_directory(self)?;
                     let source = directory.join(name);
@@ -630,7 +934,16 @@ impl Vault {
                     }
                 }
             }
-            self.search_local(query, mode, limit)
+            let synced = self.sync_search_batch(SearchUpdate::Full, MAX_TOTAL_BYTES, cancel)?;
+            if cancel() {
+                return Err(VaultError::SearchCancelled);
+            }
+            let mut result = self.search_cached(query, mode, limit)?;
+            result.changed_sources = synced.changed_sources;
+            result.removed_sources = synced.removed_sources;
+            result.scanned_sources = synced.scanned_sources;
+            result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            Ok(result)
         };
         match rebuild() {
             Ok(search) => Ok(SearchRebuild {
@@ -654,54 +967,102 @@ impl Vault {
         limit: usize,
     ) -> Result<SearchResponse> {
         let started = Instant::now();
-        let query = if mode == SearchMode::Literal {
+        let parsed = if mode == SearchMode::Literal {
             Query::literal(query)?
         } else {
             Query::parse(query)?
         };
-        if query.empty() {
+        if parsed.empty() {
             return Ok(SearchResponse::default());
         }
+        let synced = self.sync_search_batch(SearchUpdate::Full, MAX_TOTAL_BYTES, &|| false)?;
+        let mut result = self.search_cached(query, mode, limit)?;
+        result.changed_sources = synced.changed_sources;
+        result.removed_sources = synced.removed_sources;
+        result.scanned_sources = synced.scanned_sources;
+        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(result)
+    }
+
+    /// Atomic bounded write batch. Desktop schedules full inventories separately
+    /// and feeds small path batches; regular queries never call a full scan.
+    pub fn sync_search_batch(
+        &self,
+        update: SearchUpdate,
+        read_budget: u64,
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<SearchResponse> {
+        let started = Instant::now();
         let mut report = SearchResponse::default();
         let directory = cache_directory(self)?;
         let mut connection = Connection::open(directory.join(CACHE))?;
         schema(&connection)?;
         let tasks =
             task_fields(&directory).map_err(|error| VaultError::SearchTasks(Box::new(error)))?;
-        let sources = scan(self.root(), &mut report)?;
-        let existing: HashMap<String, (String, String)> = {
-            let mut statement = connection.prepare("SELECT path,stamp,status FROM sources")?;
+        if tasks.len() > MAX_SOURCES {
+            return Err(VaultError::InvalidPath(
+                "База задач превышает лимит 50 000 объектов",
+            ));
+        }
+        let full = matches!(update, SearchUpdate::Full);
+        let mut paths = match update {
+            SearchUpdate::Full => Vec::new(),
+            SearchUpdate::Paths(paths) => paths,
+        };
+        let task_deltas = task_changes(&connection, &tasks)?;
+        if !full {
+            paths.extend(task_deltas.iter().take(128).cloned());
+        }
+        for path in &mut paths {
+            *path = relative_display(Path::new(""), &normalized_relative(path, false)?)?;
+        }
+        paths.sort();
+        paths.dedup();
+        if paths.len() > MAX_SOURCES * 2 {
+            return Err(VaultError::InvalidPath("Слишком много изменений индекса"));
+        }
+        let sources = if full {
+            scan(self.root(), self.root(), &mut report, cancel)?
+        } else {
+            targeted_sources(self, &paths, &mut report, cancel)?
+        };
+        report.scanned_sources = sources.len();
+        let existing: HashMap<String, (String, String, String)> = if full {
+            let mut statement =
+                connection.prepare("SELECT path,stamp,status,revision FROM sources")?;
             statement
-                .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+                .query_map([], |row| {
+                    Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
+                })?
                 .collect::<std::result::Result<_, _>>()?
+        } else {
+            let mut existing = HashMap::new();
+            let mut statement=connection.prepare("SELECT path,stamp,status,revision FROM sources WHERE path=?1 OR (path>=?2 AND path<?3)")?;
+            for path in &paths {
+                for row in statement.query_map(
+                    params![path, format!("{path}/"), format!("{path}0")],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            (row.get(1)?, row.get(2)?, row.get(3)?),
+                        ))
+                    },
+                )? {
+                    let (path, values) = row?;
+                    existing.insert(path, values);
+                }
+            }
+            existing
         };
         let transaction = connection.transaction()?;
         let mut seen = HashSet::new();
         let mut bytes_read = 0_u64;
         for file in sources {
-            let task = tasks.get(&file.path);
-            let stamp = format!(
-                "{INDEX_POLICY_VERSION}:{}:{}:{}",
-                file.metadata.len(),
-                file.metadata
-                    .modified()
-                    .ok()
-                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                    .map_or(0, |value| value.as_nanos()),
-                task.map(|value| fingerprint(value.as_bytes()))
-                    .unwrap_or_default()
-            );
-            seen.insert(file.path.clone());
-            if let Some((previous, status)) = existing.get(&file.path)
-                && previous == &stamp
-            {
-                match status.as_str() {
-                    "indexed" => report.indexed_sources += 1,
-                    "names" => report.name_only_sources += 1,
-                    _ => report.failed_sources += 1,
-                }
-                continue;
+            if cancel() {
+                return Err(VaultError::SearchCancelled);
             }
+            let task = tasks.get(&file.path);
+            seen.insert(file.path.clone());
             // Recheck the canonical public boundary at actual read time.
             let Ok(path) = self.public_attachment_path(&file.path) else {
                 seen.remove(&file.path);
@@ -709,8 +1070,14 @@ impl Vault {
                 continue;
             };
             if path != file.absolute.canonicalize().unwrap_or_default() {
+                seen.remove(&file.path);
                 continue;
             }
+            let metadata = fs::metadata(&path).map_err(|source| VaultError::Io {
+                context: "Источник индекса недоступен",
+                source,
+            })?;
+            let stamp = stamp(&metadata, task);
             let extension = path
                 .extension()
                 .and_then(|value| value.to_str())
@@ -729,8 +1096,8 @@ impl Vault {
             }
             let (mut chunks, mut status, mut revision) = (Vec::new(), "names", String::new());
             if supported
-                && file.metadata.len() <= MAX_SOURCE_BYTES
-                && bytes_read + file.metadata.len() <= MAX_TOTAL_BYTES
+                && metadata.len() <= MAX_SOURCE_BYTES
+                && bytes_read + metadata.len() <= read_budget.min(MAX_TOTAL_BYTES)
             {
                 let mut bytes = Vec::new();
                 let read = fs::File::open(&path)
@@ -787,6 +1154,17 @@ impl Vault {
                     node: None,
                 });
             }
+            if cancel() {
+                return Err(VaultError::SearchCancelled);
+            }
+            if existing
+                .get(&file.path)
+                .is_some_and(|(old_stamp, old_status, old_revision)| {
+                    old_stamp == &stamp && old_status == status && old_revision == &revision
+                })
+            {
+                continue;
+            }
             transaction.execute("DELETE FROM chunks WHERE path=?1", [&file.path])?;
             for chunk in chunks {
                 let literal = format!(
@@ -798,18 +1176,73 @@ impl Vault {
             }
             transaction.execute("INSERT INTO sources(path,stamp,revision,status) VALUES(?1,?2,?3,?4) ON CONFLICT(path) DO UPDATE SET stamp=excluded.stamp,revision=excluded.revision,status=excluded.status", params![file.path, stamp, revision, status])?;
             report.changed_sources += 1;
-            match status {
-                "indexed" => report.indexed_sources += 1,
-                "names" => report.name_only_sources += 1,
-                _ => report.failed_sources += 1,
-            }
         }
         for path in existing.keys().filter(|path| !seen.contains(*path)) {
             transaction.execute("DELETE FROM chunks WHERE path=?1", [path])?;
             transaction.execute("DELETE FROM sources WHERE path=?1", [path])?;
             report.removed_sources += 1;
         }
+        let count: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0))?;
+        if count > MAX_SOURCES as i64 {
+            return Err(VaultError::InvalidPath(
+                "Первый локальный индекс ограничен 50 000 объектами; сузьте vault",
+            ));
+        }
+        if full
+            || task_deltas.iter().all(|task| {
+                paths
+                    .iter()
+                    .any(|path| task == path || task.starts_with(&format!("{path}/")))
+            })
+        {
+            set_meta(&transaction, "tasks", task_fingerprint(&tasks))?;
+        }
+        if cancel() {
+            return Err(VaultError::SearchCancelled);
+        }
         transaction.commit()?;
+        report.bytes_read = bytes_read;
+        if full {
+            self.mark_search_reconciled(report.skipped_sources, report.failed_sources)?;
+        }
+        coverage(&connection, &mut report)?;
+        report.stale_paths = task_changes(&connection, &tasks)?;
+        report.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(report)
+    }
+
+    /// Read-only query: no inventory, reconciliation or canonical task writes.
+    pub fn search_cached(
+        &self,
+        query: &str,
+        mode: SearchMode,
+        limit: usize,
+    ) -> Result<SearchResponse> {
+        let started = Instant::now();
+        let query = if mode == SearchMode::Literal {
+            Query::literal(query)?
+        } else {
+            Query::parse(query)?
+        };
+        if query.empty() {
+            return Ok(SearchResponse::default());
+        }
+        let directory = cache_directory(self)?;
+        let connection =
+            Connection::open_with_flags(directory.join(CACHE), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(2))?;
+        let tasks =
+            task_fields(&directory).map_err(|error| VaultError::SearchTasks(Box::new(error)))?;
+        let mut report = SearchResponse::default();
+        coverage(&connection, &mut report)?;
+        report.skipped_sources = meta(&connection, "skipped")?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        report.failed_sources += meta(&connection, "scan_failed")?
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        report.stale_paths = task_changes(&connection, &tasks)?;
         let words = mode == SearchMode::Words && !query.terms.is_empty();
         let mut sql = if words {
             "SELECT c.id AS chunk_id,c.path,c.kind,c.line,bm25(search_fts,8.0,4.0,1.0,1.0) AS rank FROM search_fts JOIN chunks c ON c.id=search_fts.rowid JOIN sources s ON s.path=c.path WHERE search_fts MATCH ?".to_owned()
@@ -856,7 +1289,7 @@ impl Vault {
             ), winners AS (
                 SELECT chunk_id,rank FROM ranked WHERE occurrence=1
                 ORDER BY rank,path,line,chunk_id LIMIT ?
-            ) SELECT c.path,c.title,c.body,c.line,c.kind,c.node_id,c.revision,s.status,w.rank
+            ) SELECT c.path,c.title,c.body,c.line,c.kind,c.node_id,c.revision,s.status,w.rank,s.stamp
               FROM winners w JOIN chunks c ON c.id=w.chunk_id
               JOIN sources s ON s.path=c.path ORDER BY w.rank,c.path,c.line,c.id"
         );
@@ -886,21 +1319,26 @@ impl Vault {
             let (line, snippet) = matched.map_or((base, body.as_str()), |(offset, line)| {
                 (if stored_line == 0 { 1 } else { base + offset }, line)
             });
-            Ok(SearchHit {
-                path: row.get(0)?,
-                title: row.get(1)?,
-                snippet: snippet.trim().chars().take(240).collect(),
-                line,
-                kind: row.get(4)?,
-                node_id: row.get(5)?,
-                revision: row.get(6)?,
-                content_indexed: row.get::<_, String>(7)? == "indexed",
-                score: -row.get::<_, f64>(8)?,
-            })
+            Ok((
+                SearchHit {
+                    path: row.get(0)?,
+                    title: row.get(1)?,
+                    snippet: snippet.trim().chars().take(240).collect(),
+                    line,
+                    kind: row.get(4)?,
+                    node_id: row.get(5)?,
+                    revision: row.get(6)?,
+                    content_indexed: row.get::<_, String>(7)? == "indexed",
+                    score: -row.get::<_, f64>(8)?,
+                },
+                row.get::<_, String>(9)?,
+            ))
         })?;
         let mut anchors = HashSet::new();
+        let mut verified = HashMap::new();
+        let mut verification_bytes = 0_u64;
         for row in rows {
-            let mut hit = row?;
+            let (mut hit, stored_stamp) = row?;
             if query.terms.is_empty() && hit.kind == "canvas" {
                 hit.title = Path::new(&hit.path)
                     .file_stem()
@@ -911,9 +1349,21 @@ impl Vault {
                 hit.snippet = "Открыть холст целиком".into();
             }
             let anchor_line = if hit.kind == "task" { 0 } else { hit.line };
-            if !anchors.insert((hit.path.clone(), hit.node_id.clone(), anchor_line))
-                || self.public_attachment_path(&hit.path).is_err()
-            {
+            if !anchors.insert((hit.path.clone(), hit.node_id.clone(), anchor_line)) {
+                continue;
+            }
+            let valid = if let Some(valid) = verified.get(&hit.path) {
+                *valid
+            } else {
+                let valid = verify_hit(self, &hit, &stored_stamp, &tasks, &mut verification_bytes)?;
+                verified.insert(hit.path.clone(), valid);
+                if !valid {
+                    report.stale_paths.push(hit.path.clone());
+                    report.stale_sources += 1;
+                }
+                valid
+            };
+            if !valid {
                 continue;
             }
             report.hits.push(hit);

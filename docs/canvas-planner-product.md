@@ -1014,7 +1014,7 @@ unimplemented in this slice. Recovery backups intentionally accumulate until an
 explicit future maintenance policy; they are never silently discarded. Existing
 autonomy deadline and no-push restriction remain unchanged.
 
-Incremental-index follow-up refinement (planning only; **not implemented**):
+Incremental-index design recorded before implementation (historical checklist):
 
 - Current seam: `search.rs::search_local` performs scan/reconciliation before
   every query. `main.rs::start_watcher` emits only a path array and drops watcher
@@ -1047,6 +1047,100 @@ Incremental-index follow-up refinement (planning only; **not implemented**):
   Test small/large vaults and report cold index versus warm filesystem state.
   File-tree virtualization/50k-row UI responsiveness is a separate validation
   surface, not something backend query measurements can establish.
+
+Incremental-index implementation checkpoint — 18 October 2026, user-returned
+interactive work (the temporary automation remains deleted):
+
+- Desktop queries now use `Vault::search_cached`, not `search_local`'s full-vault
+  scan. One native coordinator serializes derivative writers and explicit cache
+  recovery. Its root epoch cancels abandoned work; the UI passes its expected
+  root, includes it in the result key, and discards abandoned responses. A failed
+  new watcher setup leaves the previous vault/worker selected.
+- File notifications coalesce into a dirty queue. Creates/edits/file renames and
+  removals are scoped; folder changes are expanded in background inventory,
+  rather than recursively reading a large subtree inside a query. Inventory
+  feeds 128-path transactions, yielding the writer to queued queries between
+  batches. Task-metadata deltas drain in bounded 128-task slices and keep their
+  remainder queued; they do not falsely mark the whole task fingerprint current.
+- Unknown events, incomplete rename pairs, overflow/rescan signals and watcher
+  errors request reconciliation. A new sweep starts 60 seconds after the last
+  completed sweep; the explicit **Сверить** action also requests one. Sweeps hash
+  bounded source contents, detecting same-length edits with restored mtimes.
+  The UI shows syncing/pending coverage and the last completed reconciliation.
+  Initial results can be partial, explicitly labelled while batches commit.
+- Each returned source is rechecked against the current public path boundary,
+  real open/read permission, metadata/task stamp and bounded content SHA-256
+  before its cached snippet is released. Removed, private, reparse/symlinked,
+  changed or unreadable hits are withheld, then targeted for refresh. A Canvas
+  with many hits is verified once per query, not once per card. Search reads the
+  canonical task DB without migrating/writing it. These optimistic filesystem
+  checks are not an OS lock against an adversary concurrently replacing files.
+- Real Windows testing exposed two feedback causes: journal removal is
+  `Remove(Any)`, and `.brandon` directory timestamps arrive as `Modify(Any)`.
+  Exact derivative paths are filtered before unknown-kind handling. Only the
+  private parent's metadata/ModifyAny notices are ignored, not the whole private
+  subtree; task-file events remain meaningful and every query checks task DB
+  metadata independently. Rescan flags still request a sweep. No permission or
+  unknown-license policy was loosened.
+
+Verified on the final local implementation before its full release gate:
+
+- 54 Windows vault tests, 9 desktop native tests, strict Clippy/formatting,
+  desktop lint/typecheck, 5 Canvas and 4 search-request unit tests pass.
+- 57 Linux vault tests pass in the existing pinned test image, running the whole
+  suite as uid/gid 65534 (not root), with read-only source bind, no capabilities
+  and no-new-privileges. Permission revocation actually prevents `File::open`;
+  this is not a root test that silently bypasses Unix mode bits.
+- 82 real standalone desktop UI checks pass: previous 75 plus 7 incremental
+  scenarios in `tests/desktop/search-incremental-smoke.mjs`. They cover 1,500
+  notes committing/settling, zero-scanned warm queries, external edits, a whole
+  folder move, immediate deleted-hit suppression, manual reconciliation/private
+  exclusion and expected-root isolation. Existing recovery/ranking suites also
+  pass, including typing/filter changes during recovery, canonical-task failure,
+  exact anchors and a 20k-match board. Unit tests explicitly simulate changes
+  without watcher delivery, restored mtimes, cancellation rollback, stale epochs,
+  unknown/overflow events and multi-batch task updates. The tests do not claim
+  that an actual OS watcher can be forced never to lose an event.
+- EXE and NSIS were built successfully, not installed. EXE SHA-256:
+  `80DBBE67AD9EFCC6907F28B0938F4D0491ADE7E7749C45AD4D0B47D326C673A5`;
+  NSIS: `4892F4413A295B322359F87D043925727D37B791FE7227B0DD3EF85DD8D9E148`.
+  Native macOS and new remote CI are not verified; there is no push in this turn.
+
+50k comparison on the same retained synthetic fixture above, release libraries,
+Windows/Ryzen 7 7700, warm OS filesystem cache, no concurrent build/test workload
+in the final comparison. Old baseline is the previously built `0bfc6bd` library;
+new queries include read-time source verification. Two alternating old/new rounds,
+three samples per query per round (six each), not a statistical benchmark suite:
+
+| Backend operation | Old median | Incremental median |
+| --- | ---: | ---: |
+| Words `scalecommon`, 80 hits | 902.337 ms | 112.091 ms |
+| Literal `marker-49999`, one hit | 820.557 ms | 15.630 ms |
+
+Every new warm query reports `scannedSources=0`. A separate single-edit diagnostic
+scanned/changed exactly one source in 7.303 ms. Full reconciliation is not free:
+the earlier diagnostic inventory took 1,026.415 ms, followed by 12,696.113 ms of
+library batches (largest batch 64.536 ms), while other validation work was also
+active. These are not cold-disk timings or native/UI frame times. The background
+coordinator no longer adds a fixed 20 ms delay to each busy batch. Its inventory
+still holds the coordinator permit during that bounded metadata walk, so a query
+can briefly wait for it; removing that remaining contention is a measured future
+optimization, not a claimed result here. Missed new matches may wait for the
+next sweep **and its completion**, not a hard one-minute freshness guarantee.
+Stale matched snippets are denied at read time instead of waiting for the sweep.
+
+Retained local evidence (ignored, not published):
+`target/qa/search-incremental-50k-warm.log`,
+`target/qa/search-incremental-50k.log`, benchmark Rust sources/executables under
+`target/qa`, and Windows/Linux test logs `incremental-rust-*.log`. The old fixture's
+explicit synthetic `overflow.md` was moved, not deleted, to its private
+`.brandon/retained-overflow.md` so the comparison again contains exactly 50,000
+public notes. The modified single-note probe restored the original bytes and
+reindexed them. No personal file was used as benchmark input.
+
+Full local release gate for this implementation: pending below; prior green
+gates are not evidence for this new source. Next steps remain targeted performance
+profiling/queue refinements, not vector/MCP/OCR or an expansion of agent grants.
 
 ### 4. Brandon tools and external Codex / Claude connections
 

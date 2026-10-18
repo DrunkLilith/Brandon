@@ -3,7 +3,9 @@
 mod attachments;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
 mod search;
-pub use search::{SearchHit, SearchMode, SearchRebuild, SearchResponse};
+pub use search::{
+    SearchHit, SearchInventory, SearchMode, SearchRebuild, SearchResponse, SearchUpdate,
+};
 mod relocation;
 pub use relocation::{LinkUpdateReason, LinkUpdateWarning};
 #[cfg(test)]
@@ -25,6 +27,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VaultError {
+    #[error("Индексация отменена")]
+    SearchCancelled,
     #[error("{context}: {source}")]
     Io {
         context: &'static str,

@@ -114,6 +114,11 @@ export type SearchResponse = {
   changedSources: number
   removedSources: number
   elapsedMs: number
+  scannedSources: number
+  lastReconciledUnixMs: number | null
+  syncing: boolean
+  pendingSources: number
+  staleSources: number
 }
 
 export type ViewMode = 'edit' | 'split' | 'preview'

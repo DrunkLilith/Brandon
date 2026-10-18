@@ -963,19 +963,56 @@ is now implemented and regression-tested, not merely a diagnostic:
   measurement. The active query had already indexed the added board; the report
   records `firstChangedSources: 0` instead of mislabeling it as a cold run.
 - Strict fmt/clippy and the above tests pass. Windows EXE and NSIS rebuilt, not
-  installed; no push. The complete release gate for this ranking source is
-  **pending**; the recovery commit's PASS is not its validation.
+  installed; no push. Source **0bfc6bd0f1318420e787d783ae28c94bbea94949** passed
+  its own complete local `scripts/release-check.ps1`: exit 0, explicit
+  `Release gate PASS`, 115 web tests, both restore drills and all 18 browser E2E.
+  No policy/advisory exceptions were loosened. This is local validation, not a
+  claim of GitHub CI or installation/native macOS validation.
   EXE SHA-256: `1B1D7C627B13893D5CACB8666EB8F11E726604ED8CAD713EC3DC6E20C6478E54`;
   NSIS SHA-256: `07CE5DA09A09C6569459EB74A8AB21524CBA9BB67B808C5CF33D011373CA8CC7`.
 
-Next bounded continuation: finish the ranking release gate above first, then
-measure the documented 50k-source boundary on synthetic files if time permits;
-record metadata-scan/first-index/warm-query costs rather than promising constant
-time. No further engine/feature work near the 18:20 MSK autonomy deadline.
-Do not repeat completed draft/relocation/recovery/ranking stages. A persistent
-draft journal, PDF/media extraction, vector search, embeddings and agent grants
-remain unimplemented in this slice. Recovery backups intentionally accumulate
-until an explicit future maintenance policy; they are never silently discarded.
+#### 50k-source measurement checkpoint — 18 October, 17:58–18:00 MSK
+
+Completed **one local backend diagnostic**, not a UI scale guarantee or comparative
+benchmark: Windows, AMD Ryzen 7 7700 (8C/16T), release-built vault library at the
+ranking source above, 50,000 synthetic Markdown files in 10 folders. No other QA
+window or release gate was running during measurement. Files were just generated,
+so this is an empty-index first build, not physically cold-disk performance.
+
+- Fixture creation: **7,395.9 ms**, outside search time.
+- First index plus broad query: **10,377.5 ms**; 50,000 content-indexed sources,
+  zero failed/skipped, 80 returned hits. SQLite cache: **29,937,664 bytes**.
+- Three warm broad queries, unchanged sources: **845.1 / 856.0 / 843.3 ms**.
+  Warm unique Literal query: **760.6 ms**, exact final-file match.
+- Adding source 50,001 gives the explicit documented 50,000-object error rather
+  than silently dropping entries. No limit was raised or fallback made partial.
+- Separate read-only traversal/sort proxy over the 50k fixture files measured
+  **731.3 / 671.1 / 674.8 ms**. This is not instrumentation of the complete
+  production scan/reconciliation path, but corroborates the visible full metadata
+  walk as a scaling concern. Do not claim an exact percentage or constant-time
+  warm search. Future incremental indexing must retain path/read-time safety.
+- Local reproducibility artifacts (ignored QA files, not CI fixtures):
+  `target/qa/search-scale-probe.rs`, `search-scale-probe.exe`,
+  `search-scale-20261018-145757.log`, `search-scale-metadata-probe.rs` / `.exe`.
+  The main probe was compiled with rustc 1.98.0, opt-level 3, against the most
+  recently built release `knowledge_vault` rlib and its release dependencies.
+  Synthetic fixture retained at
+  `C:/Users/ADMIN/AppData/Local/Temp/brandon-search-scale-1792335477980562200`;
+  it now has the one overflow fixture too. Nothing from the user's vault was read
+  or changed for this diagnostic. No user-data deletion/cleanup was performed.
+
+Next bounded continuation: with the remaining window before **18:20 MSK**, inspect
+the final evidence/Telegram queue and prepare a small incremental-index follow-up
+plan; do not start an engine rewrite or another feature/release cycle. A future
+incremental prototype must compare the same 50k fixture and verify external edits,
+renames/removals, lost watcher events, vault changes and private/symlink boundaries
+before skipping full reconciliation. Backend timings do not validate a 50k-row
+file-tree UI. Do not repeat completed draft/relocation/recovery/ranking stages or
+the expensive full gates when source is unchanged. A persistent draft journal,
+PDF/media extraction, vector search, embeddings and agent grants remain
+unimplemented in this slice. Recovery backups intentionally accumulate until an
+explicit future maintenance policy; they are never silently discarded. Existing
+autonomy deadline and no-push restriction remain unchanged.
 
 ### 4. Brandon tools and external Codex / Claude connections
 

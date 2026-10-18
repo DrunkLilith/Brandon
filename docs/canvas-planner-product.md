@@ -926,14 +926,21 @@ is now implemented and regression-tested, not merely a diagnostic:
   `target/qa/search-recovery-before.png` / `search-recovery.png` were visually
   checked at 1360×840; compact-window/macOS recovery is not separately tested.
 - fmt, strict clippy, desktop lint/typecheck pass. Windows EXE and NSIS rebuilt,
-  not installed. Complete release gate for this new source is **pending**, not
-  covered by the green gate of the previous commit; record its result separately.
+  not installed. Source **4c8b28a0dcdfb9144e021faadd2ad2b734a8e6f5** passed the
+  complete local `scripts/release-check.ps1`: exit 0, explicit `Release gate PASS`,
+  115 web tests, both restore drills and all 18 browser E2E. No policy/advisory
+  exceptions were loosened. This does not substitute for GitHub CI on unpublished
+  source. Changes remain local, without push.
   EXE SHA-256: `7EB48D2D6E21DC44AAF492EFBBC13034313B982F85A5797640BA2B8AE2E8F4DE`;
   NSIS SHA-256: `F57160B0D0F0200013FB88DFF1D8AE7D4AE4DF9229732DB961B3BAF9E06E7383`.
 
-Next bounded continuation: finish the release gate above first; then reproduce
-ranking/candidate-budget starvation when one resource has many matching chunks.
-Do not claim that as fixed without a red regression. 50k-source measurements
+Next bounded continuation: ranking/candidate-budget starvation is now reproduced
+by ignored `target/qa/search-ranking-probe.rs`: 10 synthetic matching task notes,
+one with 100 matching sections, Literal `type:task`, limit 20 returns **1**, not 10.
+Canonical task bytes remain unchanged. The probe ran against the built vault
+library without editing source during the gate. Promote this to a red regression
+and fix deduplication before candidate LIMIT, preserving real note/Canvas anchors
+and best task match ranking. Do not call it fixed yet. 50k-source measurements
 remain pending. No need to repeat completed draft/relocation/recovery stages.
 Do not start a large persistent-draft or AI rewrite within the remaining window.
 PDF/media text extraction, vector search, embeddings and agent grants remain

@@ -6,6 +6,29 @@ The project is being implemented from the approved [design specification](docs/s
 
 ## Development baseline
 
+### Brandon desktop
+
+The local-first Tauri/Rust + React application is in [`apps/desktop`](apps/desktop).
+It edits ordinary Markdown and JSON Canvas files, with a visual editor, a task
+planner/calendar, local attachments and automatic native GPU Canvas rendering on
+Windows. Desktop runs independently of the server: PostgreSQL, Docker and an
+application account are not required.
+
+From the repository root, after installing Rust 1.98, Node.js 24 and pnpm 11.19:
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm --dir apps/desktop desktop:dev
+```
+
+See the [desktop guide](apps/desktop/README.md), [macOS source-build instructions](docs/build-macos.md)
+and [product roadmap](docs/canvas-planner-product.md). This is an actively developed
+desktop snapshot, not full Obsidian/Miro parity or a verified macOS release.
+Working vaults, tokens, local databases, model weights and generated binaries are
+not included in Git.
+
+### Server and web application
+
 Requirements:
 
 - Rust 1.98;

@@ -1,0 +1,4 @@
+transformers==5.20.1
+accelerate==1.15.0
+soundfile==0.14.0
+librosa==1.0.0

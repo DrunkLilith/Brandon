@@ -1,0 +1,43 @@
+{
+  "name": "@knowledge/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite",
+    "desktop:build": "tauri build",
+    "desktop:dev": "tauri dev",
+    "lint": "eslint src --max-warnings 0",
+    "test:smoke": "node ../../tests/desktop/editor-navigation-smoke.mjs",
+    "test:canvas": "node --test ../../tests/desktop/canvas-spatial.test.mjs ../../tests/desktop/canvas-document.test.mjs",
+    "test:render": "node ../../tests/desktop/canvas-render-smoke.mjs",
+    "tauri": "tauri",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-markdown": "6.5.2",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/language-data": "6.5.2",
+    "@codemirror/search": "6.7.2",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.14",
+    "@lezer/highlight": "1.2.5",
+    "@tauri-apps/api": "2.12.3",
+    "@tauri-apps/plugin-dialog": "2.8.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  }
+}

@@ -1,9 +1,25 @@
 /target/
+**/target/
+/dist-macos/
 node_modules/
 /apps/web/dist/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/gen/
 *.tsbuildinfo
 /.env
 /.env.*
 !/.env.example
 /.worktrees/
 *.log
+**/.brandon/
+/apps/desktop/demo-vault/
+/token.txt
+/telegram.local.json
+/telegram.inbox.jsonl
+/telegram.outbox.jsonl
+/secrets.local/
+__pycache__/
+*.pyc
+# Owner-specific notification bridge; not part of the desktop distribution.
+/scripts/telegram-notify.ps1
+/tests/desktop/telegram-notify.tests.ps1

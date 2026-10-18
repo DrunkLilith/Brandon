@@ -3,8 +3,6 @@ import { createRoot } from 'react-dom/client'
 import { App } from './app'
 import './styles.css'
 
-document.addEventListener('contextmenu', (event) => event.preventDefault())
-
 class FatalErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
 

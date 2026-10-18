@@ -1,5 +1,5 @@
 import { autocompletion, type CompletionContext, completionKeymap } from '@codemirror/autocomplete'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, undoDepth, redoDepth, selectAll } from '@codemirror/commands'
 import { bracketMatching, HighlightStyle, indentOnInput, syntaxHighlighting, syntaxTree } from '@codemirror/language'
 import { markdown } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
@@ -9,11 +9,19 @@ import { tags } from '@lezer/highlight'
 import { Decoration, drawSelection, dropCursor, EditorView, highlightActiveLine, keymap, lineNumbers, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view'
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { codeHighlighting, codeLanguage, codeLanguages, inlineCodeSource } from './code-language'
+import { linkAtPosition } from './note-navigation'
+import type { DesktopSettings } from './settings'
+
+export type EditorAction = 'undo' | 'redo' | 'copy' | 'cut' | 'paste' | 'select-all' | 'bold' | 'italic' | 'strike' | 'inline-code' | 'insert-link'
+export type EditorContext = { x: number; y: number; hasSelection: boolean; canFormat: boolean; canUndo: boolean; canRedo: boolean; link: ReturnType<typeof linkAtPosition> }
 
 type MarkdownEditorProps = {
   value: string
   notePaths: string[]
   visual: boolean
+  settings: DesktopSettings
+  onContext: (context: EditorContext) => void
+  onOpenLink: (target: string, kind: 'wiki' | 'markdown') => void
   onChange: (value: string) => void
 }
 
@@ -25,6 +33,8 @@ export type MarkdownEditorHandle = {
   focus: () => void
   revealLine: (line: number) => void
   revealDescription: (fallbackLine: number) => void
+  execute: (action: EditorAction) => Promise<void>
+  currentLink: () => ReturnType<typeof linkAtPosition>
 }
 
 const markdownHighlight = HighlightStyle.define([
@@ -140,7 +150,7 @@ class TableWidget extends WidgetType {
         const input = document.createElement('input')
         input.type = 'text'
         input.value = value
-        input.spellcheck = true
+        input.spellcheck = view.contentDOM.getAttribute('spellcheck') !== 'false'
         input.setAttribute('aria-label', `${rowIndex === 0 ? 'Заголовок' : `Строка ${rowIndex}`}, столбец ${columnIndex + 1}`)
         input.addEventListener('input', () => {
           const nextRows = this.rows.map((currentRow) => [...currentRow])
@@ -507,6 +517,27 @@ const markdownLines = ViewPlugin.fromClass(class {
   }
 }, { decorations: (plugin) => plugin.decorations })
 
+function linkMarks(view: EditorView) {
+  const marks = []
+  for (const range of view.visibleRanges) for (let position = range.from; position <= range.to;) {
+    const line = view.state.doc.lineAt(position)
+    for (const match of line.text.matchAll(/!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]|\[[^\]]*\]\(([^\s)]*)(?:\s+"[^"\n]*")?\)/g)) {
+      const from = line.from + match.index
+      let node = syntaxTree(view.state).resolveInner(from, 1), code = false
+      for (;;) { if (['InlineCode', 'FencedCode', 'CodeBlock'].includes(node.name)) code = true; if (!node.parent) break; node = node.parent }
+      if (code) continue
+      marks.push(Decoration.mark({ class: 'cm-note-link', attributes: { 'data-note-target': match[1] ?? match[2], 'data-note-kind': match[1] !== undefined ? 'wiki' : 'markdown' } }).range(from, from + match[0].length))
+    }
+    position = line.to + 1
+  }
+  return Decoration.set(marks, true)
+}
+const noteLinks = ViewPlugin.fromClass(class {
+  decorations: DecorationSet
+  constructor(view: EditorView) { this.decorations = linkMarks(view) }
+  update(update: ViewUpdate) { if (update.docChanged || update.viewportChanged) this.decorations = linkMarks(update.view) }
+}, { decorations: (plugin) => plugin.decorations })
+
 const editorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: '#1e1e1e', color: '#c8c8c8' },
   '.cm-scroller': { justifyContent: 'center', fontFamily: 'var(--font-ui)', fontSize: '17px', fontWeight: '400', lineHeight: '1.72', overflow: 'auto' },
@@ -529,17 +560,92 @@ const editorTheme = EditorView.theme({
   '.cm-task-checkbox': { width: '17px', height: '17px', margin: '0 9px 0 1px', verticalAlign: '-3px', accentColor: '#9c92e3', cursor: 'pointer' },
 }, { dark: true })
 
-export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({ value, notePaths, visual, onChange }, forwardedRef) {
+export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({ value, notePaths, visual, settings, onContext, onOpenLink, onChange }, forwardedRef) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const changeRef = useRef(onChange)
   const pathsRef = useRef(notePaths)
   const visualRef = useRef(visual)
   const visualCompartment = useRef(new Compartment())
+  const settingsCompartment = useRef(new Compartment())
+  const lastTarget = useRef<EditorView | null>(null)
+  const currentSettings = useRef(settings)
+  const contextRef = useRef(onContext)
+  const openLinkRef = useRef(onOpenLink)
+  currentSettings.current = settings
+  contextRef.current = onContext
+  openLinkRef.current = onOpenLink
   changeRef.current = onChange
   pathsRef.current = notePaths
 
+  function activeEditor() {
+    const element = document.activeElement?.closest<HTMLElement>('.cm-content')
+    const focused = element && hostRef.current?.contains(element) ? EditorView.findFromDOM(element) : null
+    return focused ?? (lastTarget.current?.dom.isConnected ? lastTarget.current : viewRef.current)
+  }
+
+  async function execute(action: EditorAction) {
+    const view = activeEditor()
+    if (!view || !view.dom.isConnected) return
+    view.focus()
+    const { from, to } = view.state.selection.main
+    const selected = view.state.doc.sliceString(from, to)
+    if (action === 'undo' || action === 'redo') { (action === 'undo' ? undo : redo)(view); view.focus(); return }
+    if (action === 'select-all') { selectAll(view); view.focus(); return }
+    if (['copy', 'cut', 'paste'].includes(action)) {
+      const doc = view.state.doc
+      const unchanged = () => view.dom.isConnected && view.state.doc === doc && view.state.selection.main.from === from && view.state.selection.main.to === to
+      if (action === 'copy' || action === 'cut') {
+        if (!selected) return
+        await navigator.clipboard.writeText(selected)
+        if (action === 'cut') {
+          if (!unchanged()) throw new Error('Текст изменился во время копирования. Вырезание отменено.')
+          view.dispatch({ changes: { from, to, insert: '' }, selection: { anchor: from }, userEvent: 'delete.cut' })
+        }
+      } else {
+        const text = await navigator.clipboard.readText()
+        if (!unchanged()) throw new Error('Текст изменился во время чтения буфера. Повторите вставку.')
+        view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, scrollIntoView: true, userEvent: 'input.paste' })
+      }
+      view.focus(); return
+    }
+    // Code blocks have their own editor: Markdown formatting only affects prose.
+    if (view !== viewRef.current) return
+    let insert = '', offset = 0, length = selected.length
+    if (action === 'inline-code') { const source = inlineCodeSource(selected); insert = source.value; offset = source.offset; length = source.length }
+    else if (action === 'insert-link') { insert = `[[${selected || 'Заметка'}]]`; offset = 2; length = selected.length || 'Заметка'.length }
+    else {
+      const marker = action === 'bold' ? '**' : action === 'italic' ? '*' : '~~'
+      if (selected.startsWith(marker) && selected.endsWith(marker) && selected.length >= marker.length * 2) { insert = selected.slice(marker.length, -marker.length); length = insert.length }
+      else if (view.state.doc.sliceString(Math.max(0, from - marker.length), from) === marker && view.state.doc.sliceString(to, to + marker.length) === marker) {
+        view.dispatch({ changes: [{ from: from - marker.length, to: from, insert: '' }, { from: to, to: to + marker.length, insert: '' }], selection: { anchor: from - marker.length, head: to - marker.length }, userEvent: 'input.format' }); view.focus(); return
+      } else { insert = `${marker}${selected || 'текст'}${marker}`; offset = marker.length; length = selected.length || 'текст'.length }
+    }
+    view.dispatch({ changes: { from, to, insert }, selection: { anchor: from + offset, head: from + offset + length }, scrollIntoView: true, userEvent: 'input.format' })
+    view.focus()
+  }
+
+  function requestContext(target: EventTarget | null, x?: number, y?: number) {
+    const element = target instanceof HTMLElement ? target : null
+    // Native fields (table cells / language selector) keep their native menu.
+    if (element?.closest('input, textarea, select')) return false
+    const content = element?.closest<HTMLElement>('.cm-content')
+    const view = content ? EditorView.findFromDOM(content) : viewRef.current
+    if (!view) return false
+    lastTarget.current = view
+    if (x !== undefined && y !== undefined) {
+      const position = view.posAtCoords({ x, y })
+      const selection = view.state.selection.main
+      if (position !== null && (position < selection.from || position > selection.to || selection.empty)) view.dispatch({ selection: { anchor: position } })
+    }
+    const selection = view.state.selection.main, rect = view.coordsAtPos(selection.head)
+    contextRef.current({ x: x ?? rect?.left ?? 400, y: y ?? rect?.bottom ?? 200, hasSelection: !selection.empty, canFormat: view === viewRef.current, canUndo: undoDepth(view.state) > 0, canRedo: redoDepth(view.state) > 0, link: view === viewRef.current ? linkAtPosition(view.state.doc.toString(), selection.head) : null })
+    return true
+  }
+
   useImperativeHandle(forwardedRef, () => ({
+    execute,
+    currentLink() { const view = activeEditor(); return view && view === viewRef.current ? linkAtPosition(view.state.doc.toString(), view.state.selection.main.head) : null },
     insertInlineCode() {
       const view = viewRef.current
       if (!view) return
@@ -591,7 +697,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         if (content) EditorView.findFromDOM(content)?.focus()
       })
     },
-    focus() { viewRef.current?.focus() },
+    focus() { activeEditor()?.focus() },
     revealLine(lineNumber: number) {
       const view = viewRef.current
       if (!view) return
@@ -657,12 +763,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         markdown({ codeLanguages: languages }),
         syntaxHighlighting(markdownHighlight),
         codeHighlighting,
+        noteLinks,
         visualCompartment.current.of(visual ? [markdownVisualBlocks, markdownLines] : []),
         autocompletion({ override: [wikiCompletion], activateOnTyping: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap, indentWithTab]),
         editorTheme,
         EditorView.lineWrapping,
-        EditorView.contentAttributes.of({ spellcheck: 'true' }),
+        settingsCompartment.current.of([...(currentSettings.current.lineNumbers ? [lineNumbers()] : []), EditorView.contentAttributes.of({ spellcheck: String(currentSettings.current.spellcheck), 'aria-label': 'Текст заметки' })]),
+        EditorView.domEventHandlers({
+          mousedown(event, view) {
+            if (event.button !== 0 || !event.ctrlKey && !event.metaKey) return false
+            const position = view.posAtCoords({ x: event.clientX, y: event.clientY })
+            const link = position !== null ? linkAtPosition(view.state.doc.toString(), position) : null
+            if (!link) return false
+            event.preventDefault(); openLinkRef.current(link.target, link.kind); return true
+          },
+        }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) changeRef.current(update.state.doc.toString())
         }),
@@ -685,9 +801,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
   useEffect(() => {
     const view = viewRef.current
+    if (view) view.dispatch({ effects: settingsCompartment.current.reconfigure([...(settings.lineNumbers ? [lineNumbers()] : []), EditorView.contentAttributes.of({ spellcheck: String(settings.spellcheck), 'aria-label': 'Текст заметки' })]) })
+    hostRef.current?.querySelectorAll<HTMLInputElement>('.cm-live-table input').forEach((input) => { input.spellcheck = settings.spellcheck })
+  }, [settings.lineNumbers, settings.spellcheck])
+
+  useEffect(() => {
+    const view = viewRef.current
     if (!view || value === view.state.doc.toString()) return
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } })
   }, [value])
 
-  return <div className="codemirror-host" ref={hostRef} />
+  return <div className="codemirror-host" ref={hostRef} onFocusCapture={(event) => { const content = (event.target as HTMLElement).closest<HTMLElement>('.cm-content'); if (content) lastTarget.current = EditorView.findFromDOM(content) ?? null }} onContextMenu={(event) => { if (requestContext(event.target, event.clientX, event.clientY)) { event.preventDefault(); event.stopPropagation() } }} onKeyDownCapture={(event) => {
+    if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && requestContext(event.target)) { event.preventDefault(); event.stopPropagation() }
+  }} />
 })

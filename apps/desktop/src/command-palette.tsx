@@ -18,7 +18,7 @@ export function CommandPalette({ mode, files, actions, onClose, onOpen }: {
     const normalized = query.trim().toLocaleLowerCase('ru')
     if (mode === 'notes') return files
       .filter((file) => !normalized || file.path.toLocaleLowerCase('ru').includes(normalized))
-      .slice(0, 15)
+      .slice(0, 50)
       .map((file) => ({ id: file.path, label: file.name.replace(/\.md$/i, ''), detail: file.folder || 'Корень vault', run: () => onOpen(file.path), kind: 'note' as const, shortcut: undefined }))
     return actions
       .filter((action) => !normalized || `${action.label} ${action.detail ?? ''}`.toLocaleLowerCase('ru').includes(normalized))
@@ -35,10 +35,10 @@ export function CommandPalette({ mode, files, actions, onClose, onOpen }: {
         if (event.key === 'Escape') onClose()
         if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((value) => Math.min(value + 1, Math.max(rows.length - 1, 0))) }
         if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((value) => Math.max(value - 1, 0)) }
-        if (event.key === 'Enter' && rows[selected]) { rows[selected].run(); onClose() }
+        if (event.key === 'Enter' && rows[selected]) { event.preventDefault(); event.stopPropagation(); onClose(); rows[selected].run() }
       }} placeholder={mode === 'notes' ? 'Открыть заметку…' : 'Введите команду…'} /><kbd>Esc</kbd></div>
       <div className="palette-caption">{mode === 'notes' ? 'ЗАМЕТКИ' : 'КОМАНДЫ'}</div>
-      <div className="palette-results">{rows.map((row, index) => <button key={row.id} className={index === selected ? 'selected' : ''} onMouseEnter={() => setSelected(index)} onClick={() => { row.run(); onClose() }}>
+      <div className="palette-results">{rows.map((row, index) => <button key={row.id} className={index === selected ? 'selected' : ''} onMouseEnter={() => setSelected(index)} onClick={() => { onClose(); row.run() }}>
         <span className="palette-icon">{row.kind === 'note' ? <FileIcon /> : <PlusIcon />}</span><span><strong>{row.label}</strong>{row.detail && <small>{row.detail}</small>}</span>{row.shortcut && <kbd>{row.shortcut}</kbd>}
       </button>)}{!rows.length && <div className="palette-empty">Ничего не найдено</div>}</div>
       <footer><span><kbd>↑↓</kbd> выбрать</span><span><kbd>Enter</kbd> открыть</span></footer>

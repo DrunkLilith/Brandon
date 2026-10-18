@@ -2,10 +2,13 @@
 
 Status: approved product direction, 2026-10-17.
 
-Latest planning update: 2026-10-18. The final "Integrated desktop roadmap" section
-records current user decisions for the default GPU path, rich-media Canvas,
-local hybrid search and scoped Codex/Claude integration. Earlier sections remain
-as research/history where superseded.
+Current unified roadmap: [Brandon master plan](brandon-master-plan.md), 2026-10-18.
+It is authoritative for future cross-product priorities and delivery order,
+including Obsidian workflows, the Miro board references, MCP and selected plugins.
+This document retains research, product decisions and implementation evidence;
+its earlier "next" instructions are historical checkpoints, not the current queue.
+The "Integrated desktop roadmap" section records the adopted default GPU path,
+rich-media Canvas, local hybrid search and scoped Codex/Claude direction.
 
 Brandon will combine an open, local-first visual workspace with a task planner and calendar. The goal is not to bolt a whiteboard and a date grid onto the note editor. Notes, canvas cards, tasks, calendar blocks, Bases rows, backlinks, and AI context must describe the same underlying objects.
 
@@ -113,6 +116,11 @@ this candidate into the main application only after that decision. Existing
 `.canvas` files and task/note references remain the portable storage boundary.
 
 ## Tasks: portable canonical model
+
+Historical model: the later approved SQLite task contract supersedes the
+Markdown-only task-state proposal in this section. `.brandon/tasks.sqlite3` is
+authoritative operational data, with Markdown task descriptions and explicit
+backup/export/restore requirements. See the [master plan](brandon-master-plan.md).
 
 Tasks originate in ordinary Markdown and retain checkbox syntax:
 

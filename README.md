@@ -22,7 +22,9 @@ pnpm --dir apps/desktop desktop:dev
 ```
 
 See the [desktop guide](apps/desktop/README.md), [macOS source-build instructions](docs/build-macos.md)
-and [product roadmap](docs/canvas-planner-product.md). This is an actively developed
+and [unified product roadmap](docs/brandon-master-plan.md). Detailed Canvas/Planner
+research and verification checkpoints remain in the [product history](docs/canvas-planner-product.md).
+This is an actively developed
 desktop snapshot, not full Obsidian/Miro parity or a verified macOS release.
 Working vaults, tokens, local databases, model weights and generated binaries are
 not included in Git.

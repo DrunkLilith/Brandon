@@ -9,14 +9,20 @@ import { CanvasView } from './canvas-view'
 import { AttachmentDetails } from './canvas-attachments'
 import { LocalSearch } from './local-search'
 import { CommandPalette, type PaletteAction } from './command-palette'
-import { MarkdownEditor, type MarkdownEditorHandle } from './editor'
+import { createCommandRegistry, type Command, type CommandRegistry } from './commands'
+import { CommandMenu } from './command-menu'
+import { MarkdownEditor, type EditorAction, type EditorContext, type MarkdownEditorHandle } from './editor'
+import { readSettings, writeSettings } from './settings'
+import { SettingsDialog } from './settings-dialog'
+import { anchorLine, resolveNoteTarget, type NoteLocation } from './note-navigation'
+import { NoteHoverPreview } from './note-hover-preview'
 import { FileTree } from './file-tree'
 import { GraphView } from './graph-view'
 import {
   BrandIcon, CalendarIcon, CanvasIcon, CloseIcon, ColumnsIcon, DatabaseIcon,
   EditIcon, FileIcon, FolderIcon, GraphIcon, MaximizeIcon, MinimizeIcon,
   MoreIcon, PlusIcon, PreviewIcon, RefreshIcon, SaveIcon, SearchIcon,
-  SidebarIcon, TemplateIcon,
+  SidebarIcon, TemplateIcon, SettingsIcon,
 } from './icons'
 import { MarkdownPreview } from './markdown-preview'
 import { PlannerView } from './planner-view'
@@ -39,7 +45,6 @@ const PLANNER_TAB = 'brandon://planner'
 const EMPTY_TAB_PREFIX = 'brandon://new/'
 const HOME_TAB = `${EMPTY_TAB_PREFIX}start`
 const UI_ZOOM_STORAGE = 'brandon.uiZoom.v2'
-const VISUAL_EDITING_STORAGE = 'brandon.visualEditing'
 const UI_ZOOM_MIN = .8
 const UI_ZOOM_MAX = 1.6
 const UI_ZOOM_STEP = .1
@@ -98,6 +103,12 @@ function parentPath(path: string | null) {
 }
 
 export function App() {
+  const [settings, setSettings] = useState(readSettings)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [editorMenu, setEditorMenu] = useState<EditorContext | null>(null)
+  const registryRef = useRef<CommandRegistry | null>(null)
   const [vault, setVault] = useState<VaultSnapshot | null>(null)
   const [index, setIndex] = useState<VaultIndex | null>(null)
   const [note, setNote] = useState<NoteDocument | null>(null)
@@ -108,10 +119,11 @@ export function App() {
   const [history, setHistory] = useState<{ entries: string[]; cursor: number }>({ entries: [], cursor: -1 })
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('note')
   const [selectedFolder, setSelectedFolder] = useState('')
-  const [viewMode, setViewMode] = useState<ViewMode>('edit')
+  const [viewMode, setViewMode] = useState<ViewMode>(settings.defaultViewMode)
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('files')
   const [sidebarQuery, setSidebarQuery] = useState('')
   const [searchTarget, setSearchTarget] = useState<{ path: string; line: number; nodeId: string | null; nonce: string } | null>(null)
+  const [previewFocus, setPreviewFocus] = useState<{ path: string; line: number; nonce: string } | null>(null)
   const [searchAttachment, setSearchAttachment] = useState<{ path: string; root: string } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(false)
@@ -127,7 +139,8 @@ export function App() {
   const [templatePicker, setTemplatePicker] = useState(false)
   const [uiZoom, setUiZoom] = useState(rememberedUiZoom)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
-  const [visualEditing, setVisualEditing] = useState(() => window.localStorage.getItem(VISUAL_EDITING_STORAGE) !== 'source')
+  const visualEditing = settings.editorMode === 'visual'
+  const setVisualEditing = useCallback((visual: boolean) => setSettings((current) => ({ ...current, editorMode: visual ? 'visual' : 'source' })), [])
   const [quickInsertOpen, setQuickInsertOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLInputElement>(null)
@@ -174,6 +187,13 @@ export function App() {
     if (!next.details) window.setTimeout(() => setNotice((current) => current === next ? null : current), 3000)
   }, [])
 
+  const runCommand = useCallback((id: string) => {
+    try { void Promise.resolve(registryRef.current?.execute(id)).catch((error) => showNotice({ kind: 'error', message: errorMessage(error) })) }
+    catch (error) { showNotice({ kind: 'error', message: errorMessage(error) }) }
+  }, [showNotice])
+  const closeEditorMenu = useCallback((restoreFocus = true) => { setEditorMenu(null); if (restoreFocus) window.requestAnimationFrame(() => editorRef.current?.focus()) }, [])
+  const openEditorMenu = useCallback((context: EditorContext) => { setContextMenu(null); setEditorMenu(context) }, [])
+
   const reportLinkWarnings = useCallback((result: VaultMutation) => {
     if (!result.linkWarnings?.length) return
     const reasons = { changed: 'изменён извне', unavailable: 'недоступен', invalidCanvas: 'некорректный Canvas', limit: 'превышен безопасный лимит' }
@@ -197,8 +217,8 @@ export function App() {
   }, [showNotice, uiZoom])
 
   useEffect(() => {
-    window.localStorage.setItem(VISUAL_EDITING_STORAGE, visualEditing ? 'visual' : 'source')
-  }, [visualEditing])
+    try { writeSettings(settings) } catch { showNotice({ kind: 'error', message: 'Настройки применены, но не удалось сохранить их локально.' }) }
+  }, [settings, showNotice])
 
   const loadIndex = useCallback(async () => {
     try {
@@ -323,6 +343,7 @@ export function App() {
   }, [])
 
   const applyDocument = useCallback((document: NoteDocument, view: WorkspaceView = 'note', record = true) => {
+    if (noteRef.current?.path !== document.path) setViewMode(settingsRef.current.defaultViewMode)
     markMissingSource(null)
     setDiscardDraftOpen(false)
     attachTab(document.path)
@@ -343,6 +364,7 @@ export function App() {
     markMissingSource(null)
     setDiscardDraftOpen(false)
     setSearchTarget(null)
+    setPreviewFocus(null)
     setSearchAttachment(null)
     noteRef.current = null
     contentRef.current = ''
@@ -357,6 +379,7 @@ export function App() {
 
   const activateTab = useCallback(async (path: string, record = true): Promise<boolean> => {
     setSearchTarget(null)
+    setPreviewFocus(null)
     setSearchAttachment(null)
     const request = ++navigationRequest.current
     if (activeTabRef.current === path) return true
@@ -388,6 +411,28 @@ export function App() {
 
   const loadNote = useCallback((path: string) => activateTab(path), [activateTab])
   const loadResource = loadNote
+
+  const navigateNote = useCallback(async (path: string, location: NoteLocation = {}) => {
+    if (!await loadNote(path) || noteRef.current?.path !== path) return
+    if (viewForPath(path) !== 'note') return
+    const line = anchorLine(contentRef.current, location)
+    if (line === null) { showNotice({ kind: 'warning', message: 'Заметка открыта, но указанный заголовок или блок не найден. Файл не изменён.' }); return }
+    const nonce = crypto.randomUUID()
+    setPreviewFocus({ path, line, nonce })
+    setSearchTarget({ path, line, nodeId: null, nonce })
+  }, [loadNote, showNotice])
+
+  const openNoteLink = useCallback((target: string, kind: 'wiki' | 'markdown' = 'wiki') => {
+    const current = noteRef.current
+    if (!current) return
+    const resolved = resolveNoteTarget(target, current.path, index?.documents ?? [], kind)
+    if (resolved.status !== 'resolved') {
+      const messages = { missing: 'Заметка не найдена. Файл не создан.', ambiguous: 'Несколько заметок подходят под эту ссылку. Укажите путь от папки или корня vault.', invalid: 'Эта ссылка не является безопасным локальным путём заметки.' }
+      showNotice({ kind: 'warning', message: messages[resolved.status] }); return
+    }
+    void navigateNote(resolved.path, resolved)
+  }, [index, navigateNote, showNotice])
+  const filterTag = useCallback((tag: string) => { setSidebarMode('search'); setSidebarOpen(true); setSidebarQuery(`tag:${tag}`) }, [])
   const openSearchHit = useCallback(async (hit: SearchHit) => {
     if (hit.kind === 'file') { if (vault) setSearchAttachment({ path: hit.path, root: vault.root }); return }
     if (!await flushDocument() || !await loadNote(hit.path) || noteRef.current?.path !== hit.path) return
@@ -548,15 +593,25 @@ export function App() {
   }, [refreshVault, vault?.root])
 
   useEffect(() => {
-    if (!searchTarget || searchTarget.nodeId || searchTarget.path !== note?.path || workspaceView !== 'note' || viewMode === 'preview') return
+    if (!searchTarget || searchTarget.nodeId || searchTarget.path !== note?.path || workspaceView !== 'note') return
     const frame = window.requestAnimationFrame(() => {
-      if (noteRef.current?.path === searchTarget.path && editorRef.current) {
-        editorRef.current.revealLine(searchTarget.line)
+      if (noteRef.current?.path === searchTarget.path) {
+        if (viewMode !== 'preview') editorRef.current?.revealLine(searchTarget.line)
+        const candidates = Array.from(document.querySelectorAll<HTMLElement>('.preview-pane [data-source-line]'))
+        const target = candidates.filter((element) => Number(element.dataset.sourceLine) <= searchTarget.line && Number(element.dataset.sourceEndLine ?? element.dataset.sourceLine) >= searchTarget.line).at(-1)
+          ?? candidates.filter((element) => Number(element.dataset.sourceLine) <= searchTarget.line).at(-1)
+        if (target) target.scrollIntoView({ block: 'center' })
         setSearchTarget((current) => current?.nonce === searchTarget.nonce ? null : current)
       }
     })
     return () => window.cancelAnimationFrame(frame)
   }, [searchTarget, note?.path, workspaceView, viewMode])
+
+  useEffect(() => {
+    if (!previewFocus) return
+    const timeout = window.setTimeout(() => setPreviewFocus((current) => current?.nonce === previewFocus.nonce ? null : current), 1800)
+    return () => window.clearTimeout(timeout)
+  }, [previewFocus])
 
   useEffect(() => {
     if (!searchAttachment) return
@@ -707,6 +762,10 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (settingsOpen || editorMenu) {
+        if (registryRef.current?.forEvent(event) || closeGuardActive && (event.code === 'F5' || (event.ctrlKey || event.metaKey) && event.code === 'KeyR')) event.preventDefault()
+        return // modal/menu owns Escape, focus and capture; dirty reload stays guarded
+      }
       if (event.key === 'Escape') { setDiscardDraftOpen(false); setDialog(null); setPalette(null); setContextMenu(null); setTemplatePicker(false); setQuickInsertOpen(false); return }
       if (closeGuardActive && (event.code === 'F5' || ((event.ctrlKey || event.metaKey) && event.code === 'KeyR'))) {
         event.preventDefault()
@@ -716,33 +775,15 @@ export function App() {
         return
       }
       if (discardDraftOpen || dialog || palette || templatePicker || quickInsertOpen || conflict) return
-      if (vault && event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-        event.preventDefault()
-        void navigateHistory(event.key === 'ArrowLeft' ? -1 : 1)
-        return
-      }
-      if (!event.ctrlKey && !event.metaKey) return
-      const key = event.code.startsWith('Key') ? event.code.slice(3).toLowerCase() : event.key.toLowerCase()
-      if (vault && key === 't') { event.preventDefault(); if (event.shiftKey) void reopenTab(); else newTab(); return }
-      if (vault && key === 'w') { event.preventDefault(); void closeTab(activeTabRef.current); return }
-      if (vault && key === 'tab') { event.preventDefault(); cycleTab(event.shiftKey ? -1 : 1); return }
-      if (key === '/' && noteRef.current && workspaceViewRef.current === 'note') { event.preventDefault(); setQuickInsertOpen(true); return }
-      if (key === 'a' && event.shiftKey && vault) { event.preventDefault(); openPlanner(); return }
-      if (key === '+' || key === '=') { event.preventDefault(); changeUiZoom(UI_ZOOM_STEP); return }
-      if (key === '-') { event.preventDefault(); changeUiZoom(-UI_ZOOM_STEP); return }
-      if (key === '0') { event.preventDefault(); changeUiZoom('reset'); return }
-      if (key === 'p') { event.preventDefault(); setPalette('commands') }
-      if (key === 'o') { event.preventDefault(); if (vault) setPalette('notes') }
-      if (key === 'k') { event.preventDefault(); setSidebarMode('search'); setSidebarOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0) }
-      if (key === 's') { event.preventDefault(); void saveNote() }
-      if (key === 'e' && noteRef.current && workspaceViewRef.current === 'note') { event.preventDefault(); setViewMode((current) => current === 'preview' ? 'edit' : 'preview'); return }
-      if (key === 'n' && vault) { event.preventDefault(); setDialog({ kind: 'note', value: '', parent: selectedFolder }) }
-      if (key === 'g' && vault) { event.preventDefault(); openGraph() }
-      if (key === ',' && noteRef.current && workspaceViewRef.current === 'note') { event.preventDefault(); setRightOpen((value) => !value) }
+      const command = registryRef.current?.forEvent(event)
+      if (!command) return
+      if (command.id.startsWith('editor-') && !(event.target instanceof Element && event.target.closest('.codemirror-host .cm-content'))) return
+      event.preventDefault(); event.stopPropagation()
+      if (!event.repeat) runCommand(command.id)
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [beginRecoveryCopy, changeUiZoom, closeGuardActive, closeTab, conflict, cycleTab, dialog, discardDraftOpen, navigateHistory, newTab, openGraph, openPlanner, palette, quickInsertOpen, reopenTab, saveNote, selectedFolder, templatePicker, vault])
+  }, [beginRecoveryCopy, closeGuardActive, conflict, dialog, discardDraftOpen, editorMenu, palette, quickInsertOpen, runCommand, saveNote, settingsOpen, templatePicker])
 
   const templateFiles = useMemo(() => vault?.files.filter((file) => /(^|\/)(templates?|шаблоны)(\/|$)/i.test(file.path)) ?? [], [vault])
 
@@ -884,32 +925,53 @@ export function App() {
   }, [])
 
   const folders = useMemo(() => vault?.entries.filter((entry) => entry.kind === 'folder') ?? [], [vault])
-  const commandActions = useMemo<PaletteAction[]>(() => [
-    { id: 'new-tab', label: 'Новая вкладка', shortcut: 'Ctrl T', run: newTab },
-    { id: 'close-tab', label: 'Закрыть текущую вкладку', shortcut: 'Ctrl W', run: () => { void closeTab(activeTabRef.current) } },
-    { id: 'reopen-tab', label: 'Вернуть закрытую вкладку', shortcut: 'Ctrl Shift T', run: () => { void reopenTab() } },
-    { id: 'navigate-back', label: 'Вернуться назад', shortcut: 'Alt ←', run: () => { void navigateHistory(-1) } },
-    { id: 'navigate-forward', label: 'Перейти вперёд', shortcut: 'Alt →', run: () => { void navigateHistory(1) } },
-    { id: 'new-note', label: 'Новая заметка', detail: selectedFolder || 'Корень vault', shortcut: 'Ctrl N', run: () => setDialog({ kind: 'note', value: '', parent: selectedFolder }) },
-    { id: 'new-folder', label: 'Новая папка', detail: selectedFolder || 'Корень vault', run: () => setDialog({ kind: 'folder', value: '', parent: selectedFolder }) },
-    { id: 'daily-note', label: 'Открыть сегодняшнюю заметку', detail: `Daily/${localDateStamp()}.md`, run: () => void openDailyNote() },
-    { id: 'insert-template', label: 'Вставить шаблон', detail: 'Templates', run: () => note && workspaceView === 'note' ? setTemplatePicker(true) : showNotice({ kind: 'error', message: 'Сначала откройте Markdown-заметку' }) },
-    { id: 'quick-insert', label: 'Открыть палитру быстрых вставок', detail: 'Задача, список, ссылка, таблица, код', shortcut: 'Ctrl /', run: () => note && workspaceView === 'note' ? setQuickInsertOpen(true) : showNotice({ kind: 'error', message: 'Сначала откройте Markdown-заметку' }) },
-    { id: 'new-canvas', label: 'Создать новый холст', detail: 'JSON Canvas · .canvas', run: () => setDialog({ kind: 'canvas', value: '', parent: selectedFolder }) },
-    { id: 'new-base', label: 'Создать новую базу', detail: 'Obsidian Bases · .base', run: () => setDialog({ kind: 'base', value: '', parent: selectedFolder }) },
-    { id: 'planner', label: 'Открыть задачи и календарь', detail: `${index?.tasks.length ?? 0} задач`, shortcut: 'Ctrl Shift A', run: openPlanner },
-    { id: 'graph', label: 'Открыть граф связей', shortcut: 'Ctrl G', run: openGraph },
-    { id: 'open-note', label: 'Быстрый переход к заметке', shortcut: 'Ctrl O', run: () => setPalette('notes') },
-    { id: 'search', label: 'Поиск по содержимому', shortcut: 'Ctrl K', run: () => { setSidebarMode('search'); setSidebarOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0) } },
-    { id: 'toggle-right', label: 'Показать или скрыть контекст', shortcut: 'Ctrl ,', run: () => setRightOpen((value) => !value) },
-    { id: 'mode-edit', label: 'Режим редактора', run: () => setViewMode('edit') },
-    { id: 'mode-split', label: 'Разделённый режим', run: () => setViewMode('split') },
-    { id: 'mode-read', label: 'Переключить редактор и чтение', shortcut: 'Ctrl E', run: () => setViewMode((current) => current === 'preview' ? 'edit' : 'preview') },
-    { id: 'zoom-in', label: 'Увеличить интерфейс', detail: `${Math.round(uiZoom * 100)}%`, shortcut: 'Ctrl +', run: () => changeUiZoom(UI_ZOOM_STEP) },
-    { id: 'zoom-out', label: 'Уменьшить интерфейс', detail: `${Math.round(uiZoom * 100)}%`, shortcut: 'Ctrl −', run: () => changeUiZoom(-UI_ZOOM_STEP) },
-    { id: 'zoom-reset', label: 'Сбросить масштаб интерфейса', detail: '100%', shortcut: 'Ctrl 0', run: () => changeUiZoom('reset') },
-    { id: 'open-vault', label: 'Открыть другой vault', run: () => void openVault() },
-  ], [activateTab, changeUiZoom, closeTab, index?.tasks.length, navigateHistory, newTab, note, openDailyNote, openGraph, openPlanner, openVault, reopenTab, selectedFolder, showNotice, uiZoom, workspaceView])
+  const commands = useMemo<Command[]>(() => {
+    const hasVault = Boolean(vault), hasNote = Boolean(note && workspaceView === 'note'), editable = hasNote && viewMode !== 'preview'
+    return [
+      { id: 'palette', label: 'Открыть палитру команд', defaultShortcut: 'Mod+KeyP', run: () => setPalette('commands') },
+      { id: 'settings', label: 'Открыть настройки', detail: 'Редактор и горячие клавиши', defaultShortcut: 'Mod+Shift+Comma', run: () => setSettingsOpen(true) },
+      { id: 'save', label: 'Сохранить документ', defaultShortcut: 'Mod+KeyS', enabled: Boolean(note && !['graph', 'planner'].includes(workspaceView)), run: () => saveNote() },
+      { id: 'new-tab', label: 'Новая вкладка', defaultShortcut: 'Mod+KeyT', enabled: hasVault, run: newTab },
+      { id: 'close-tab', label: 'Закрыть текущую вкладку', defaultShortcut: 'Mod+KeyW', enabled: hasVault, run: () => closeTab(activeTabRef.current) },
+      { id: 'reopen-tab', label: 'Вернуть закрытую вкладку', defaultShortcut: 'Mod+Shift+KeyT', enabled: hasVault, run: reopenTab },
+      { id: 'next-tab', label: 'Следующая вкладка', defaultShortcut: 'Mod+Tab', enabled: hasVault, run: () => cycleTab(1) },
+      { id: 'previous-tab', label: 'Предыдущая вкладка', defaultShortcut: 'Mod+Shift+Tab', enabled: hasVault, run: () => cycleTab(-1) },
+      { id: 'navigate-back', label: 'Вернуться назад', defaultShortcut: 'Alt+ArrowLeft', enabled: history.cursor > 0, run: () => navigateHistory(-1) },
+      { id: 'navigate-forward', label: 'Перейти вперёд', defaultShortcut: 'Alt+ArrowRight', enabled: history.cursor < history.entries.length - 1, run: () => navigateHistory(1) },
+      { id: 'new-note', label: 'Новая заметка', detail: selectedFolder || 'Корень vault', defaultShortcut: 'Mod+KeyN', enabled: hasVault, run: () => setDialog({ kind: 'note', value: '', parent: selectedFolder }) },
+      { id: 'new-folder', label: 'Новая папка', enabled: hasVault, run: () => setDialog({ kind: 'folder', value: '', parent: selectedFolder }) },
+      { id: 'daily-note', label: 'Открыть сегодняшнюю заметку', enabled: hasVault, run: openDailyNote },
+      { id: 'insert-template', label: 'Вставить шаблон', detail: 'Templates', enabled: hasNote, run: () => setTemplatePicker(true) },
+      { id: 'quick-insert', label: 'Открыть палитру быстрых вставок', defaultShortcut: 'Mod+Slash', enabled: hasNote, run: () => setQuickInsertOpen(true) },
+      { id: 'new-canvas', label: 'Создать новый холст', detail: 'JSON Canvas · .canvas', enabled: hasVault, run: () => setDialog({ kind: 'canvas', value: '', parent: selectedFolder }) },
+      { id: 'new-base', label: 'Создать новую базу', detail: 'Obsidian Bases · .base', enabled: hasVault, run: () => setDialog({ kind: 'base', value: '', parent: selectedFolder }) },
+      { id: 'planner', label: 'Открыть задачи и календарь', defaultShortcut: 'Mod+Shift+KeyA', enabled: hasVault, run: openPlanner },
+      { id: 'graph', label: 'Открыть граф связей', defaultShortcut: 'Mod+KeyG', enabled: hasVault, run: openGraph },
+      { id: 'open-note', label: 'Быстрый переход к заметке', defaultShortcut: 'Mod+KeyO', enabled: hasVault, run: () => setPalette('notes') },
+      { id: 'search', label: 'Поиск по содержимому', defaultShortcut: 'Mod+KeyK', enabled: hasVault, run: () => { setSidebarMode('search'); setSidebarOpen(true); window.setTimeout(() => searchRef.current?.focus(), 0) } },
+      { id: 'toggle-right', label: 'Показать или скрыть контекст', defaultShortcut: 'Mod+Comma', enabled: hasNote, run: () => setRightOpen((value) => !value) },
+      { id: 'mode-edit', label: 'Режим редактора', enabled: hasNote, run: () => setViewMode('edit') },
+      { id: 'mode-split', label: 'Разделённый режим', enabled: hasNote, run: () => setViewMode('split') },
+      { id: 'mode-preview', label: 'Режим чтения', enabled: hasNote, run: () => setViewMode('preview') },
+      { id: 'mode-read', label: 'Переключить редактор и чтение', defaultShortcut: 'Mod+KeyE', enabled: hasNote, run: () => setViewMode((mode) => mode === 'preview' ? 'edit' : 'preview') },
+      { id: 'mode-visual', label: 'Визуальный редактор', enabled: hasNote, run: () => { setVisualEditing(true); setViewMode('edit') } },
+      { id: 'mode-source', label: 'Исходный Markdown', enabled: hasNote, run: () => { setVisualEditing(false); setViewMode('edit') } },
+      { id: 'zoom-in', label: 'Увеличить интерфейс', defaultShortcut: 'Mod+Equal', run: () => changeUiZoom(UI_ZOOM_STEP) },
+      { id: 'zoom-out', label: 'Уменьшить интерфейс', defaultShortcut: 'Mod+Minus', run: () => changeUiZoom(-UI_ZOOM_STEP) },
+      { id: 'zoom-reset', label: 'Сбросить масштаб интерфейса', defaultShortcut: 'Mod+Digit0', run: () => changeUiZoom('reset') },
+      { id: 'open-vault', label: 'Открыть другой vault', run: openVault },
+      ...([
+        ['undo', 'Отменить', 'Mod+KeyZ'], ['redo', 'Повторить', 'Mod+Shift+KeyZ'],
+        ['copy', 'Копировать'], ['cut', 'Вырезать'], ['paste', 'Вставить'], ['select-all', 'Выделить всё'],
+        ['bold', 'Жирный', 'Mod+KeyB'], ['italic', 'Курсив', 'Mod+KeyI'], ['strike', 'Зачёркнутый', 'Mod+Shift+KeyS'],
+        ['inline-code', 'Встроенный код', 'Mod+Backquote'], ['insert-link', 'Вставить внутреннюю ссылку'],
+      ] as const).map(([action, label, shortcut]) => ({ id: `editor-${action}`, label, defaultShortcut: shortcut, enabled: editable, run: () => editorRef.current?.execute(action as EditorAction) })),
+      { id: 'editor-open-link', label: 'Открыть ссылку под курсором', defaultShortcut: 'Mod+Enter', enabled: editable, run: () => { const link = editorRef.current?.currentLink(); if (link) openNoteLink(link.target, link.kind); else showNotice({ kind: 'warning', message: 'Под курсором нет внутренней ссылки.' }) } },
+    ]
+  }, [vault, note, workspaceView, viewMode, saveNote, newTab, closeTab, reopenTab, cycleTab, history, navigateHistory, selectedFolder, openDailyNote, openPlanner, openGraph, setVisualEditing, changeUiZoom, openVault, openNoteLink, showNotice])
+  const registry = useMemo(() => createCommandRegistry(commands, settings.hotkeys), [commands, settings.hotkeys])
+  registryRef.current = registry
+  const commandActions = useMemo<PaletteAction[]>(() => commands.filter((command) => command.enabled !== false).map((command) => ({ id: command.id, label: command.label, detail: command.detail, shortcut: registry.shortcut(command.id), run: () => runCommand(command.id) })), [commands, registry, runCommand])
 
   if (loading) return <div className="boot"><BrandIcon /><span>Brandon</span><i /></div>
 
@@ -926,20 +988,21 @@ export function App() {
         const view = viewForPath(path)
         const icon = path.startsWith(EMPTY_TAB_PREFIX) ? <PlusIcon /> : view === 'graph' ? <GraphIcon /> : view === 'planner' ? <CalendarIcon /> : view === 'canvas' ? <CanvasIcon /> : view === 'base' ? <DatabaseIcon /> : <FileIcon />
         return <div key={path} className={`title-tab ${path === activeTab ? 'active' : ''}`} role="tab" aria-selected={path === activeTab} tabIndex={path === activeTab ? 0 : -1} title={noteTitle(path)} onClick={() => { void activateTab(path) }} onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); void activateTab(path) } }} onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); void closeTab(path) } }}>{icon}<span>{noteTitle(path)}</span>{path === activeTab && dirty ? <i /> : <span className="tab-clean" />}<button className="tab-close" aria-label={`Закрыть вкладку «${noteTitle(path)}»`} onClick={(event) => { event.stopPropagation(); void closeTab(path) }}><CloseIcon /></button></div>
-      })}{vault && <button className="title-new-tab" aria-label="Новая вкладка" title="Новая вкладка (Ctrl T)" onClick={newTab}><PlusIcon /></button>}</div>
+      })}{vault && <button className="title-new-tab" aria-label="Новая вкладка" title={`Новая вкладка (${registry.shortcut('new-tab')})`} onClick={() => runCommand('new-tab')}><PlusIcon /></button>}</div>
       <div className="window-controls"><button aria-label="Свернуть" onClick={() => void appWindow.minimize()}><MinimizeIcon /></button><button aria-label="Развернуть" onClick={() => void appWindow.toggleMaximize()}><MaximizeIcon /></button><button aria-label="Закрыть" className="close-window" onClick={() => void appWindow.close()}><CloseIcon /></button></div>
     </header>
 
     <main className={`workspace ${sidebarOpen ? '' : 'sidebar-hidden'}`}>
       <aside className="activity-rail">
-        <button className={`rail-button ${workspaceView === 'graph' ? 'active' : ''}`} aria-label="Открыть граф" data-tooltip="Открыть граф" disabled={!vault} onClick={openGraph}><GraphIcon /></button>
-        <button className="rail-button" aria-label="Создать новый холст" data-tooltip="Создать новый холст" disabled={!vault} onClick={() => setDialog({ kind: 'canvas', value: '', parent: selectedFolder })}><CanvasIcon /></button>
-        <button className={`rail-button ${workspaceView === 'planner' ? 'active' : ''}`} aria-label="Задачи и календарь" data-tooltip="Задачи и календарь" disabled={!vault} onClick={openPlanner}><CalendarIcon /></button>
-        <button className="rail-button" aria-label="Вставить шаблон" data-tooltip="Вставить шаблон" disabled={!note || workspaceView !== 'note'} onClick={() => setTemplatePicker(true)}><TemplateIcon /></button>
-        <button className="rail-button" aria-label="Создать новую базу" data-tooltip="Создать новую базу" disabled={!vault} onClick={() => setDialog({ kind: 'base', value: '', parent: selectedFolder })}><DatabaseIcon /></button>
+        <button className={`rail-button ${workspaceView === 'graph' ? 'active' : ''}`} aria-label="Открыть граф" data-tooltip="Открыть граф" disabled={!vault} onClick={() => runCommand('graph')}><GraphIcon /></button>
+        <button className="rail-button" aria-label="Создать новый холст" data-tooltip="Создать новый холст" disabled={!vault} onClick={() => runCommand('new-canvas')}><CanvasIcon /></button>
+        <button className={`rail-button ${workspaceView === 'planner' ? 'active' : ''}`} aria-label="Задачи и календарь" data-tooltip="Задачи и календарь" disabled={!vault} onClick={() => runCommand('planner')}><CalendarIcon /></button>
+        <button className="rail-button" aria-label="Вставить шаблон" data-tooltip="Вставить шаблон" disabled={!note || workspaceView !== 'note'} onClick={() => runCommand('insert-template')}><TemplateIcon /></button>
+        <button className="rail-button" aria-label="Создать новую базу" data-tooltip="Создать новую базу" disabled={!vault} onClick={() => runCommand('new-base')}><DatabaseIcon /></button>
         <span className="rail-spacer" />
-        <button className="rail-button" aria-label="Открыть палитру команд" data-tooltip="Открыть палитру команд" onClick={() => setPalette('commands')}><span className="command-glyph">›_</span></button>
-        <button className="rail-button" aria-label="Открыть другую папку" onClick={() => void openVault()}><FolderIcon /></button>
+        <button className="rail-button" aria-label="Открыть палитру команд" data-tooltip="Открыть палитру команд" onClick={() => runCommand('palette')}><span className="command-glyph">›_</span></button>
+        <button className="rail-button" aria-label="Настройки" data-tooltip="Настройки" onClick={() => runCommand('settings')}><SettingsIcon /></button>
+        <button className="rail-button" aria-label="Открыть другую папку" onClick={() => runCommand('open-vault')}><FolderIcon /></button>
       </aside>
 
       <aside className="sidebar">
@@ -961,10 +1024,10 @@ export function App() {
         <section className={`content-shell${hasRecovery ? ' has-recovery' : ''}`}>
           <div className="commandbar"><div className="toolbar-start"><button className="history-button" disabled={history.cursor <= 0} aria-label="Назад" title="Назад (Alt ←)" onClick={() => { void navigateHistory(-1) }}>‹</button><button className="history-button" disabled={history.cursor >= history.entries.length - 1} aria-label="Вперёд" title="Вперёд (Alt →)" onClick={() => { void navigateHistory(1) }}>›</button>{vault && <div className="breadcrumbs"><strong>{noteTitle(activeTab)}</strong></div>}</div>
             <div className="commandbar-actions">
-              {note && workspaceView === 'note' && <div className="view-switcher"><ModeButton active={viewMode === 'edit'} label="Редактор" onClick={() => setViewMode('edit')}><EditIcon /></ModeButton><ModeButton active={viewMode === 'split'} label="Разделить" onClick={() => setViewMode('split')}><ColumnsIcon /></ModeButton><ModeButton active={viewMode === 'preview'} label="Чтение" onClick={() => setViewMode('preview')}><PreviewIcon /></ModeButton></div>}
+              {note && workspaceView === 'note' && <div className="view-switcher"><ModeButton active={viewMode === 'edit'} label="Редактор" onClick={() => runCommand('mode-edit')}><EditIcon /></ModeButton><ModeButton active={viewMode === 'split'} label="Разделить" onClick={() => runCommand('mode-split')}><ColumnsIcon /></ModeButton><ModeButton active={viewMode === 'preview'} label="Чтение" onClick={() => runCommand('mode-preview')}><PreviewIcon /></ModeButton></div>}
               <div className="ui-zoom-control" aria-label="Масштаб интерфейса"><button aria-label="Уменьшить масштаб" disabled={uiZoom <= UI_ZOOM_MIN} onClick={() => changeUiZoom(-UI_ZOOM_STEP)}>−</button><button className="ui-zoom-value" title="Сбросить масштаб" onClick={() => changeUiZoom('reset')}>{Math.round(uiZoom * 100)}%</button><button aria-label="Увеличить масштаб" disabled={uiZoom >= UI_ZOOM_MAX} onClick={() => changeUiZoom(UI_ZOOM_STEP)}>+</button></div>
-              {note && !['graph', 'planner'].includes(workspaceView) && <button className="save-button" disabled={(!dirty && !missingSource) || saving} onClick={() => void saveNote()}><SaveIcon /><span>{saving ? 'Сохраняю' : missingSource ? 'Сохранить копию' : dirty ? 'Сохранить' : 'Сохранено'}</span></button>}
-              {note && workspaceView === 'note' && <button className={`icon-button ${rightOpen ? 'active' : ''}`} aria-label="Контекст заметки" onClick={() => setRightOpen((value) => !value)}><MoreIcon /></button>}
+              {note && !['graph', 'planner'].includes(workspaceView) && <button className="save-button" disabled={(!dirty && !missingSource) || saving} onClick={() => runCommand('save')}><SaveIcon /><span>{saving ? 'Сохраняю' : missingSource ? 'Сохранить копию' : dirty ? 'Сохранить' : 'Сохранено'}</span></button>}
+              {note && workspaceView === 'note' && <button className={`icon-button ${rightOpen ? 'active' : ''}`} aria-label="Контекст заметки" onClick={() => runCommand('toggle-right')}><MoreIcon /></button>}
             </div>
           </div>
 
@@ -974,22 +1037,25 @@ export function App() {
             <button className="source-recovery-check" disabled={saving} onClick={() => void checkRecoverySource()}>Проверить источник</button>
             <button className="source-recovery-discard" disabled={saving} onClick={() => setDiscardDraftOpen(true)}>Отбросить черновик…</button>
           </div>}
-          {!vault ? <Welcome onOpen={() => void openVault()} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onCreateBase={() => setDialog({ kind: 'base', value: '', parent: selectedFolder })} onCreateCanvas={() => setDialog({ kind: 'canvas', value: '', parent: selectedFolder })} onOpen={() => setPalette('notes')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className="document">
+          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
             <div className="writing-toolbar">
-              <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(true); setViewMode('edit') }}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(false); setViewMode('edit') }}>Markdown</button></div></div>
-              <button className="quick-insert-button" onClick={() => { if (viewMode === 'preview') setViewMode('edit'); setQuickInsertOpen(true) }}><PlusIcon /><span>Быстрая вставка</span><kbd>Ctrl /</kbd></button>
+              <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-visual')}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-source')}>Markdown</button></div></div>
+              <button className="quick-insert-button" onClick={() => runCommand('quick-insert')}><PlusIcon /><span>Быстрая вставка</span><kbd>{registry.shortcut('quick-insert')}</kbd></button>
             </div>
             <div className={`editor-grid mode-${viewMode}`}>
-              {viewMode !== 'preview' && <div className="editor-pane"><div className="pane-label">{visualEditing ? 'ВИЗУАЛЬНО' : 'MARKDOWN'}</div><MarkdownEditor ref={editorRef} value={content} notePaths={vault.files.map((file) => file.path)} visual={visualEditing} onChange={setContent} /></div>}
-              {viewMode !== 'edit' && <div className="preview-pane"><div className="pane-label">ЧТЕНИЕ</div><MarkdownPreview source={content} index={index} onOpen={(path) => void loadNote(path)} onChange={setContent} /></div>}
+              {viewMode !== 'preview' && <div className="editor-pane"><div className="pane-label">{visualEditing ? 'ВИЗУАЛЬНО' : 'MARKDOWN'}</div><MarkdownEditor key={note.path} ref={editorRef} value={content} notePaths={vault.files.map((file) => file.path)} visual={visualEditing} settings={settings} onContext={openEditorMenu} onOpenLink={openNoteLink} onChange={setContent} /></div>}
+              {viewMode !== 'edit' && <div className="preview-pane"><div className="pane-label">ЧТЕНИЕ</div><MarkdownPreview source={content} index={index} onOpen={openNoteLink} onChange={setContent} focusLine={previewFocus?.path === note.path ? previewFocus.line : undefined} /></div>}
             </div>
           </article>}
         </section>
-        {rightOpen && note && workspaceView === 'note' && <RightSidebar activePath={note.path} index={index} onOpen={(path) => void loadNote(path)} />}
+        {rightOpen && note && workspaceView === 'note' && <RightSidebar activePath={note.path} source={content} index={index} onOpen={(path, location) => void navigateNote(path, location)} onNavigate={(location) => void navigateNote(note.path, location)} onTag={filterTag} />}
         {searchAttachment?.root === vault?.root && searchAttachment && <AttachmentDetails key={searchAttachment.path} path={searchAttachment.path} onClose={() => setSearchAttachment(null)} />}
       </div>
     </main>
 
+    {vault && note && workspaceView === 'note' && !settingsOpen && !palette && !editorMenu && <NoteHoverPreview modifier={settings.previewModifier} root={vault.root} path={note.path} source={content} index={index} />}
+    {settingsOpen && <SettingsDialog settings={settings} commands={commands} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
+    {editorMenu && <CommandMenu x={editorMenu.x} y={editorMenu.y} registry={registry} ids={['editor-undo', 'editor-redo', null, 'editor-cut', 'editor-copy', 'editor-paste', 'editor-select-all', null, 'editor-bold', 'editor-italic', 'editor-strike', 'editor-inline-code', 'editor-insert-link', 'editor-open-link', null, 'quick-insert']} disabled={[...(!editorMenu.hasSelection ? ['editor-copy', 'editor-cut'] : []), ...(!editorMenu.canUndo ? ['editor-undo'] : []), ...(!editorMenu.canRedo ? ['editor-redo'] : []), ...(!editorMenu.canFormat ? ['editor-bold', 'editor-italic', 'editor-strike', 'editor-inline-code', 'editor-insert-link', 'quick-insert'] : []), ...(!editorMenu.link ? ['editor-open-link'] : [])]} onClose={closeEditorMenu} onExecute={(id) => { setEditorMenu(null); runCommand(id) }} />}
     {dialog && <EntryDialogView dialog={dialog} folders={folders} inputRef={dialogRef} onChange={setDialog} onClose={() => setDialog(null)} onSubmit={() => void submitDialog()} />}
     {discardDraftOpen && <div className="dialog-backdrop"><div className="dialog discard-draft-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-draft-title"><h2 id="discard-draft-title">Отбросить черновик?</h2><p>Несохранённый текст будет убран из редактора. Файлы на диске не изменятся.</p><div><button className="secondary" autoFocus onClick={() => setDiscardDraftOpen(false)}>Отмена</button><button className="primary" onClick={discardMissingDraft}>Отбросить черновик</button></div></div></div>}
     {palette && <CommandPalette mode={palette} files={vault?.files ?? []} actions={commandActions} onClose={() => setPalette(null)} onOpen={(path) => void loadNote(path)} />}

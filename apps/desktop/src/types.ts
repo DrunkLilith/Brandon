@@ -41,7 +41,7 @@ export type VaultMutation = {
   linkWarnings: { path: string; reason: 'changed' | 'unavailable' | 'invalidCanvas' | 'limit' }[]
 }
 
-export type Heading = { level: number; text: string; slug: string }
+export type Heading = { level: number; text: string; slug: string; line: number }
 
 export type DocumentLink = {
   target: string

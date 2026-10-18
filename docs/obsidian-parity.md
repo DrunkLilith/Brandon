@@ -1,6 +1,20 @@
 # Brandon desktop: Obsidian parity plan
 
-Status: active implementation plan, 2026-10-13.
+Status: detailed parity reference and historical implementation checkpoints, started 2026-10-13.
+
+Current cross-product priorities and delivery order are in the
+[Brandon master plan](brandon-master-plan.md), updated 2026-10-18. It unifies this
+matrix with Canvas/Planner, MCP and the selected-plugin strategy. Earlier "next"
+sections below are historical, not the current implementation queue. Operational
+task state is canonical in `.brandon/tasks.sqlite3`; only derived task/search
+projections are rebuildable, while task descriptions remain Markdown.
+
+R1A is implemented in the working tree: shared commands, editor context menu,
+live outline and heading/block navigation, clickable metadata targets, local
+previews, typed editor preferences and configurable physical-key hotkeys. See
+the [R1A checkpoint](brandon-master-plan.md#r1a-команды-и-навигация-заметки) for
+current verification and explicit platform/clipboard limits; older checkpoints
+below remain historical.
 
 Brandon Desktop is a local-first, open-source knowledge workspace. The target is practical feature and file-format compatibility with Obsidian while keeping Brandon's own name, visual identity, implementation, and AGPL license.
 
@@ -193,4 +207,9 @@ Initial budgets, subject to fixture measurements:
 4. Introduce the command registry and quick switcher instead of hard-coded keyboard branches.
 5. Move editing to CodeMirror 6 and implement auto-save plus external-change conflict detection.
 
-The approved Miro-class canvas and unified task/calendar direction is specified in [canvas-planner-product.md](canvas-planner-product.md). It extends the parity matrix without weakening the local-first vault boundary: JSON Canvas and Markdown remain canonical, while the task index, calendar projection, graph, and semantic data remain rebuildable.
+The Miro-class canvas and unified task/calendar research and implementation history
+is retained in [canvas-planner-product.md](canvas-planner-product.md). The current
+[master plan](brandon-master-plan.md) preserves the local-first boundary: Markdown,
+JSON Canvas, original attachments and the canonical task SQLite database are
+user-owned data; search indexes, calendar projections, graph data and embeddings
+are rebuildable derivatives. Task database backup/restore is not an index rebuild.

@@ -1,9 +1,10 @@
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import { markdownLanguage } from '@codemirror/lang-markdown'
 import remarkGfm from 'remark-gfm'
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { VaultIndex } from './types'
 import { highlightedCode } from './code-language'
+import { sourceStructure } from './note-navigation'
 
 function CodePreview({ code, language }: { code: string; language: string }) {
   const [tokens, setTokens] = useState([{ text: code, className: '' }])
@@ -22,7 +23,7 @@ function CodePreview({ code, language }: { code: string; language: string }) {
   return <div className="preview-code"><div className="cm-live-code-header"><div><span>{'</>'}</span><span className="preview-code-language">{language || 'plain text'}</span></div><button onClick={() => { void navigator.clipboard.writeText(code).then(() => setCopied(true)).catch(() => {}) }}>{copied ? 'Скопировано' : 'Копировать'}</button></div><pre><code>{tokens.map((token, index) => <span key={index} className={token.className || undefined}>{token.text}</span>)}</code></pre></div>
 }
 
-function withWikiLinks(source: string, index: VaultIndex | null) {
+function withWikiLinks(source: string) {
   const codeRanges: Array<{ from: number; to: number }> = []
   markdownLanguage.parser.parse(source).iterate({ enter(node) {
     if (!['InlineCode', 'FencedCode', 'CodeBlock'].includes(node.name)) return
@@ -32,14 +33,8 @@ function withWikiLinks(source: string, index: VaultIndex | null) {
   return source.replace(/(?<embed>!)?\[\[(?<body>[^\]]+)\]\]/g, (full, embed: string | undefined, body: string, offset: number) => {
     if (codeRanges.some((range) => offset >= range.from && offset < range.to)) return full
     const [destination, label] = body.split('|', 2)
-    const target = destination.split(/[#^]/, 1)[0].trim()
     if (embed) return `\`${label ?? destination}\``
-    const resolved = index?.documents.find((document) => {
-      const path = document.path.replace(/\.md$/i, '')
-      const stem = path.split('/').at(-1) ?? path
-      return [path, stem, document.title, ...document.aliases].some((candidate) => candidate.toLocaleLowerCase('ru') === target.toLocaleLowerCase('ru'))
-    })?.path ?? target
-    return `[${label ?? destination}](#brandon-note=${encodeURIComponent(resolved)})`
+    return `[${label ?? destination}](#brandon-wiki=${encodeURIComponent(destination)})`
   })
 }
 
@@ -135,9 +130,29 @@ function SmartTable({ children, source, startLine, endLine, onChange }: {
   </div>
 }
 
-export function MarkdownPreview({ source, index, onOpen, onChange }: { source: string; index: VaultIndex | null; onOpen: (path: string) => void; onChange?: (value: string) => void }) {
-  const renderedSource = withWikiLinks(source || '*Пустая заметка*', index)
-  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+export function MarkdownPreview({ source, onOpen, onChange, focusLine }: { source: string; index: VaultIndex | null; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
+  const renderedSource = withWikiLinks(source || '*Пустая заметка*')
+  const structure = useMemo(() => sourceStructure(source), [source])
+  const current = useRef({ source, onOpen, onChange, focusLine, structure })
+  current.current = { source, onOpen, onChange, focusLine, structure }
+  // Stable renderer types keep anchors, table editors and hover targets mounted
+  // when the parent updates a notice, metadata, or an anchor highlight.
+  const components = useMemo<Components>(() => {
+  const headingId = (line: number | undefined) => current.current.structure.headings.find((heading) => heading.line === line)?.slug
+  const position = (node: { position?: { start: { line: number }; end: { line: number } } } | undefined) => ({
+    'data-source-line': node?.position?.start.line,
+    'data-source-end-line': node?.position?.end.line,
+    className: current.current.focusLine !== undefined && node?.position && node.position.start.line <= current.current.focusLine && node.position.end.line >= current.current.focusLine ? 'note-anchor-highlight' : undefined,
+  })
+  return {
+    h1: ({ node, children }) => <h1 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h1>,
+    h2: ({ node, children }) => <h2 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h2>,
+    h3: ({ node, children }) => <h3 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h3>,
+    h4: ({ node, children }) => <h4 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h4>,
+    h5: ({ node, children }) => <h5 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h5>,
+    h6: ({ node, children }) => <h6 id={headingId(node?.position?.start.line)} {...position(node)}>{children}</h6>,
+    p: ({ node, children }) => <p {...position(node)}>{children}</p>,
+    li: ({ node, children }) => <li {...position(node)}>{children}</li>,
     pre: ({ node, children }) => {
       const element = node?.children.find((child) => child.type === 'element' && child.tagName === 'code')
       if (!element || element.type !== 'element') return <pre>{children}</pre>
@@ -147,13 +162,19 @@ export function MarkdownPreview({ source, index, onOpen, onChange }: { source: s
       return <CodePreview code={code} language={language} />
     },
     a: ({ href, children }) => {
+      const wiki = href?.startsWith('#brandon-wiki=')
+      let destination = href ?? ''
+      if (wiki) { try { destination = decodeURIComponent(destination.slice('#brandon-wiki='.length)) } catch { destination = '' } }
+      const local = Boolean(destination) && !/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(destination)
       const open = (event: MouseEvent<HTMLAnchorElement>) => {
-        if (!href?.startsWith('#brandon-note=')) return
+        if (!local) return
         event.preventDefault()
-        onOpen(decodeURIComponent(href.slice('#brandon-note='.length)))
+        current.current.onOpen(destination, wiki ? 'wiki' : 'markdown')
       }
-      return <a href={href} onClick={open}>{children}</a>
+      return <a href={href} data-note-target={local ? destination : undefined} data-note-kind={wiki ? 'wiki' : 'markdown'} onClick={open} target={local ? undefined : '_blank'} rel={local ? undefined : 'noopener noreferrer'}>{children}</a>
     },
-    table: ({ node, children }) => <SmartTable source={source} startLine={node?.position?.start.line ?? 1} endLine={node?.position?.end.line ?? 1} onChange={onChange}>{children}</SmartTable>,
-  }}>{renderedSource}</ReactMarkdown></div>
+    table: ({ node, children }) => <SmartTable source={current.current.source} startLine={node?.position?.start.line ?? 1} endLine={node?.position?.end.line ?? 1} onChange={current.current.onChange}>{children}</SmartTable>,
+  }
+  }, [])
+  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{renderedSource}</ReactMarkdown></div>
 }

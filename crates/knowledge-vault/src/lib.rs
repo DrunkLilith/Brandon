@@ -900,8 +900,13 @@ impl Vault {
 
 fn resolve_links(documents: &mut [DocumentMetadata]) {
     let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
+    let mut exact_paths: HashMap<String, Vec<String>> = HashMap::new();
     for document in documents.iter() {
         let path = without_markdown_extension(&document.path);
+        exact_paths
+            .entry(path.to_lowercase())
+            .or_default()
+            .push(document.path.clone());
         let stem = Path::new(&path)
             .file_name()
             .map(|value| value.to_string_lossy().into_owned())
@@ -922,14 +927,70 @@ fn resolve_links(documents: &mut [DocumentMetadata]) {
         paths.dedup();
     }
     for document in documents {
+        let folder = document
+            .path
+            .rsplit_once('/')
+            .map_or("", |(folder, _)| folder);
         for link in &mut document.links {
-            let normalized = without_markdown_extension(&link.target).to_lowercase();
-            link.resolved_path = aliases
-                .get(&normalized)
-                .and_then(|paths| paths.first())
-                .cloned();
+            if link.target.is_empty() {
+                link.resolved_path = Some(document.path.clone());
+                continue;
+            }
+            let relative = normalized_link_path(&format!("{folder}/{}", link.target));
+            let root = normalized_link_path(&link.target);
+            let candidates = if link.target.starts_with('/') {
+                vec![root]
+            } else if link.kind == knowledge_markdown::LinkKind::Markdown
+                || link.target.starts_with("./")
+                || link.target.starts_with("../")
+            {
+                vec![relative]
+            } else {
+                vec![relative, root]
+            };
+            link.resolved_path = candidates.into_iter().flatten().find_map(|candidate| {
+                exact_paths
+                    .get(&without_markdown_extension(&candidate).to_lowercase())
+                    .and_then(|paths| {
+                        if paths.len() == 1 {
+                            paths.first().cloned()
+                        } else {
+                            None
+                        }
+                    })
+            });
+            if link.resolved_path.is_none()
+                && link.kind != knowledge_markdown::LinkKind::Markdown
+                && !link.target.contains('/')
+            {
+                let normalized = without_markdown_extension(&link.target).to_lowercase();
+                link.resolved_path = aliases.get(&normalized).and_then(|paths| {
+                    if paths.len() == 1 {
+                        paths.first().cloned()
+                    } else {
+                        None
+                    }
+                });
+            }
         }
     }
+}
+
+fn normalized_link_path(value: &str) -> Option<String> {
+    if value.contains([':', '\\', '\0']) || value.starts_with("//") {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for part in value.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
 }
 
 fn normalized_relative(path: &str, allow_empty: bool) -> Result<PathBuf> {
@@ -1245,6 +1306,45 @@ fn map_create_error(context: &'static str) -> impl FnOnce(io::Error) -> VaultErr
 #[cfg(test)]
 mod tests {
     use super::{SaveOutcome, Vault, normalized_relative, safe_note_name};
+
+    #[test]
+    fn links_resolve_relative_anchors_self_targets_and_ambiguity_without_filesystem_escape() {
+        let mut documents = vec![
+            knowledge_markdown::parse_document("Root.md", "# Root", 0),
+            knowledge_markdown::parse_document(
+                "Folder/Current.md",
+                "[[Local#Part]] [[#^self]] [root](../Root.md#Root) [escape](../../Root.md) [[Other/Local]]",
+                0,
+            ),
+            knowledge_markdown::parse_document("Folder/Local.md", "# Local", 0),
+            knowledge_markdown::parse_document("Other/Local.md", "# Local", 0),
+            knowledge_markdown::parse_document("Ambiguous.md", "[[Local]]", 0),
+        ];
+        super::resolve_links(&mut documents);
+        assert_eq!(
+            documents[1].links[0].resolved_path.as_deref(),
+            Some("Folder/Local.md")
+        );
+        assert_eq!(documents[1].links[0].heading.as_deref(), Some("Part"));
+        assert_eq!(
+            documents[1].links[1].resolved_path.as_deref(),
+            Some("Folder/Current.md")
+        );
+        assert_eq!(documents[1].links[1].block.as_deref(), Some("self"));
+        let root = documents[1]
+            .links
+            .iter()
+            .find(|link| link.target == "../Root.md")
+            .unwrap();
+        assert_eq!(root.resolved_path.as_deref(), Some("Root.md"));
+        let escape = documents[1]
+            .links
+            .iter()
+            .find(|link| link.target == "../../Root.md")
+            .unwrap();
+        assert_eq!(escape.resolved_path, None);
+        assert_eq!(documents[4].links[0].resolved_path, None);
+    }
     use std::{fs, path::PathBuf};
 
     struct Fixture(PathBuf);

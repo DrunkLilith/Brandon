@@ -87,6 +87,7 @@ try {
     Invoke-Native 'Desktop frontend lint' pnpm @('--dir', 'apps/desktop', 'lint')
     Invoke-Native 'Desktop Canvas unit tests' pnpm @('--dir', 'apps/desktop', 'test:canvas')
     Invoke-Native 'Desktop search request unit tests' pnpm @('--dir', 'apps/desktop', 'test:search')
+    Invoke-Native 'Desktop command, settings and navigation contracts' pnpm @('--dir', 'apps/desktop', 'test:r1a')
     Invoke-Native 'Desktop frontend production build' pnpm @('--dir', 'apps/desktop', 'build')
     Invoke-Native 'Rust formatting' cargo @('fmt', '--all', '--', '--check')
     Invoke-Native 'Rust lint' cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')

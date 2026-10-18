@@ -12,6 +12,8 @@
     "test:smoke": "node ../../tests/desktop/editor-navigation-smoke.mjs",
     "test:canvas": "node --test ../../tests/desktop/canvas-spatial.test.mjs ../../tests/desktop/canvas-document.test.mjs",
     "test:search": "node --experimental-strip-types --test ../../tests/desktop/search-request.test.mjs",
+    "test:r1a": "node --experimental-strip-types --test ../../tests/desktop/r1a-contracts.test.mjs",
+    "test:r1a:ui": "node ../../tests/desktop/r1a-smoke.mjs",
     "test:render": "node ../../tests/desktop/canvas-render-smoke.mjs",
     "tauri": "tauri",
     "typecheck": "tsc -b --pretty false"

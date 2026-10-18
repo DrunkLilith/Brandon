@@ -30,6 +30,10 @@ try {
   await chooseKind('task')
   await evaluate('document.querySelector(\'input[aria-label="Поиск по vault"]\').focus()')
   await send('Input.insertText', { text: 'rankingneedle' }); await complete()
+  // The first response can precede the background indexing of the externally
+  // written task descriptions. Wait for their watcher-driven result, not just
+  // for the initial query acknowledgement; the same count is asserted below.
+  await waitFor("document.querySelectorAll('.search-results button').length === 10")
   assert.equal(await evaluate("document.querySelectorAll('.search-results button').length"), 10)
   assert.equal(await evaluate("new Set([...document.querySelectorAll('.search-results button')].map(button=>button.dataset.path)).size"), 10)
   pass('Words finds all ten task notes despite one task containing one hundred matching sections')

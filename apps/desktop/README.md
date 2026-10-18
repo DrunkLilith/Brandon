@@ -34,12 +34,38 @@ Windows, with recovery to the ordinary renderer if unavailable. macOS currently
 uses DOM/2D; see [the Mac guide](../../docs/build-macos.md). Actual Mac execution,
 mixed-DPI monitor transitions and sleep/resume remain unverified.
 
+## Commands, navigation and preferences
+
+The command registry is shared by the palette, application hotkeys, editor menu
+and primary toolbar actions. Open Settings with the gear on the left rail, from
+the palette, or with `Ctrl+Shift+,`. Editor preferences are stored locally as
+`brandon.settings.v1`; the established visual/source preference is migrated.
+They do not modify the vault or require new native capabilities.
+
+- Right-click in prose or a fenced code editor, or press `Shift+F10` / the menu
+  key. Menus support arrow keys, Enter and Escape. Code disables prose-only
+  formatting; native table fields keep their native text menu.
+- Outline follows the current buffer and navigates in visual, source, reading
+  and split modes. Wiki/Markdown links retain heading/block anchors, including
+  same-note and parent-relative targets. Missing/ambiguous targets do not create
+  notes. `Ctrl+click` or `Ctrl+Enter` opens a link in the editor.
+- Local hover previews can require Ctrl or work without a modifier. They do not
+  fetch external URLs. Note tags open the common local search.
+- Settings include editor mode, default document view, readable width, line
+  numbers, spellcheck and previews. Hotkeys use physical keys across RU/EN,
+  detect collisions, support unassign/reset, and preserve native editing keys.
+
+Undo remains scoped to the mounted document editor. Persistent history, durable
+crash drafts and session layouts belong to R1B, not this preferences layer.
+
 ## Verify
 
 ```powershell
 pnpm --dir apps/desktop build
 pnpm --dir apps/desktop lint
 pnpm --dir apps/desktop test:canvas
+pnpm --dir apps/desktop test:search
+pnpm --dir apps/desktop test:r1a
 cargo fmt --all -- --check
 cargo test -p knowledge-vault -p knowledge-markdown -p knowledge-desktop
 cargo clippy -p knowledge-vault -p knowledge-desktop --all-targets -- -D warnings
@@ -62,6 +88,7 @@ node tests/desktop/canvas-interaction-ui-smoke.mjs
 node tests/desktop/canvas-attachments-smoke.mjs
 pnpm --dir apps/desktop test:render
 pnpm --dir apps/desktop test:smoke
+pnpm --dir apps/desktop test:r1a:ui
 ```
 
 Restart without the debug environment variable for normal use. Tests and GPU
@@ -71,13 +98,14 @@ measurements are development checks, not a universal frame-rate guarantee.
 
 - Image thumbnails and arbitrary file references are implemented. Embedded
   PDF/audio/video viewers are not complete; unsupported files get a detail peek.
-- The ordinary UI search remains Markdown search. Experimental FTS code is not
-  promoted into that UI path; vector search and scoped agent integrations remain
-  planned work.
+- The ordinary UI uses local FTS5 Words/Literal search, incremental source
+  updates and read-time validation. Shared incremental metadata for all other
+  views, vector search and scoped agent integrations remain planned work.
 - `scripts/local-ai` contains optional, isolated OCR/ASR experiments, not bundled
   product workers. Model caches, sample downloads and reports stay outside Git.
 - Personal notification automation and its credentials are local-only, not part
   of this application's source distribution.
 
-See [the roadmap](../../docs/canvas-planner-product.md) for verified checkpoints
-and remaining work. Keep real vaults, tokens, keys and local state out of commits.
+See the [master plan](../../docs/brandon-master-plan.md) for delivery order and
+the [Canvas/Planner history](../../docs/canvas-planner-product.md) for earlier
+checkpoints. Keep real vaults, tokens, keys and local state out of commits.

@@ -4,7 +4,12 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::{collections::BTreeSet, path::Path, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+    path::Path,
+    sync::OnceLock,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +50,8 @@ pub struct Heading {
     pub level: u8,
     pub text: String,
     pub slug: String,
+    #[serde(default)]
+    pub line: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,54 +88,92 @@ pub fn parse_document(path: &str, source: &str, modified_unix_ms: u128) -> Docum
     aliases.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
 
     let mut headings = Vec::new();
+    let mut heading_counts = BTreeMap::<String, usize>::new();
+    let mut used_slugs = BTreeSet::new();
     let mut markdown_links = Vec::new();
-    let mut current_heading: Option<(HeadingLevel, String)> = None;
+    let mut ignored = Vec::<Range<usize>>::new();
+    let source_offset = source.len() - markdown.len();
+    let line_offset = source[..source_offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let mut current_heading: Option<(HeadingLevel, String, usize)> = None;
     let parser = Parser::new_ext(markdown, Options::all());
-    for event in parser {
+    for (event, range) in parser.into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
-                current_heading = Some((level, String::new()));
+                current_heading = Some((
+                    level,
+                    String::new(),
+                    line_number(markdown, range.start) + line_offset,
+                ));
             }
             Event::End(TagEnd::Heading(_)) => {
-                if let Some((level, text)) = current_heading.take() {
+                if let Some((level, text, line)) = current_heading.take() {
                     let text = text.trim().to_owned();
                     if !text.is_empty() {
+                        let base = slugify(&text);
+                        let count = heading_counts.entry(base.clone()).or_default();
+                        let mut slug = if *count == 0 {
+                            base.clone()
+                        } else {
+                            format!("{base}-{count}")
+                        };
+                        while used_slugs.contains(&slug) {
+                            *count += 1;
+                            slug = format!("{base}-{count}");
+                        }
+                        used_slugs.insert(slug.clone());
+                        *count += 1;
                         headings.push(Heading {
                             level: heading_level(level),
-                            slug: slugify(&text),
+                            slug,
                             text,
+                            line,
                         });
                     }
                 }
             }
             Event::Text(text) | Event::Code(text) => {
-                if let Some((_, heading)) = current_heading.as_mut() {
+                if markdown[range.clone()].starts_with('`') {
+                    ignored.push(range);
+                }
+                if let Some((_, heading, _)) = current_heading.as_mut() {
                     heading.push_str(&text);
                 }
             }
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                let destination = dest_url.to_string();
-                if !destination.starts_with("http://")
-                    && !destination.starts_with("https://")
-                    && !destination.starts_with("mailto:")
-                    && !destination.starts_with('#')
-                {
+            Event::Start(Tag::Link {
+                dest_url,
+                link_type,
+                ..
+            }) => {
+                // Wiki links are extracted separately with aliases and embed semantics.
+                if matches!(link_type, pulldown_cmark::LinkType::WikiLink { .. }) {
+                    continue;
+                }
+                let destination = decode_link_destination(&dest_url);
+                if !destination.contains(':') && !destination.starts_with("//") {
+                    let (target, heading, block) = split_link_destination(&destination);
                     markdown_links.push(DocumentLink {
-                        target: destination,
+                        target,
                         display: None,
-                        heading: None,
-                        block: None,
-                        line: 0,
+                        heading,
+                        block,
+                        line: line_number(markdown, range.start) + line_offset,
                         kind: LinkKind::Markdown,
                         resolved_path: None,
                     });
                 }
             }
+            Event::Start(Tag::CodeBlock(_)) => ignored.push(range),
             _ => {}
         }
     }
 
-    let mut links = parse_wiki_links(markdown);
+    let mut links = parse_wiki_links(markdown, &ignored);
+    for link in &mut links {
+        link.line += line_offset;
+    }
     links.extend(markdown_links);
     let mut tag_set: BTreeSet<String> = property_strings(&properties, &["tags", "tag"])
         .into_iter()
@@ -136,6 +181,12 @@ pub fn parse_document(path: &str, source: &str, modified_unix_ms: u128) -> Docum
         .filter(|tag| !tag.is_empty())
         .collect();
     for captures in tag_regex().captures_iter(markdown) {
+        if captures
+            .get(0)
+            .is_some_and(|whole| ignored.iter().any(|range| range.contains(&whole.start())))
+        {
+            continue;
+        }
         if let Some(tag) = captures.get(1) {
             tag_set.insert(tag.as_str().to_owned());
         }
@@ -156,10 +207,13 @@ pub fn parse_document(path: &str, source: &str, modified_unix_ms: u128) -> Docum
         .captures_iter(markdown)
         .filter_map(|captures| {
             let whole = captures.get(0)?;
+            if ignored.iter().any(|range| range.contains(&whole.start())) {
+                return None;
+            }
             let id = captures.get(1)?.as_str().to_owned();
             Some(BlockReference {
                 id,
-                line: line_number(markdown, whole.start()),
+                line: line_number(markdown, whole.start()) + line_offset,
             })
         })
         .collect();
@@ -413,31 +467,59 @@ fn value_strings(value: &Value) -> Vec<String> {
     }
 }
 
-fn parse_wiki_links(markdown: &str) -> Vec<DocumentLink> {
+fn split_link_destination(destination: &str) -> (String, Option<String>, Option<String>) {
+    if let Some((target, anchor)) = destination.split_once('#') {
+        if let Some(block) = anchor.strip_prefix('^') {
+            return (target.trim().to_owned(), None, Some(block.to_owned()));
+        }
+        return (target.trim().to_owned(), Some(anchor.to_owned()), None);
+    }
+    if let Some((target, block)) = destination.split_once('^') {
+        return (target.trim().to_owned(), None, Some(block.to_owned()));
+    }
+    (destination.trim().to_owned(), None, None)
+}
+
+fn decode_link_destination(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut position = 0;
+    while position < bytes.len() {
+        if bytes[position] == b'%'
+            && position + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (
+                (bytes[position + 1] as char).to_digit(16),
+                (bytes[position + 2] as char).to_digit(16),
+            )
+        {
+            decoded.push((high * 16 + low) as u8);
+            position += 3;
+            continue;
+        }
+        decoded.push(bytes[position]);
+        position += 1;
+    }
+    String::from_utf8(decoded).unwrap_or_else(|_| value.to_owned())
+}
+
+fn parse_wiki_links(markdown: &str, ignored: &[Range<usize>]) -> Vec<DocumentLink> {
     wiki_link_regex()
         .captures_iter(markdown)
         .filter_map(|captures| {
             let whole = captures.get(0)?;
+            if ignored.iter().any(|range| range.contains(&whole.start())) {
+                return None;
+            }
             let body = captures.name("body")?.as_str();
             let (destination, display) = body
                 .split_once('|')
                 .map_or((body, None), |(left, right)| (left, Some(right)));
-            let mut target = destination;
-            let mut heading = None;
-            let mut block = None;
-            if let Some((left, right)) = destination.split_once('#') {
-                target = left;
-                heading = Some(right.to_owned());
-            } else if let Some((left, right)) = destination.split_once('^') {
-                target = left;
-                block = Some(right.to_owned());
-            }
-            let target = target.trim();
-            if target.is_empty() {
+            let (target, heading, block) = split_link_destination(destination);
+            if target.is_empty() && heading.is_none() && block.is_none() {
                 return None;
             }
             Some(DocumentLink {
-                target: target.to_owned(),
+                target,
                 display: display.map(str::to_owned),
                 heading,
                 block,
@@ -502,7 +584,9 @@ fn tag_regex() -> &'static Regex {
 
 fn block_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
-    REGEX.get_or_init(|| Regex::new(r"(?m)\s\^([A-Za-z0-9-]+)\s*$").expect("valid regex"))
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?m)(?:^|[\t ])\^([A-Za-z0-9-]+)[\t ]*$").expect("valid regex")
+    })
 }
 
 fn task_line_regex() -> &'static Regex {
@@ -547,6 +631,44 @@ fn task_priority_regex() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::{LinkKind, parse_document, rewrite_task_source, rewrite_wiki_link_targets};
+
+    #[test]
+    fn anchors_keep_source_lines_and_ignore_code_and_frontmatter() {
+        let source = "---\ntitle: Name\n---\n# Same\n\n## Same\n\n[local](../Other%20note.md#^block)\n[[#Same]] [[#^self]] [[Other#^block]]\n\n```md\n[[Fake]]\n# Fake heading\nText ^fake\n```\n\nText ^real\n`[[Inline]]`\n";
+        let document = parse_document("Folder/Note.md", source, 0);
+        assert_eq!(document.headings.len(), 2);
+        assert_eq!(document.headings[0].line, 4);
+        assert_eq!(document.headings[1].line, 6);
+        assert_eq!(document.headings[1].slug, "same-1");
+        assert_eq!(document.links.len(), 4);
+        assert_eq!(document.links[0].target, "");
+        assert_eq!(document.links[0].heading.as_deref(), Some("Same"));
+        assert_eq!(document.links[1].block.as_deref(), Some("self"));
+        assert_eq!(document.links[2].block.as_deref(), Some("block"));
+        let markdown = document
+            .links
+            .iter()
+            .find(|link| link.kind == LinkKind::Markdown)
+            .unwrap();
+        assert_eq!(markdown.target, "../Other note.md");
+        assert_eq!(markdown.block.as_deref(), Some("block"));
+        assert_eq!(markdown.line, 8);
+        assert_eq!(document.blocks.len(), 1);
+        assert_eq!(document.blocks[0].line, 17);
+    }
+
+    #[test]
+    fn duplicate_headings_do_not_collide_with_literal_suffixes() {
+        let document = parse_document("Headings.md", "# A\n\n# A-1\n\n# A\n\n# Number &#49;\n", 0);
+        assert_eq!(
+            document
+                .headings
+                .iter()
+                .map(|heading| heading.slug.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "a-1", "a-2", "number-1"]
+        );
+    }
 
     #[test]
     fn extracts_obsidian_metadata() {

@@ -1014,6 +1014,40 @@ unimplemented in this slice. Recovery backups intentionally accumulate until an
 explicit future maintenance policy; they are never silently discarded. Existing
 autonomy deadline and no-push restriction remain unchanged.
 
+Incremental-index follow-up refinement (planning only; **not implemented**):
+
+- Current seam: `search.rs::search_local` performs scan/reconciliation before
+  every query. `main.rs::start_watcher` emits only a path array and drops watcher
+  errors; `app.tsx` ignores those paths and schedules a full `refreshVault(true)`.
+  Merely caching the React `VaultIndex` or trusting that event as proof of complete
+  freshness would not fix these costs or handle missed changes.
+- Split querying the last committed index from a root/generation-scoped dirty
+  queue. Preserve create/write/remove/rename and directory-change semantics; mark
+  watcher errors, overflow/unknown events and missing rename pairs as requiring
+  reconciliation. Coalesce work, not permissions. Retain explicit refresh plus a
+  bounded background/full reconciliation strategy, and describe possible index
+  staleness honestly instead of promising that watchers never miss an event.
+- Keep one coordinated index writer and exclusive recovery. Bound work in
+  cancellable batches so initial/full sync does not indefinitely block newer
+  queries or a vault change; publish coherent committed batches and visible
+  progress/coverage. Canonical task DB remains read-only to the search service.
+- Cache invalidation is not read authorization: revalidate each returned hit's
+  current public path, actual readability and source revision. A removed,
+  private/symlinked or newly unreadable source must not disclose its old cached
+  snippet while waiting for a background sweep. Never treat SQLite cache contents
+  or a watcher payload as future agent grants.
+- Avoid a self-invalidating loop on derivative SQLite/quarantine writes. Preserve
+  canonical task events; do not ignore the whole `.brandon` folder just to hide
+  Windows parent-metadata notifications. Define the handling of ambiguous parent
+  events explicitly and exercise it in the existing no-refresh-loop fixture.
+- Acceptance before promotion: same named 50k fixture, separately measured query,
+  dirty-batch and full-reconcile costs; Words/Literal/filter/ranking parity; edits,
+  moves/removals, task date changes, intentionally lost watcher events, permission
+  revocation, private/reparse paths, recovery concurrency and rapid vault changes.
+  Test small/large vaults and report cold index versus warm filesystem state.
+  File-tree virtualization/50k-row UI responsiveness is a separate validation
+  surface, not something backend query measurements can establish.
+
 ### 4. Brandon tools and external Codex / Claude connections
 
 Expose the resource/search service through a local MCP adapter. Prefer stdio for

@@ -809,8 +809,9 @@ explicit opt-out; destination collisions do not change source files or backlinks
   and separately 128 MiB planned output, 50,000 candidate sources and 20,480 nodes
   per Canvas. Beyond-limit documents stay intact with a warning; directory metadata
   still uses the existing snapshot scan. This is not a large-vault performance claim.
-- Windows vault checks currently pass: 28 unit + 10 search integration tests,
-  including 11 new relocation cases. Linux also covers internal symlink exclusion.
+- Windows vault checks pass: 28 unit + 10 search integration tests,
+  including 11 new relocation cases. Actual Linux Docker checks pass: 29 unit +
+  11 search integration tests, including internal symlink exclusion.
   Native desktop units, 5 Canvas and 4 request-order tests, formatting and Clippy
   pass. Seven real desktop UI/IPC relocation scenarios pass: rename dialogs and
   GPU-card opening, stale save conflict, attachment byte/preview survival, moved
@@ -820,11 +821,26 @@ explicit opt-out; destination collisions do not change source files or backlinks
   Reproduce via `node tests/desktop/canvas-relocation-smoke.mjs` against the debug
   WebView2 endpoint; report is `target/qa/canvas-relocation.json`.
 - A local Windows executable and NSIS are rebuilt for this source; installation
-  and native macOS UI remain untested. The complete local release gate is the
-  next verification step, not yet claimed for this relocation source. No push.
+  and native macOS UI remain untested. Source commit **4ed672c55ea9b7cad6c462f5c629c7bf241c53a9**
+  passed the complete local `scripts/release-check.ps1` with exit 0 and explicit
+  `Release gate PASS`: isolated workspace Rust tests, 115 web tests, policy/security
+  checks, fresh Compose acceptance, maintenance ownership, both restore drills
+  and **18 browser E2E**. Existing allowed dependency advisories were not relaxed.
+  This is a local result, not a new GitHub CI run. No push.
+  Rebuilt EXE SHA-256: `C29EB48EE27006B9043A9033B3638FE338C1698E69A62CB3706391045B2D481D`;
+  NSIS SHA-256: `566566C6E6308E4A8226B03682B3E9DCC94EBE79397F61BB814D2A9475756EDF`.
 
-Next bounded continuation: finish and record this source's local release gate,
-then inspect a small everyday recovery/polish scenario before adding new engines.
+Next bounded continuation: protect an unsaved desktop draft when its source is
+renamed/moved/deleted externally. This is already reproduced, NOT fixed: the
+synthetic `target/qa/external-rename-draft-probe.mjs` / `.json` inserts a marker,
+renames the source before autosave, and shows both `draftStillVisible: false` and
+`diskContainsDraft: false`. `refreshVault` currently clears a missing document
+without a dirty/pending-save guard. Original vault restored; no personal data used.
+Keep the editor/tab and draft, stop doomed autosave/navigation, and provide an
+explicit non-overwriting Save Copy/recovery path for Markdown/Canvas. Cover source
+reappearance/conflict and typing during recovery; promote the reproduction to a
+real UI regression. Do not claim crash/restart durability without testing it, and
+do not duplicate the now-finished Canvas relocation fix or its release gate.
 Before vector/MCP integration, extend ranking/candidate-budget coverage,
 50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
 vector search, embeddings and agent grants remain unimplemented in this slice.

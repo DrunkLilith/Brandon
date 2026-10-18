@@ -4,11 +4,13 @@ mod attachments;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
 mod search;
 pub use search::{SearchHit, SearchMode, SearchResponse};
+mod relocation;
+pub use relocation::{LinkUpdateReason, LinkUpdateWarning};
+#[cfg(test)]
+mod relocation_tests;
 
 use chrono::{NaiveDate, NaiveDateTime};
-use knowledge_markdown::{
-    DocumentMetadata, TaskMetadata, parse_document, rewrite_task_source, rewrite_wiki_link_targets,
-};
+use knowledge_markdown::{DocumentMetadata, TaskMetadata, parse_document, rewrite_task_source};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -110,6 +112,7 @@ pub enum SaveOutcome {
 pub struct VaultMutation {
     pub snapshot: VaultSnapshot,
     pub path: String,
+    pub link_warnings: Vec<LinkUpdateWarning>,
 }
 
 pub type CreatedNote = VaultMutation;
@@ -472,6 +475,7 @@ impl Vault {
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
+            link_warnings: Vec::new(),
         })
     }
 
@@ -504,6 +508,7 @@ impl Vault {
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
+            link_warnings: Vec::new(),
         })
     }
 
@@ -515,6 +520,7 @@ impl Vault {
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
+            link_warnings: Vec::new(),
         })
     }
 
@@ -551,23 +557,25 @@ impl Vault {
             return Err(VaultError::AlreadyExists);
         }
         let old_relative = relative_display(&self.root, &source)?;
+        let new_relative = relative_display(&self.root, &target)?;
+        let link_plan = update_links
+            .then(|| self.prepare_link_updates(&old_relative, &new_relative, is_directory))
+            .transpose()?;
         fs::rename(&source, &target).map_err(|source| VaultError::Io {
             context: "Не удалось переименовать объект",
             source,
         })?;
-        let new_relative = relative_display(&self.root, &target)?;
         if let Err(error) =
             self.rewrite_managed_task_paths(&old_relative, &new_relative, is_directory)
         {
             let _ = fs::rename(&target, &source);
             return Err(error);
         }
-        if update_links {
-            self.rewrite_links_after_move(&old_relative, &new_relative, is_directory)?;
-        }
+        let link_warnings = link_plan.map_or_else(Vec::new, |plan| self.apply_link_updates(plan));
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: new_relative,
+            link_warnings,
         })
     }
 
@@ -593,23 +601,25 @@ impl Vault {
         }
         let old_relative = relative_display(&self.root, &source)?;
         let was_directory = source.is_dir();
+        let new_relative = relative_display(&self.root, &target)?;
+        let link_plan = update_links
+            .then(|| self.prepare_link_updates(&old_relative, &new_relative, was_directory))
+            .transpose()?;
         fs::rename(&source, &target).map_err(|source| VaultError::Io {
             context: "Не удалось переместить объект",
             source,
         })?;
-        let new_relative = relative_display(&self.root, &target)?;
         if let Err(error) =
             self.rewrite_managed_task_paths(&old_relative, &new_relative, was_directory)
         {
             let _ = fs::rename(&target, &source);
             return Err(error);
         }
-        if update_links {
-            self.rewrite_links_after_move(&old_relative, &new_relative, was_directory)?;
-        }
+        let link_warnings = link_plan.map_or_else(Vec::new, |plan| self.apply_link_updates(plan));
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: new_relative,
+            link_warnings,
         })
     }
 
@@ -810,54 +820,6 @@ impl Vault {
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
         // Retained for Markdown-only callers; desktop IPC uses search_local.
         search::markdown_search(self, query, limit)
-    }
-
-    fn rewrite_links_after_move(
-        &self,
-        old_relative: &str,
-        new_relative: &str,
-        was_directory: bool,
-    ) -> Result<()> {
-        let snapshot = self.snapshot()?;
-        if was_directory {
-            let old_prefix = format!("{}/", old_relative.trim_end_matches('/'));
-            let new_prefix = format!("{}/", new_relative.trim_end_matches('/'));
-            for file in &snapshot.files {
-                if let Some(suffix) = file.path.strip_prefix(&new_prefix) {
-                    let old_path = format!("{old_prefix}{suffix}");
-                    self.rewrite_links_for_note(&old_path, &file.path)?;
-                }
-            }
-        } else if is_markdown(Path::new(new_relative)) {
-            self.rewrite_links_for_note(old_relative, new_relative)?;
-        }
-        Ok(())
-    }
-
-    fn rewrite_links_for_note(&self, old_relative: &str, new_relative: &str) -> Result<()> {
-        let old_path = without_markdown_extension(old_relative);
-        let new_path = without_markdown_extension(new_relative);
-        let old_stem = Path::new(&old_path)
-            .file_name()
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| old_path.clone());
-        let old_targets = if old_stem.eq_ignore_ascii_case(&old_path) {
-            vec![old_path]
-        } else {
-            vec![old_path, old_stem]
-        };
-        for file in self.snapshot()?.files {
-            let path = self.secure_existing_note(&file.path)?;
-            let source = fs::read_to_string(&path).map_err(|source| VaultError::Io {
-                context: "Не удалось обновить ссылки",
-                source,
-            })?;
-            let rewritten = rewrite_wiki_link_targets(&source, &old_targets, &new_path);
-            if rewritten != source {
-                write_atomic(&path, rewritten.as_bytes())?;
-            }
-        }
-        Ok(())
     }
 
     fn secure_existing_note(&self, relative_path: &str) -> Result<PathBuf> {

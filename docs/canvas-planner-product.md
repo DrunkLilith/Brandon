@@ -778,15 +778,53 @@ Afternoon autonomy and local-search delivery checkpoint, 18 October 2026:
   New product changes stay local;
   a prior remote CI result is not verification of unpublished product changes.
 
-Next bounded continuation: repair the now-confirmed Canvas reference bug on note
-and attachment rename/move. Isolated IPC reproduction at
-`target/qa/canvas-rename-probe.mjs` / `target/qa/canvas-rename-probe.json` shows that
-Markdown `[[Old]]` becomes `[[New]]`, but Canvas keeps `Old.md` and
-`Attachments/picture.png` after the files become `New.md` and
-`Media/Attachments/renamed.png`. Only synthetic fixtures were mutated, then the
-prior vault was restored. This bug is reproduced, NOT fixed yet. Promote it to
-regression tests first; preserve unknown JSON values and non-file-node text,
-refuse unsafe paths, and do not overwrite concurrent external board edits.
+#### Canvas relocation checkpoint — 18 October, afternoon
+
+The Canvas reference bug is repaired locally; do not implement it again. The
+initial isolated IPC probe left stale `Old.md` / `Attachments/picture.png` refs.
+Three new regressions failed before the fix, then passed. Automatic link updates
+now cover note, attachment and Canvas file rename/move, folder prefixes and boards
+inside a moved folder, including self references. `updateLinks: false` remains an
+explicit opt-out; destination collisions do not change source files or backlinks.
+
+- Prepare the backlink plan before the filesystem move, then check each planned
+  source fingerprint again before its atomic replacement. Changed/unavailable
+  documents are left intact and returned in structured `linkWarnings`; the move
+  itself still succeeds. The UI remaps tabs and shows a persistent, dismissible
+  warning with affected paths/reasons instead of reporting the whole move failed.
+  This is optimistic conflict detection, NOT an OS file lock, all-or-nothing
+  multi-file transaction or protection against every possible external-write race.
+- Canvas rewrites patch only known `type: file` nodes' `file` string byte spans.
+  They do not reserialize the board: layout, IDs, subpaths, edges, unknown fields,
+  exact unknown number tokens and all other bytes survive. Text nodes, URLs,
+  unknown node kinds, private paths and symlink/reparse targets are not rewritten.
+  The raw preservation guarantee here concerns automatic relocation, not arbitrary
+  later JavaScript JSON edits. Duplicate known keys/malformed Canvas stay intact
+  with a warning. No URL or referenced file is fetched during backlink scanning.
+- Existing Markdown wiki-link behavior is retained, now with the same optimistic
+  pre-write source check. Managed task IDs, completion, scheduled/due dates and
+  descriptions survive task-folder/note moves. This does NOT add a complete
+  Markdown relative-image/link rewriting engine or solve ambiguous wiki basenames.
+- Limits are explicit: 16 MiB/source and rewritten document, 128 MiB source reads
+  and separately 128 MiB planned output, 50,000 candidate sources and 20,480 nodes
+  per Canvas. Beyond-limit documents stay intact with a warning; directory metadata
+  still uses the existing snapshot scan. This is not a large-vault performance claim.
+- Windows vault checks currently pass: 28 unit + 10 search integration tests,
+  including 11 new relocation cases. Linux also covers internal symlink exclusion.
+  Native desktop units, 5 Canvas and 4 request-order tests, formatting and Clippy
+  pass. Seven real desktop UI/IPC relocation scenarios pass: rename dialogs and
+  GPU-card opening, stale save conflict, attachment byte/preview survival, moved
+  active board tab, edit/save/reload, and persistent partial-update warning.
+  Existing 11 search, 17 editor/navigation, 7 attachment and 10 GPU/fallback UI
+  checks pass on this stage. Synthetic fixtures only; original vault restored.
+  Reproduce via `node tests/desktop/canvas-relocation-smoke.mjs` against the debug
+  WebView2 endpoint; report is `target/qa/canvas-relocation.json`.
+- A local Windows executable and NSIS are rebuilt for this source; installation
+  and native macOS UI remain untested. The complete local release gate is the
+  next verification step, not yet claimed for this relocation source. No push.
+
+Next bounded continuation: finish and record this source's local release gate,
+then inspect a small everyday recovery/polish scenario before adding new engines.
 Before vector/MCP integration, extend ranking/candidate-budget coverage,
 50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
 vector search, embeddings and agent grants remain unimplemented in this slice.

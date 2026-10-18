@@ -38,6 +38,7 @@ export type SaveOutcome =
 export type VaultMutation = {
   snapshot: VaultSnapshot
   path: string
+  linkWarnings: { path: string; reason: 'changed' | 'unavailable' | 'invalidCanvas' | 'limit' }[]
 }
 
 export type Heading = { level: number; text: string; slug: string }

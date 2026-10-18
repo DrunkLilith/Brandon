@@ -27,7 +27,7 @@ import type {
   VaultIndex, VaultMutation, VaultSnapshot, ViewMode,
 } from './types'
 
-type Notice = { kind: 'error' | 'success'; message: string }
+type Notice = { kind: 'error' | 'success' | 'warning'; message: string; details?: string[] }
 type SidebarMode = 'files' | 'search' | 'tags'
 type PaletteMode = 'commands' | 'notes' | null
 type WorkspaceView = 'note' | 'graph' | 'canvas' | 'base' | 'planner'
@@ -154,8 +154,17 @@ export function App() {
 
   const showNotice = useCallback((next: Notice) => {
     setNotice(next)
-    window.setTimeout(() => setNotice((current) => current === next ? null : current), 3000)
+    if (!next.details) window.setTimeout(() => setNotice((current) => current === next ? null : current), 3000)
   }, [])
+
+  const reportLinkWarnings = useCallback((result: VaultMutation) => {
+    if (!result.linkWarnings?.length) return
+    const reasons = { changed: 'изменён извне', unavailable: 'недоступен', invalidCanvas: 'некорректный Canvas', limit: 'превышен безопасный лимит' }
+    showNotice({
+      kind: 'warning', message: `Объект перемещён или переименован. Не все ссылки обновлены (${result.linkWarnings.length}). Эти документы не перезаписаны.`,
+      details: result.linkWarnings.map((warning) => `${warning.path}: ${reasons[warning.reason]}`),
+    })
+  }, [showNotice])
 
   const changeUiZoom = useCallback((change: number | 'reset') => {
     setUiZoom((current) => {
@@ -502,6 +511,7 @@ export function App() {
         const result = await invoke<VaultMutation>('rename_entry', { relativePath: oldPath, newName: dialog.value, updateLinks: true })
         setVault(result.snapshot)
         remapWorkspacePaths(oldPath, result.path)
+        reportLinkWarnings(result)
         if (noteRef.current?.path === oldPath || noteRef.current?.path.startsWith(`${oldPath}/`)) {
           const nextPath = `${result.path}${noteRef.current.path.slice(oldPath.length)}`
           const view = viewForPath(nextPath)
@@ -512,6 +522,7 @@ export function App() {
         const result = await invoke<VaultMutation>('move_entry', { relativePath: oldPath, destinationFolder: dialog.parent || null, updateLinks: true })
         setVault(result.snapshot)
         remapWorkspacePaths(oldPath, result.path)
+        reportLinkWarnings(result)
         if (noteRef.current?.path === oldPath || noteRef.current?.path.startsWith(`${oldPath}/`)) {
           const nextPath = `${result.path}${noteRef.current.path.slice(oldPath.length)}`
           const view = viewForPath(nextPath)
@@ -523,7 +534,7 @@ export function App() {
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, dialog, flushDocument, loadIndex, remapWorkspacePaths, showNotice, vault])
+  }, [applyDocument, dialog, flushDocument, loadIndex, remapWorkspacePaths, reportLinkWarnings, showNotice, vault])
 
   const trashEntry = useCallback(async (entry: VaultEntry) => {
     if (!window.confirm(`Переместить «${entry.name}» в локальную корзину vault?`)) return
@@ -845,7 +856,7 @@ export function App() {
     {quickInsertOpen && <QuickInsertPalette onClose={() => setQuickInsertOpen(false)} onInsert={insertQuick} />}
     {contextMenu && <EntryContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onRename={() => setDialog({ kind: 'rename', entry: contextMenu.entry, value: contextMenu.entry.name.replace(/\.(md|canvas|base)$/i, ''), parent: contextMenu.entry.parent })} onMove={() => setDialog({ kind: 'move', entry: contextMenu.entry, value: '', parent: contextMenu.entry.parent })} onReveal={() => void invoke('reveal_entry', { relativePath: contextMenu.entry.path })} onTrash={() => void trashEntry(contextMenu.entry)} />}
     {conflict && <ConflictDialog disk={conflict} onLoad={() => { applyDocument(conflict, viewForPath(conflict.path)); conflictRef.current = null; setConflict(null) }} onOverwrite={() => void saveNote(false, conflict.fingerprint)} onClose={() => setConflict(null)} />}
-    {notice && <div className={`notice ${notice.kind}`}><span />{notice.message}</div>}
+    {notice && <div role="status" className={`notice ${notice.kind}`}><span /><div>{notice.message}{notice.details && <details><summary>Какие документы проверить</summary><ul>{notice.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul></details>}</div>{notice.details && <button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button>}</div>}
   </div>
 }
 
@@ -862,7 +873,20 @@ function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; quer
 function EntryDialogView({ dialog, folders, inputRef, onChange, onClose, onSubmit }: { dialog: EntryDialog; folders: VaultEntry[]; inputRef: React.RefObject<HTMLInputElement | null>; onChange: (dialog: EntryDialog) => void; onClose: () => void; onSubmit: () => void }) {
   const labels = { note: ['Новая заметка', 'Название заметки'], folder: ['Новая папка', 'Название папки'], canvas: ['Новый холст', 'Название холста'], base: ['Новая база', 'Название базы'], rename: ['Переименовать', 'Новое название'], move: ['Переместить', 'Куда переместить'] } as const
   const needsName = dialog.kind !== 'move'
-  return <div className="dialog-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}><form className="dialog" onSubmit={(event) => { event.preventDefault(); onSubmit() }}><span className="eyebrow">{dialog.entry?.path ?? 'ЛОКАЛЬНЫЙ VAULT'}</span><h2>{labels[dialog.kind][0]}</h2>{needsName && <><label>{labels[dialog.kind][1]}</label><input ref={inputRef} value={dialog.value} onChange={(event) => onChange({ ...dialog, value: event.target.value })} placeholder={dialog.kind === 'note' ? 'Без названия' : 'Название'} /></>}{dialog.kind !== 'rename' && <><label>Папка</label><select value={dialog.parent} onChange={(event) => onChange({ ...dialog, parent: event.target.value })}><option value="">Корень vault</option>{folders.filter((folder) => dialog.entry?.path !== folder.path && !folder.path.startsWith(`${dialog.entry?.path}/`)).map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}</select></>}<p>{dialog.kind === 'rename' || dialog.kind === 'move' ? 'Ссылки [[wiki]] будут обновлены автоматически.' : dialog.kind === 'canvas' ? 'Будет создан переносимый файл JSON Canvas.' : dialog.kind === 'base' ? 'Будет создан совместимый файл Obsidian Bases.' : 'Результат появится обычным объектом в вашей папке.'}</p><div><button type="button" className="secondary" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={needsName && !dialog.value.trim()}>{dialog.kind === 'move' ? 'Переместить' : dialog.kind === 'rename' ? 'Сохранить' : 'Создать'}</button></div></form></div>
+  const description = dialog.kind === 'rename' || dialog.kind === 'move'
+    ? 'Ссылки [[wiki]] и файловые карточки Canvas обновятся автоматически. Если документ недоступен или изменён извне, появится предупреждение.'
+    : dialog.kind === 'canvas' ? 'Будет создан переносимый файл JSON Canvas.'
+      : dialog.kind === 'base' ? 'Будет создан совместимый файл Obsidian Bases.'
+        : 'Результат появится обычным объектом в вашей папке.'
+  return <div className="dialog-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
+    <form className="dialog" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+      <span className="eyebrow">{dialog.entry?.path ?? 'ЛОКАЛЬНЫЙ VAULT'}</span><h2>{labels[dialog.kind][0]}</h2>
+      {needsName && <><label>{labels[dialog.kind][1]}</label><input ref={inputRef} value={dialog.value} onChange={(event) => onChange({ ...dialog, value: event.target.value })} placeholder={dialog.kind === 'note' ? 'Без названия' : 'Название'} /></>}
+      {dialog.kind !== 'rename' && <><label>Папка</label><select value={dialog.parent} onChange={(event) => onChange({ ...dialog, parent: event.target.value })}><option value="">Корень vault</option>{folders.filter((folder) => dialog.entry?.path !== folder.path && !folder.path.startsWith(`${dialog.entry?.path}/`)).map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}</select></>}
+      <p>{description}</p>
+      <div><button type="button" className="secondary" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={needsName && !dialog.value.trim()}>{dialog.kind === 'move' ? 'Переместить' : dialog.kind === 'rename' ? 'Сохранить' : 'Создать'}</button></div>
+    </form>
+  </div>
 }
 
 function TemplatePicker({ templates, onClose, onInsert, onCreate }: { templates: VaultSnapshot['files']; onClose: () => void; onInsert: (path: string) => void; onCreate: () => void }) {

@@ -164,6 +164,12 @@ kbd { font: 500 9px "Cascadia Mono", Consolas, monospace; color: var(--dim); bor
 .notice { position: fixed; z-index: 30; left: 50%; bottom: 42px; transform: translateX(-50%); min-height: 38px; padding: 0 15px; border: 1px solid #414943; border-radius: 9px; display: flex; align-items: center; gap: 9px; background: #202421; box-shadow: 0 12px 42px #0008; color: #d9dfda; font-size: 10px; }
 .notice span { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .notice.error span { background: var(--danger); }
+.notice.warning { max-width: min(650px, calc(100vw - 32px)); padding-block: 10px; border-color: #766747; }
+.notice.warning > span { flex-shrink: 0; background: #c9af73; }
+.notice details { margin-top: 6px; }
+.notice summary { cursor: pointer; }
+.notice ul { max-height: 180px; overflow: auto; margin-block: 8px 0; padding-left: 18px; overflow-wrap: anywhere; }
+.notice button { align-self: flex-start; padding: 0 4px; color: inherit; background: transparent; border: 0; cursor: pointer; font-size: 18px; }
 
 .boot { height: 100%; display: flex; gap: 10px; align-items: center; justify-content: center; background: var(--bg); color: #dce3dd; font-size: 13px; font-weight: 700; }
 .boot svg { color: var(--accent); }

@@ -486,7 +486,17 @@ impl Vault {
         extension: &str,
         contents: &str,
     ) -> Result<VaultMutation> {
-        let extension = normalized_resource_extension(extension)?;
+        // Recovery creates an exact Markdown copy through the same exclusive
+        // create-new boundary as Canvas/Bases, never a save over an existing file.
+        let extension = if extension
+            .trim()
+            .trim_start_matches('.')
+            .eq_ignore_ascii_case("md")
+        {
+            "md"
+        } else {
+            normalized_resource_extension(extension)?
+        };
         let title = title
             .trim()
             .strip_suffix(&format!(".{extension}"))

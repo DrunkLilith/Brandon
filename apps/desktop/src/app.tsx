@@ -31,7 +31,7 @@ type Notice = { kind: 'error' | 'success' | 'warning'; message: string; details?
 type SidebarMode = 'files' | 'search' | 'tags'
 type PaletteMode = 'commands' | 'notes' | null
 type WorkspaceView = 'note' | 'graph' | 'canvas' | 'base' | 'planner'
-type EntryDialog = { kind: 'note' | 'folder' | 'canvas' | 'base' | 'rename' | 'move'; entry?: VaultEntry; value: string; parent: string }
+type EntryDialog = { kind: 'note' | 'folder' | 'canvas' | 'base' | 'rename' | 'move' | 'recover'; entry?: VaultEntry; value: string; parent: string }
 type ContextMenu = { entry: VaultEntry; x: number; y: number }
 
 const GRAPH_TAB = 'brandon://graph'
@@ -122,6 +122,8 @@ export function App() {
   const [palette, setPalette] = useState<PaletteMode>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [conflict, setConflict] = useState<NoteDocument | null>(null)
+  const [missingSource, setMissingSource] = useState<string | null>(null)
+  const [discardDraftOpen, setDiscardDraftOpen] = useState(false)
   const [templatePicker, setTemplatePicker] = useState(false)
   const [uiZoom, setUiZoom] = useState(rememberedUiZoom)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
@@ -136,6 +138,7 @@ export function App() {
   const historyRef = useRef(history)
   const closedTabs = useRef<string[]>([])
   const conflictRef = useRef(conflict)
+  const missingSourceRef = useRef(missingSource)
   const noteRef = useRef(note)
   const workspaceViewRef = useRef(workspaceView)
   const contentRef = useRef(content)
@@ -143,6 +146,8 @@ export function App() {
   const activeTab = emptyTab ?? (workspaceView === 'graph' ? GRAPH_TAB : workspaceView === 'planner' ? PLANNER_TAB : note?.path ?? HOME_TAB)
   const activeTabRef = useRef(activeTab)
   const dirty = !['graph', 'planner'].includes(workspaceView) && content !== persistedContent
+  const closeGuardActive = dirty || missingSource !== null || saving || conflict !== null
+  const hasRecovery = Boolean(missingSource && note && !['graph', 'planner'].includes(workspaceView))
   noteRef.current = note
   workspaceViewRef.current = workspaceView
   contentRef.current = content
@@ -151,6 +156,18 @@ export function App() {
   openTabsRef.current = openTabs
   historyRef.current = history
   conflictRef.current = conflict
+  missingSourceRef.current = missingSource
+
+  const markMissingSource = useCallback((path: string | null) => {
+    missingSourceRef.current = path
+    setMissingSource(path)
+  }, [])
+
+  const beginRecoveryCopy = useCallback(() => {
+    const current = noteRef.current
+    if (!current || missingSourceRef.current !== current.path) return
+    setDialog({ kind: 'recover', value: `${noteTitle(current.path)} (копия)`, parent: '' })
+  }, [])
 
   const showNotice = useCallback((next: Notice) => {
     setNotice(next)
@@ -195,6 +212,7 @@ export function App() {
     if (savePromise.current) return savePromise.current
     const current = noteRef.current
     if (!current) return true
+    if (missingSourceRef.current && expectedFingerprint === undefined) { beginRecoveryCopy(); return false }
     if (conflictRef.current && expectedFingerprint === undefined) return false
     if (contentRef.current === persistedRef.current && expectedFingerprint === undefined) return true
     const contents = contentRef.current
@@ -218,6 +236,7 @@ export function App() {
           persistedRef.current = outcome.document.content
           setNote(outcome.document)
           setPersistedContent(outcome.document.content)
+          markMissingSource(null)
         }
         conflictRef.current = null
         setConflict(null)
@@ -225,6 +244,7 @@ export function App() {
         void loadIndex()
         return true
       } catch (error) {
+        if (noteRef.current?.path === current.path) markMissingSource(current.path)
         showNotice({ kind: 'error', message: errorMessage(error) })
         return false
       }
@@ -236,15 +256,49 @@ export function App() {
       savePromise.current = null
       setSaving(false)
     }
-  }, [loadIndex, showNotice])
+  }, [beginRecoveryCopy, loadIndex, markMissingSource, showNotice])
 
   const flushDocument = useCallback(async () => {
     if (savePromise.current && !await savePromise.current) return false
+    if (missingSourceRef.current) { beginRecoveryCopy(); return false }
     while (noteRef.current && contentRef.current !== persistedRef.current) {
       if (!await saveNote(true)) return false
     }
     return !conflictRef.current
-  }, [saveNote])
+  }, [beginRecoveryCopy, saveNote])
+
+  useEffect(() => {
+    // A clean window needs no JS close listener. Besides avoiding needless IPC,
+    // this leaves ordinary close/reload on Tauri's native path.
+    if (!closeGuardActive) return
+    let disposed = false, closing = false
+    let unlisten: (() => void) | undefined
+    const register = async () => {
+      const stop = await appWindow.onCloseRequested(async (event) => {
+        // Always prevent the API helper's default destroy path. After a safe
+        // flush, remove this listener and use the ALREADY granted close command.
+        // No destroy permission or new window capability is needed.
+        event.preventDefault()
+        if (closing) return
+        closing = true
+        try {
+          if (!await flushDocument()) return
+          await unlisten?.()
+          unlisten = undefined
+          await appWindow.close()
+        } catch (error) {
+          showNotice({ kind: 'error', message: errorMessage(error) })
+          if (!disposed && !unlisten) void register().catch((failure) => showNotice({ kind: 'error', message: errorMessage(failure) }))
+        } finally { closing = false }
+      })
+      if (disposed) await stop()
+      else unlisten = stop
+    }
+    void register().catch((error) => showNotice({ kind: 'error', message: errorMessage(error) }))
+    const release = () => { disposed = true; void Promise.resolve(unlisten?.()).catch(() => {}) }
+    window.addEventListener('beforeunload', release)
+    return () => { window.removeEventListener('beforeunload', release); release() }
+  }, [closeGuardActive, flushDocument, showNotice])
 
   const recordVisit = useCallback((path: string, record = true) => {
     activeTabRef.current = path
@@ -269,6 +323,8 @@ export function App() {
   }, [])
 
   const applyDocument = useCallback((document: NoteDocument, view: WorkspaceView = 'note', record = true) => {
+    markMissingSource(null)
+    setDiscardDraftOpen(false)
     attachTab(document.path)
     noteRef.current = document
     contentRef.current = document.content
@@ -281,9 +337,11 @@ export function App() {
     setEmptyTab(null)
     setWorkspaceView(view)
     recordVisit(document.path, record)
-  }, [attachTab, recordVisit])
+  }, [attachTab, markMissingSource, recordVisit])
 
   const clearDocument = useCallback(() => {
+    markMissingSource(null)
+    setDiscardDraftOpen(false)
     setSearchTarget(null)
     setSearchAttachment(null)
     noteRef.current = null
@@ -295,7 +353,7 @@ export function App() {
     setPersistedContent('')
     setWorkspaceView('note')
     setEmptyTab(HOME_TAB)
-  }, [])
+  }, [markMissingSource])
 
   const activateTab = useCallback(async (path: string, record = true): Promise<boolean> => {
     setSearchTarget(null)
@@ -368,7 +426,7 @@ export function App() {
 
   const pruneWorkspacePaths = useCallback((entries: VaultEntry[]) => {
     const paths = new Set(entries.map((entry) => entry.path))
-    const exists = (path: string) => path.startsWith('brandon://') || paths.has(path)
+    const exists = (path: string) => path === missingSourceRef.current || path.startsWith('brandon://') || paths.has(path)
     setOpenTabs((tabs) => tabs.filter(exists))
     const current = historyRef.current
     const before = current.entries.slice(0, current.cursor + 1).filter(exists)
@@ -380,23 +438,54 @@ export function App() {
 
   const refreshVault = useCallback(async (external = false) => {
     try {
+      const currentAtRequest = noteRef.current
       const snapshot = await invoke<VaultSnapshot>('refresh_vault')
+      if (noteRef.current !== currentAtRequest) return // stale refresh must not prune a newly opened/recovered document
       setVault(snapshot)
-      pruneWorkspacePaths(snapshot.entries)
       const current = noteRef.current
       if (current && !snapshot.entries.some((entry) => entry.path === current.path)) {
-        setOpenTabs((tabs) => tabs.filter((path) => path !== current.path))
-        clearDocument()
-      } else if (external && current && !['graph', 'planner'].includes(workspaceViewRef.current) && contentRef.current === persistedRef.current) {
+        if (contentRef.current !== persistedRef.current || savePromise.current || conflictRef.current || missingSourceRef.current) {
+          markMissingSource(current.path)
+        } else {
+          setOpenTabs((tabs) => tabs.filter((path) => path !== current.path))
+          clearDocument()
+        }
+      } else if (external && current && !missingSourceRef.current && !['graph', 'planner'].includes(workspaceViewRef.current) && contentRef.current === persistedRef.current) {
         const view = viewForPath(current.path)
         const disk = await invoke<NoteDocument>(view === 'note' ? 'read_note' : 'read_resource', { relativePath: current.path })
         if (disk.fingerprint !== current.fingerprint && noteRef.current?.path === current.path && workspaceViewRef.current === view && contentRef.current === persistedRef.current) applyDocument(disk, view, false)
       }
+      pruneWorkspacePaths(snapshot.entries)
       await loadIndex()
     } catch (error) {
       showNotice({ kind: 'error', message: errorMessage(error) })
     }
-  }, [applyDocument, clearDocument, loadIndex, pruneWorkspacePaths, showNotice])
+  }, [applyDocument, clearDocument, loadIndex, markMissingSource, pruneWorkspacePaths, showNotice])
+
+  const checkRecoverySource = useCallback(async () => {
+    const current = noteRef.current
+    if (!current || !missingSourceRef.current) return
+    try {
+      const disk = await invoke<NoteDocument>(viewForPath(current.path) === 'note' ? 'read_note' : 'read_resource', { relativePath: current.path })
+      if (noteRef.current?.path !== current.path) return
+      conflictRef.current = disk
+      setConflict(disk)
+    } catch {
+      showNotice({ kind: 'error', message: 'Исходный файл пока недоступен. Черновик остаётся в редакторе; сохраните копию.' })
+    }
+  }, [showNotice])
+
+  const discardMissingDraft = useCallback(() => {
+    const current = noteRef.current
+    if (!current || !missingSourceRef.current || savePromise.current) return
+    setDiscardDraftOpen(false)
+    conflictRef.current = null
+    setConflict(null)
+    clearDocument()
+    setOpenTabs((tabs) => [...tabs.filter((path) => path !== current.path && path !== HOME_TAB), HOME_TAB])
+    pruneWorkspacePaths(vault?.entries ?? [])
+    recordVisit(HOME_TAB)
+  }, [clearDocument, pruneWorkspacePaths, recordVisit, vault])
 
   const openVault = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false, title: 'Открыть локальный vault' })
@@ -420,10 +509,10 @@ export function App() {
   }, [applyDocument, clearDocument, flushDocument, loadIndex, showNotice])
 
   useEffect(() => {
-    if (!dirty || !note || saving || conflict) return
+    if (!dirty || !note || saving || conflict || missingSource) return
     const timeout = window.setTimeout(() => void saveNote(true), 850)
     return () => window.clearTimeout(timeout)
-  }, [conflict, content, dirty, note, saveNote, saving])
+  }, [conflict, content, dirty, missingSource, note, saveNote, saving])
 
   useEffect(() => {
     void (async () => {
@@ -488,6 +577,44 @@ export function App() {
 
   const submitDialog = useCallback(async () => {
     if (!dialog || !vault) return
+    if (dialog.kind === 'recover') {
+      const current = noteRef.current
+      if (!current || current.path !== missingSourceRef.current || savePromise.current) return
+      const submitted = contentRef.current
+      setSaving(true)
+      const pending = (async () => {
+        try {
+          const extension = viewForPath(current.path) === 'note' ? 'md' : current.path.split('.').at(-1)?.toLowerCase()
+          const result = await invoke<VaultMutation>('create_resource', { title: dialog.value, folder: dialog.parent || null, extension, contents: submitted })
+          const copy = await invoke<NoteDocument>(extension === 'md' ? 'read_note' : 'read_resource', { relativePath: result.path })
+          if (noteRef.current?.path !== current.path) return false
+          if (copy.content !== submitted) {
+            showNotice({ kind: 'error', message: `Файл «${result.path}» изменился сразу после создания. Черновик остаётся здесь; выберите другое название копии.` })
+            return false
+          }
+          const latest = contentRef.current
+          setVault(result.snapshot)
+          setOpenTabs((tabs) => tabs.filter((path) => path !== current.path))
+          conflictRef.current = null
+          setConflict(null)
+          applyDocument(copy, viewForPath(copy.path))
+          // Only submitted text is acknowledged. Later typing remains dirty on
+          // the new path and is never discarded by copy completion.
+          contentRef.current = latest
+          setContent(latest)
+          setDialog(null)
+          showNotice({ kind: 'success', message: 'Копия сохранена. Исходный файл не перезаписан.' })
+          void loadIndex()
+          return true
+        } catch (error) {
+          showNotice({ kind: 'error', message: errorMessage(error) })
+          return false
+        }
+      })()
+      savePromise.current = pending
+      try { await pending } finally { savePromise.current = null; setSaving(false) }
+      return
+    }
     if (!await flushDocument()) return
     try {
       if (dialog.kind === 'note') {
@@ -580,8 +707,15 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setDialog(null); setPalette(null); setContextMenu(null); setTemplatePicker(false); setQuickInsertOpen(false); return }
-      if (dialog || palette || templatePicker || quickInsertOpen || conflict) return
+      if (event.key === 'Escape') { setDiscardDraftOpen(false); setDialog(null); setPalette(null); setContextMenu(null); setTemplatePicker(false); setQuickInsertOpen(false); return }
+      if (closeGuardActive && (event.code === 'F5' || ((event.ctrlKey || event.metaKey) && event.code === 'KeyR'))) {
+        event.preventDefault()
+        if (discardDraftOpen || dialog || palette || templatePicker || quickInsertOpen || conflict) return
+        if (missingSourceRef.current) beginRecoveryCopy()
+        else void saveNote()
+        return
+      }
+      if (discardDraftOpen || dialog || palette || templatePicker || quickInsertOpen || conflict) return
       if (vault && event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
         event.preventDefault()
         void navigateHistory(event.key === 'ArrowLeft' ? -1 : 1)
@@ -608,7 +742,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [changeUiZoom, closeTab, conflict, cycleTab, dialog, navigateHistory, newTab, openGraph, openPlanner, palette, quickInsertOpen, reopenTab, saveNote, selectedFolder, templatePicker, vault])
+  }, [beginRecoveryCopy, changeUiZoom, closeGuardActive, closeTab, conflict, cycleTab, dialog, discardDraftOpen, navigateHistory, newTab, openGraph, openPlanner, palette, quickInsertOpen, reopenTab, saveNote, selectedFolder, templatePicker, vault])
 
   const templateFiles = useMemo(() => vault?.files.filter((file) => /(^|\/)(templates?|шаблоны)(\/|$)/i.test(file.path)) ?? [], [vault])
 
@@ -824,16 +958,22 @@ export function App() {
       </aside>
 
       <div className={`main-area ${rightOpen && note && workspaceView === 'note' ? 'right-open' : ''}`}>
-        <section className="content-shell">
+        <section className={`content-shell${hasRecovery ? ' has-recovery' : ''}`}>
           <div className="commandbar"><div className="toolbar-start"><button className="history-button" disabled={history.cursor <= 0} aria-label="Назад" title="Назад (Alt ←)" onClick={() => { void navigateHistory(-1) }}>‹</button><button className="history-button" disabled={history.cursor >= history.entries.length - 1} aria-label="Вперёд" title="Вперёд (Alt →)" onClick={() => { void navigateHistory(1) }}>›</button>{vault && <div className="breadcrumbs"><strong>{noteTitle(activeTab)}</strong></div>}</div>
             <div className="commandbar-actions">
               {note && workspaceView === 'note' && <div className="view-switcher"><ModeButton active={viewMode === 'edit'} label="Редактор" onClick={() => setViewMode('edit')}><EditIcon /></ModeButton><ModeButton active={viewMode === 'split'} label="Разделить" onClick={() => setViewMode('split')}><ColumnsIcon /></ModeButton><ModeButton active={viewMode === 'preview'} label="Чтение" onClick={() => setViewMode('preview')}><PreviewIcon /></ModeButton></div>}
               <div className="ui-zoom-control" aria-label="Масштаб интерфейса"><button aria-label="Уменьшить масштаб" disabled={uiZoom <= UI_ZOOM_MIN} onClick={() => changeUiZoom(-UI_ZOOM_STEP)}>−</button><button className="ui-zoom-value" title="Сбросить масштаб" onClick={() => changeUiZoom('reset')}>{Math.round(uiZoom * 100)}%</button><button aria-label="Увеличить масштаб" disabled={uiZoom >= UI_ZOOM_MAX} onClick={() => changeUiZoom(UI_ZOOM_STEP)}>+</button></div>
-              {note && !['graph', 'planner'].includes(workspaceView) && <button className="save-button" disabled={!dirty || saving} onClick={() => void saveNote()}><SaveIcon /><span>{saving ? 'Сохраняю' : dirty ? 'Сохранить' : 'Сохранено'}</span></button>}
+              {note && !['graph', 'planner'].includes(workspaceView) && <button className="save-button" disabled={(!dirty && !missingSource) || saving} onClick={() => void saveNote()}><SaveIcon /><span>{saving ? 'Сохраняю' : missingSource ? 'Сохранить копию' : dirty ? 'Сохранить' : 'Сохранено'}</span></button>}
               {note && workspaceView === 'note' && <button className={`icon-button ${rightOpen ? 'active' : ''}`} aria-label="Контекст заметки" onClick={() => setRightOpen((value) => !value)}><MoreIcon /></button>}
             </div>
           </div>
 
+          {hasRecovery && <div className="source-recovery" role="status">
+            <div><strong>Не удалось сохранить исходный файл</strong><p>{missingSource} — черновик остаётся в редакторе, автосохранение остановлено.</p></div>
+            <button className="source-recovery-save" disabled={saving} onClick={beginRecoveryCopy}>Сохранить копию</button>
+            <button className="source-recovery-check" disabled={saving} onClick={() => void checkRecoverySource()}>Проверить источник</button>
+            <button className="source-recovery-discard" disabled={saving} onClick={() => setDiscardDraftOpen(true)}>Отбросить черновик…</button>
+          </div>}
           {!vault ? <Welcome onOpen={() => void openVault()} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onCreateBase={() => setDialog({ kind: 'base', value: '', parent: selectedFolder })} onCreateCanvas={() => setDialog({ kind: 'canvas', value: '', parent: selectedFolder })} onOpen={() => setPalette('notes')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className="document">
             <div className="writing-toolbar">
               <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(true); setViewMode('edit') }}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(false); setViewMode('edit') }}>Markdown</button></div></div>
@@ -851,6 +991,7 @@ export function App() {
     </main>
 
     {dialog && <EntryDialogView dialog={dialog} folders={folders} inputRef={dialogRef} onChange={setDialog} onClose={() => setDialog(null)} onSubmit={() => void submitDialog()} />}
+    {discardDraftOpen && <div className="dialog-backdrop"><div className="dialog discard-draft-dialog" role="alertdialog" aria-modal="true" aria-labelledby="discard-draft-title"><h2 id="discard-draft-title">Отбросить черновик?</h2><p>Несохранённый текст будет убран из редактора. Файлы на диске не изменятся.</p><div><button className="secondary" autoFocus onClick={() => setDiscardDraftOpen(false)}>Отмена</button><button className="primary" onClick={discardMissingDraft}>Отбросить черновик</button></div></div></div>}
     {palette && <CommandPalette mode={palette} files={vault?.files ?? []} actions={commandActions} onClose={() => setPalette(null)} onOpen={(path) => void loadNote(path)} />}
     {templatePicker && <TemplatePicker templates={templateFiles} onClose={() => setTemplatePicker(false)} onInsert={(path) => void insertTemplate(path)} onCreate={() => void createTemplateStarter()} />}
     {quickInsertOpen && <QuickInsertPalette onClose={() => setQuickInsertOpen(false)} onInsert={insertQuick} />}
@@ -871,10 +1012,11 @@ function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; quer
 }
 
 function EntryDialogView({ dialog, folders, inputRef, onChange, onClose, onSubmit }: { dialog: EntryDialog; folders: VaultEntry[]; inputRef: React.RefObject<HTMLInputElement | null>; onChange: (dialog: EntryDialog) => void; onClose: () => void; onSubmit: () => void }) {
-  const labels = { note: ['Новая заметка', 'Название заметки'], folder: ['Новая папка', 'Название папки'], canvas: ['Новый холст', 'Название холста'], base: ['Новая база', 'Название базы'], rename: ['Переименовать', 'Новое название'], move: ['Переместить', 'Куда переместить'] } as const
+  const labels = { note: ['Новая заметка', 'Название заметки'], folder: ['Новая папка', 'Название папки'], canvas: ['Новый холст', 'Название холста'], base: ['Новая база', 'Название базы'], rename: ['Переименовать', 'Новое название'], move: ['Переместить', 'Куда переместить'], recover: ['Сохранить копию черновика', 'Название копии'] } as const
   const needsName = dialog.kind !== 'move'
   const description = dialog.kind === 'rename' || dialog.kind === 'move'
     ? 'Ссылки [[wiki]] и файловые карточки Canvas обновятся автоматически. Если документ недоступен или изменён извне, появится предупреждение.'
+    : dialog.kind === 'recover' ? 'Будет создан отдельный файл в vault. Существующие файлы не перезаписываются; при совпадении названия выберите другое.'
     : dialog.kind === 'canvas' ? 'Будет создан переносимый файл JSON Canvas.'
       : dialog.kind === 'base' ? 'Будет создан совместимый файл Obsidian Bases.'
         : 'Результат появится обычным объектом в вашей папке.'

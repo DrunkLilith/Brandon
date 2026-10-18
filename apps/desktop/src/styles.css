@@ -170,6 +170,14 @@ kbd { font: 500 9px "Cascadia Mono", Consolas, monospace; color: var(--dim); bor
 .notice summary { cursor: pointer; }
 .notice ul { max-height: 180px; overflow: auto; margin-block: 8px 0; padding-left: 18px; overflow-wrap: anywhere; }
 .notice button { align-self: flex-start; padding: 0 4px; color: inherit; background: transparent; border: 0; cursor: pointer; font-size: 18px; }
+.source-recovery { flex-shrink: 0; display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #5c5039; background: #29261f; font-size: 12px; }
+.content-shell.has-recovery { grid-template-rows: 46px auto minmax(0, 1fr); }
+.source-recovery > div { flex: 1; min-width: 180px; }
+.source-recovery strong { color: #ddc58f; font-size: 13px; }
+.source-recovery p { margin: 5px 0 0; color: #bdb7aa; line-height: 1.5; overflow-wrap: anywhere; }
+.source-recovery button { flex-shrink: 0; border: 1px solid #655a44; border-radius: 6px; background: transparent; color: #ddd3bb; padding: 7px 10px; cursor: pointer; }
+.source-recovery button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 1000px) { .source-recovery { flex-wrap: wrap; } .source-recovery > div { flex-basis: 100%; } }
 
 .boot { height: 100%; display: flex; gap: 10px; align-items: center; justify-content: center; background: var(--bg); color: #dce3dd; font-size: 13px; font-weight: 700; }
 .boot svg { color: var(--accent); }

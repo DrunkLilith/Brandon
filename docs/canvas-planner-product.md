@@ -830,17 +830,59 @@ explicit opt-out; destination collisions do not change source files or backlinks
   Rebuilt EXE SHA-256: `C29EB48EE27006B9043A9033B3638FE338C1698E69A62CB3706391045B2D481D`;
   NSIS SHA-256: `566566C6E6308E4A8226B03682B3E9DCC94EBE79397F61BB814D2A9475756EDF`.
 
-Next bounded continuation: protect an unsaved desktop draft when its source is
-renamed/moved/deleted externally. This is already reproduced, NOT fixed: the
-synthetic `target/qa/external-rename-draft-probe.mjs` / `.json` inserts a marker,
-renames the source before autosave, and shows both `draftStillVisible: false` and
-`diskContainsDraft: false`. `refreshVault` currently clears a missing document
-without a dirty/pending-save guard. Original vault restored; no personal data used.
-Keep the editor/tab and draft, stop doomed autosave/navigation, and provide an
-explicit non-overwriting Save Copy/recovery path for Markdown/Canvas. Cover source
-reappearance/conflict and typing during recovery; promote the reproduction to a
-real UI regression. Do not claim crash/restart durability without testing it, and
-do not duplicate the now-finished Canvas relocation fix or its release gate.
+#### Desktop draft recovery checkpoint — 18 October, afternoon
+
+The external-rename draft loss is repaired locally; do not implement it again.
+The earlier synthetic probe demonstrated both `draftStillVisible: false` and
+`diskContainsDraft: false`. The new real UI regression failed on the old build
+before the recovery UI was implemented; the exact Markdown-copy unit also failed
+before adding its create-new path.
+
+- A missing source no longer clears a dirty/conflicted/pending-save document.
+  Its editor and tab stay open, failed autosave stops, and stale refresh snapshots
+  cannot prune a just-opened/recovered document. Other save failures, including a
+  real Windows read-only file, also retain the draft and offer recovery.
+- Save Copy writes the exact submitted Markdown/Canvas bytes into a separate
+  vault file through exclusive create-new. Existing names fail rather than being
+  overwritten. Later typing is retained as dirty content on the new path, then
+  saved there. If the newly created copy changes before it is read back, it is not
+  acknowledged as this draft or silently overwritten. Canonical task identities
+  and operational properties are not inferred or duplicated by this text-copy flow.
+- A reappeared source does not silently restart autosave. Check Source opens the
+  existing comparison flow; only explicit load/overwrite resolves it. Explicit
+  overwrite uses the compared source fingerprint and resumes ordinary autosave.
+  Discard has its own in-app confirmation; Cancel retains the draft, and confirming
+  removes only the volatile editor draft, not disk files. WebView `confirm` was
+  unsuitable for this test and is not used for the new recovery action.
+- Navigation, Ctrl+R/F5 and native window-close requests are guarded while work is
+  pending. A normal dirty close flushes the latest text before actually closing.
+  The JS close listener exists only while needed, cleans up on unload, and uses
+  the already granted close command after unsubscribing; **no Tauri capability or
+  agent permission was added**. The clean QA close helper now verifies the target
+  actually disappeared instead of assuming that an accepted close request closed it.
+- This is in-memory protection while Brandon runs, NOT crash/restart or forced
+  WebView-reload draft durability. Do not advertise a persistent draft journal.
+  Save Copy recovers document content, not automatic association of an externally
+  moved task's database identity. Filesystem conflict protection remains optimistic.
+- Verified: 40 vault tests on Windows and 42 in an actual Linux container, 2 native
+  desktop tests, 5 Canvas and 4 search-request units, formatting and Clippy.
+  Eleven native desktop recovery scenarios pass, including a delayed local copy
+  request with later typing, a delayed failing save, read-only attributes, real
+  close/relaunch, explicit discard, and a GPU board copy/save/reload. Existing 7
+  relocation, 11 search, 17 editor/navigation, 7 attachment and 10 GPU/fallback UI
+  checks pass. Only synthetic data; prior vault restored, no QA process remains.
+  `node tests/desktop/draft-recovery-smoke.mjs` reproduces this on WebView2 debug
+  port 9222; the runner relaunches the owned test app for the real-close check.
+  Report: `target/qa/draft-recovery.json`. Optional `BRANDON_QA_SCREENSHOT` captures
+  synthetic wide/900px views. The banner is visually checked and bounded in both
+  viewport sizes; this is not native macOS or physical-window-resize verification.
+- The Windows EXE and NSIS are rebuilt. Complete local release gate for this
+  recovery source is the next check and is NOT claimed yet. Installation/macOS
+  remain untested; changes remain local, without push.
+
+Next bounded continuation: finish and record this recovery source's local release
+gate first. Then inspect a small derivative-search cache recovery/rebuild scenario;
+do not start a large persistent-draft or AI engine rewrite within the time limit.
 Before vector/MCP integration, extend ranking/candidate-budget coverage,
 50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
 vector search, embeddings and agent grants remain unimplemented in this slice.

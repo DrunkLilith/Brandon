@@ -35,7 +35,7 @@ pub enum VaultError {
     InvalidName(&'static str),
     #[error("Объект с таким названием уже существует")]
     AlreadyExists,
-    #[error("Локальная база задач недоступна: {0}")]
+    #[error("Локальная база данных недоступна: {0}")]
     Database(#[from] rusqlite::Error),
 }
 
@@ -808,7 +808,7 @@ impl Vault {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
-        // Keep the existing desktop path until the new search slice is finished.
+        // Retained for Markdown-only callers; desktop IPC uses search_local.
         search::markdown_search(self, query, limit)
     }
 

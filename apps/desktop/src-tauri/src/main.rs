@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod attachment_commands;
+mod search_commands;
+use search_commands::{SearchState, search_vault};
 #[cfg(windows)]
 mod canvas_gpu;
 use attachment_commands::{
@@ -31,8 +33,8 @@ use canvas_gpu::{
 };
 
 use knowledge_vault::{
-    CreatedNote, NoteDocument, SaveOutcome, SearchHit, TaskIndexMutation, Vault, VaultIndex,
-    VaultMutation, VaultSnapshot,
+    CreatedNote, NoteDocument, SaveOutcome, TaskIndexMutation, Vault, VaultIndex, VaultMutation,
+    VaultSnapshot,
 };
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -91,12 +93,18 @@ fn start_watcher(
     let mut watcher = RecommendedWatcher::new(
         move |result: notify::Result<notify::Event>| {
             if let Ok(event) = result {
+                if matches!(event.kind, notify::EventKind::Access(_)) {
+                    return;
+                }
                 let paths: Vec<String> = event
                     .paths
                     .iter()
+                    .filter(|path| !is_search_cache_path(path))
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
-                let _ = app_handle.emit("vault-changed", paths);
+                if !paths.is_empty() {
+                    let _ = app_handle.emit("vault-changed", paths);
+                }
             }
         },
         Config::default(),
@@ -343,17 +351,6 @@ fn update_task(
 }
 
 #[tauri::command]
-fn search_vault(
-    query: String,
-    limit: Option<usize>,
-    state: State<'_, VaultState>,
-) -> Result<Vec<SearchHit>, String> {
-    current_vault(&state)?
-        .search(&query, limit.unwrap_or(50))
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 fn reveal_entry(relative_path: String, state: State<'_, VaultState>) -> Result<(), String> {
     let path = current_vault(&state)?
         .absolute_entry_path(&relative_path)
@@ -382,6 +379,7 @@ fn main() {
         .manage(VaultState::default())
         .manage(GpuCanvasState::default())
         .manage(AttachmentState::default())
+        .manage(SearchState::default())
         .invoke_handler(tauri::generate_handler![
             canvas_gpu_supported,
             attachment_info,
@@ -413,4 +411,47 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Brandon desktop");
+}
+
+fn is_search_cache_path(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == ".brandon")
+        && path.file_name().is_some_and(|name| {
+            matches!(
+                name.to_str(),
+                Some(
+                    "search-v1.sqlite3"
+                        | "search-v1.sqlite3-journal"
+                        | "search-v1.sqlite3-wal"
+                        | "search-v1.sqlite3-shm"
+                )
+            )
+        })
+}
+
+#[cfg(test)]
+mod search_watcher_tests {
+    use super::*;
+    #[test]
+    fn ignores_only_derivative_search_cache_not_tasks_or_notes() {
+        for name in [
+            "search-v1.sqlite3",
+            "search-v1.sqlite3-journal",
+            "search-v1.sqlite3-wal",
+            "search-v1.sqlite3-shm",
+        ] {
+            assert!(is_search_cache_path(
+                &Path::new("vault").join(".brandon").join(name)
+            ));
+        }
+        for path in [
+            "vault/.brandon/tasks.sqlite3",
+            "vault/Note.md",
+            "vault/search-v1.sqlite3",
+            "vault/Board.canvas",
+        ] {
+            assert!(!is_search_cache_path(Path::new(path)));
+        }
+    }
 }

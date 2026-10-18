@@ -1323,6 +1323,20 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .canvas-attachment-details .attachment-path { overflow-wrap: anywhere; }
 .canvas-attachment-details > .canvas-image-preview { height: auto; max-height: 300px; margin: 14px 0; }
 .canvas-attachment-details small { display: block; margin-top: 14px; font-size: 11px; line-height: 1.6; color: #999; }
+
+.main-area { position: relative; }
+.local-search { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.local-search-options { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin: 0 11px 7px; }
+.local-search-options [role="group"] { display: flex; padding: 2px; border: 1px solid #393939; border-radius: 5px; }
+.local-search-options button { border: 0; border-radius: 3px; padding: 4px 8px; color: #999; background: transparent; font-size: 11px; cursor: pointer; }
+.local-search-options button[aria-pressed="true"] { color: #e2dfed; background: #3c3849; }
+.local-search-options select { min-width: 0; max-width: 125px; padding: 5px; border: 1px solid #393939; border-radius: 4px; color: #bbb; background: #242424; font-size: 11px; }
+.local-search-help { margin: 0 8px; color: #929292; font-size: 12px; line-height: 1.65; }
+.local-search-help code { color: #b9b0d5; font-size: 11px; }
+.local-search-status, .local-search-coverage { margin: 6px 10px 9px; color: #969696; font-size: 11px; line-height: 1.6; }
+.local-search-coverage { padding-top: 8px; border-top: 1px solid #333; color: #888; }
+.local-search-error { margin: 8px 10px; color: #e7a6a6; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.search-results button:focus-visible { outline: 1px solid #a69bcf; outline-offset: -1px; background: #2b2831; }
 .canvas-import-status { position: absolute; z-index: 24; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: calc(100% - 40px); display: flex; align-items: center; gap: 14px; border: 1px solid #45434b; border-radius: 7px; padding: 12px 14px; background: #252428; font-size: 12px; }
 .canvas-import-status > span { max-width: 350px; overflow-wrap: anywhere; }
 .canvas-import-status button { border: 0; background: none; color: #b9b0e5; cursor: pointer; }

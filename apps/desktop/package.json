@@ -11,6 +11,7 @@
     "lint": "eslint src --max-warnings 0",
     "test:smoke": "node ../../tests/desktop/editor-navigation-smoke.mjs",
     "test:canvas": "node --test ../../tests/desktop/canvas-spatial.test.mjs ../../tests/desktop/canvas-document.test.mjs",
+    "test:search": "node --experimental-strip-types --test ../../tests/desktop/search-request.test.mjs",
     "test:render": "node ../../tests/desktop/canvas-render-smoke.mjs",
     "tauri": "tauri",
     "typecheck": "tsc -b --pretty false"

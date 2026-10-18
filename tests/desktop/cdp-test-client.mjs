@@ -27,6 +27,14 @@ export async function connect() {
   const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
   const waitFor = async expression => { for (let i = 0; i < 240; i++) { if (await evaluate(expression)) return; await delay(50) } throw new Error(`Timed out: ${expression}`) }
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
-  const key = async (key, code, modifiers = 0) => { await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, modifiers }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, modifiers }) }
+  const key = async (key, code, modifiers = 0) => {
+    // Native input defaults (Ctrl+A, Enter on buttons) need a virtual key in
+    // WebView2. CodeMirror's JS keymaps happened to work without it.
+    const special = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, Space: 32, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Delete: 46, Home: 36, End: 35 }
+    const windowsVirtualKeyCode = /^Key[A-Z]$/.test(code) ? code.charCodeAt(3) : special[code] ?? 0
+    const payload = { key, code, modifiers, windowsVirtualKeyCode }
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...payload, ...(key === 'Enter' ? { text: '\r' } : {}) })
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...payload })
+  }
   return { socket, send, evaluate, waitFor, click, key, delay }
 }

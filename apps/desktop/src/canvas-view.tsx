@@ -84,12 +84,14 @@ function additiveSelection(event: { ctrlKey: boolean; metaKey: boolean; shiftKey
   return event.ctrlKey || event.metaKey || event.shiftKey
 }
 
-export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1 }: {
+export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, focusTarget, onMissingSearchTarget }: {
   value: string
   index: VaultIndex | null
   onChange: (value: string) => void
   onOpen: (path: string) => void
   initialZoom?: number
+  focusTarget?: { nodeId: string | null; nonce: string } | null
+  onMissingSearchTarget?: () => void
 }) {
   const validation = useMemo(() => parseCanvasDocument(value), [value])
   const stored = validation.document
@@ -107,6 +109,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1 }: 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
+  const lastSearchFocus = useRef<string | null>(null)
   const documentRef = useRef(parsed)
   const lastEmitted = useRef<string | null>(null)
   const drag = useRef<DragState | null>(null)
@@ -142,6 +145,27 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1 }: 
     setSelected(new Set([id]))
   })
   const openFile = (path: string) => { if (/\.(md|canvas|base)$/i.test(path)) onOpen(path); else setAttachmentPath(path) }
+
+  useEffect(() => {
+    if (!focusTarget || lastSearchFocus.current === focusTarget.nonce || viewportSize.width <= 1 || viewportSize.height <= 1) return
+    lastSearchFocus.current = focusTarget.nonce
+    if (!focusTarget.nodeId) {
+      const bounds = boundsFor([...nodes.values()])
+      if (bounds) {
+        const zoom = clamp(Math.min(1.6, (viewportSize.width - 180) / Math.max(1, bounds.width), (viewportSize.height - 160) / Math.max(1, bounds.height)), MIN_ZOOM, MAX_ZOOM)
+        setCamera({ x: -(bounds.left + bounds.width / 2) * zoom, y: -(bounds.top + bounds.height / 2) * zoom, zoom })
+      }
+      setSelected(new Set())
+      return
+    }
+    const node = nodes.get(focusTarget.nodeId)
+    if (!node) { onMissingSearchTarget?.(); return }
+    const zoom = clamp(Math.min(1, (viewportSize.width - 120) / node.width, (viewportSize.height - 160) / node.height), MIN_ZOOM, MAX_ZOOM)
+    setSelected(new Set([node.id]))
+    setEditingId(null)
+    setCamera({ x: -(node.x + node.width / 2) * zoom, y: -(node.y + node.height / 2) * zoom, zoom })
+    viewport.current?.focus({ preventScroll: true })
+  }, [focusTarget, nodes, viewportSize, onMissingSearchTarget])
 
   const nudgeHistory = () => setHistoryVersion((current) => current + 1)
   const applySerialized = (source: string) => {
@@ -521,6 +545,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1 }: 
     data-zoom={camera.zoom}
     data-visible-nodes={visibleNodes.length}
     data-total-nodes={parsed.nodes.length}
+    data-search-focused-node={focusTarget?.nodeId && selected.has(focusTarget.nodeId) ? focusTarget.nodeId : undefined}
     data-frame-cpu-ms={native.stats?.frameCpuMs}
     data-native-frames={native.stats?.frames}
     data-render-adapter={native.stats?.adapter}

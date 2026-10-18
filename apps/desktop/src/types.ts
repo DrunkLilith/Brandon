@@ -98,6 +98,21 @@ export type SearchHit = {
   snippet: string
   line: number
   score: number
+  kind: 'note' | 'task' | 'canvas' | 'file'
+  nodeId: string | null
+  revision: string
+  contentIndexed: boolean
+}
+
+export type SearchResponse = {
+  hits: SearchHit[]
+  indexedSources: number
+  nameOnlySources: number
+  failedSources: number
+  skippedSources: number
+  changedSources: number
+  removedSources: number
+  elapsedMs: number
 }
 
 export type ViewMode = 'edit' | 'split' | 'preview'

@@ -708,6 +708,81 @@ Manual follow-up while autonomy is paused, 18 October 2026:
   rebuild does not promote the experimental index. Automation `brandon` remains
   PAUSED at the user's request; this fix does not resume autonomous work.
 
+Afternoon autonomy and local-search delivery checkpoint, 18 October 2026:
+
+- The user resumed product work at approximately 15:20 MSK for three hours.
+  Existing heartbeat `brandon` is ACTIVE until **18:20 MSK**, not a second timer.
+  The authenticated Telegram request to add two hours to the old 16:20 boundary
+  agrees with this deadline. Questions and significant reports go to the existing
+  private-chat allowlist (6411921436); both pending messages were answered and
+  acknowledged through update 949576652. Do not send secrets or vault contents.
+- Desktop search now uses the existing SQLite FTS5/BM25 service rather than the
+  legacy Markdown-only scan. Content reads/reindexing are incremental by source
+  metadata and task-state fingerprint, but directory metadata is still scanned
+  per query: this is NOT a fully watcher-maintained index or constant-time search.
+  One serialized blocking worker keeps the filesystem/SQLite work off the UI
+  thread, and obsolete queued jobs are skipped. The derivative search cache stays
+  separate from authoritative `.brandon/tasks.sqlite3`, which search opens read-only.
+- The restrained sidebar has Words / Literal modes, a type selector and existing
+  `path:`, `tag:` and `type:` filters. Words supports quoted phrases and explicit
+  trailing-prefix `*`; Literal preserves code quotes, repeated spaces and newlines
+  as contiguous text (case-insensitive), while retaining explicit filter tokens.
+  Filter-only browsing lists resources once instead of duplicating each section;
+  text queries retain note-section/Canvas-node anchors. Task hits are deduplicated.
+- Results open an exact Markdown line, select and centre a Canvas node, or open
+  the existing attachment peek for non-note files. Operational task fields anchor
+  to the task title, not fictitious Markdown lines. Changed source revisions are
+  visible on opening. A whole-board search result fits the board instead of
+  opening an unrelated file at the origin. No agent or MCP access was enabled.
+- Private/hidden/credential paths and symlinked source/cache paths are excluded.
+  Referenced Canvas files and URLs are not dereferenced, and arbitrary binary
+  contents are not treated as extracted text. Coverage distinguishes text-indexed,
+  name-only, failed and skipped sources. First-slice limits: 50,000 sources,
+  16 MiB/source, 128 MiB of changed-source reads per update, 1,024 Markdown chunks
+  and 20,480 Canvas nodes/source. Notes beyond the chunk budget become visibly
+  name-only rather than silently partial. Existing task properties remain a
+  separate searchable canonical source. Cache policy stamps invalidate old chunks.
+- Cache/journal/access-only watcher events no longer cause search-refresh loops.
+  An explicit request observer prevents canceled results, errors and completions
+  from overwriting current UI state. Four deterministic promise-order regressions
+  exercise this; live UI additionally checks rapid query changes and idle stability.
+  Native Tauri IPC is immutable and was NOT replaced or weakened for test injection.
+- Verified so far: 27 vault tests on Windows (17 existing + 10 search), 28 Linux
+  vault tests including Unix symlink protection, 2 native desktop unit tests,
+  5 Canvas unit tests and 4 request-order tests on both Windows and Linux.
+  Eleven real desktop search scenarios (including one-shot source navigation), 17 editor/navigation,
+  7 attachment and 10 GPU/fallback scenarios. Formatting, desktop lint/build and
+  vault/desktop Clippy pass. Synthetic fixtures only; the prior vault is restored.
+  Reproduce UI checks against a standalone WebView2 debug build using
+  `node tests/desktop/local-search-smoke.mjs`; report `target/qa/local-search.json`.
+  Screenshot inspection also covers the compact dark search sidebar and line jump.
+- Standalone Windows executable and NSIS installer have been built locally at
+  `target/release/knowledge-desktop.exe` and
+  `target/release/bundle/nsis/Brandon_0.1.0_x64-setup.exe`. The final one-shot-jump
+  regression passed on this build. The full local release-gate run follows this
+  checkpoint; do not treat the previous code's CI as its result.
+- A single synthetic 20k-card Rust debug run measured roughly 0.8 s cold indexing
+  and 1–2 ms warm lookup. This is not a multi-run benchmark, UI latency or display
+  FPS. The latest GPU stress report is `target/qa/canvas-render.json`; it was a
+  concurrent regression run, not a clean performance comparison.
+- CI repairs already pushed under the prior CI request: portable cross-platform
+  path checks; draining fake-Docker output before Unix exit; Compose-configured
+  private maintenance tmpfs instead of unsupported `compose run --tmpfs`; and
+  waiting for the rendered space selector, not just history URL navigation.
+  `293d63f` passed the complete local release gate including 18 browser E2E.
+  Remote run 39128420194 on `8268a69` completed successfully: `Release gate PASS`
+  and 18 browser E2E passed; conclusion verified on 18 October at 16:10 MSK.
+  New product changes stay local;
+  a prior remote CI result is not verification of unpublished product changes.
+
+Next bounded continuation: finish the local release-gate checkpoint and remote
+CI audit without weakening tests; then inspect/test attachment/note rename and
+move behavior so relative Canvas references remain usable. If that scenario is
+already correct, choose a small media/board UX improvement with explicit safety
+limits. Before vector/MCP integration, extend ranking/candidate-budget coverage,
+50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
+vector search, embeddings and agent grants remain unimplemented in this slice.
+
 ### 4. Brandon tools and external Codex / Claude connections
 
 Expose the resource/search service through a local MCP adapter. Prefer stdio for

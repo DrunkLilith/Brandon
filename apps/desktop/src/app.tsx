@@ -6,6 +6,8 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { BaseView } from './base-view'
 import { CanvasView } from './canvas-view'
+import { AttachmentDetails } from './canvas-attachments'
+import { LocalSearch } from './local-search'
 import { CommandPalette, type PaletteAction } from './command-palette'
 import { MarkdownEditor, type MarkdownEditorHandle } from './editor'
 import { FileTree } from './file-tree'
@@ -109,7 +111,8 @@ export function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('edit')
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('files')
   const [sidebarQuery, setSidebarQuery] = useState('')
-  const [searchHits, setSearchHits] = useState<SearchHit[]>([])
+  const [searchTarget, setSearchTarget] = useState<{ path: string; line: number; nodeId: string | null; nonce: string } | null>(null)
+  const [searchAttachment, setSearchAttachment] = useState<{ path: string; root: string } | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -272,6 +275,8 @@ export function App() {
   }, [attachTab, recordVisit])
 
   const clearDocument = useCallback(() => {
+    setSearchTarget(null)
+    setSearchAttachment(null)
     noteRef.current = null
     contentRef.current = ''
     persistedRef.current = ''
@@ -284,6 +289,8 @@ export function App() {
   }, [])
 
   const activateTab = useCallback(async (path: string, record = true): Promise<boolean> => {
+    setSearchTarget(null)
+    setSearchAttachment(null)
     const request = ++navigationRequest.current
     if (activeTabRef.current === path) return true
     if (!await flushDocument() || request !== navigationRequest.current) return false
@@ -314,6 +321,19 @@ export function App() {
 
   const loadNote = useCallback((path: string) => activateTab(path), [activateTab])
   const loadResource = loadNote
+  const openSearchHit = useCallback(async (hit: SearchHit) => {
+    if (hit.kind === 'file') { if (vault) setSearchAttachment({ path: hit.path, root: vault.root }); return }
+    if (!await flushDocument() || !await loadNote(hit.path) || noteRef.current?.path !== hit.path) return
+    setSearchAttachment(null)
+    let line = hit.line
+    if (hit.revision && noteRef.current.fingerprint !== hit.revision) {
+      const relocated = hit.snippet ? contentRef.current.split('\n').findIndex((value) => value.includes(hit.snippet)) : -1
+      if (relocated >= 0) line = relocated + 1
+      showNotice({ kind: 'success', message: 'Источник изменился после поиска. Открыта текущая версия.' })
+    }
+    if (!hit.nodeId) setViewMode('edit')
+    setSearchTarget({ path: hit.path, line, nodeId: hit.nodeId, nonce: crypto.randomUUID() })
+  }, [flushDocument, loadNote, showNotice, vault])
   const openGraph = useCallback(() => { void activateTab(GRAPH_TAB) }, [activateTab])
   const openPlanner = useCallback(() => { void activateTab(PLANNER_TAB) }, [activateTab])
   const newTab = useCallback(() => { void activateTab(`${EMPTY_TAB_PREFIX}${crypto.randomUUID()}`) }, [activateTab])
@@ -430,17 +450,22 @@ export function App() {
   }, [refreshVault, vault?.root])
 
   useEffect(() => {
-    if (sidebarMode !== 'search' || !sidebarQuery.trim()) {
-      setSearchHits([])
-      return
-    }
-    const timeout = window.setTimeout(() => {
-      void invoke<SearchHit[]>('search_vault', { query: sidebarQuery, limit: 80 })
-        .then(setSearchHits)
-        .catch((error) => showNotice({ kind: 'error', message: errorMessage(error) }))
-    }, 220)
-    return () => window.clearTimeout(timeout)
-  }, [sidebarMode, sidebarQuery, showNotice])
+    if (!searchTarget || searchTarget.nodeId || searchTarget.path !== note?.path || workspaceView !== 'note' || viewMode === 'preview') return
+    const frame = window.requestAnimationFrame(() => {
+      if (noteRef.current?.path === searchTarget.path && editorRef.current) {
+        editorRef.current.revealLine(searchTarget.line)
+        setSearchTarget((current) => current?.nonce === searchTarget.nonce ? null : current)
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [searchTarget, note?.path, workspaceView, viewMode])
+
+  useEffect(() => {
+    if (!searchAttachment) return
+    const close = (event: KeyboardEvent) => { if (event.key === 'Escape') setSearchAttachment(null) }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [searchAttachment])
 
   useEffect(() => {
     if (dialog) window.setTimeout(() => dialogRef.current?.focus(), 0)
@@ -775,11 +800,13 @@ export function App() {
       <aside className="sidebar">
         {vault && <>
           <SidebarHeading mode={sidebarMode} onRefresh={() => void refreshVault()} onNewNote={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onNewFolder={() => setDialog({ kind: 'folder', value: '', parent: selectedFolder })} />
-          {sidebarMode !== 'files' && <div className="sidebar-search"><SearchIcon /><input ref={searchRef} value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} placeholder={sidebarMode === 'search' ? 'Поиск в тексте…' : 'Фильтр тегов…'} /><kbd>Ctrl K</kbd></div>}
+          {sidebarMode === 'search' && <LocalSearch root={vault.root} revision={index} query={sidebarQuery} onQueryChange={setSidebarQuery} inputRef={searchRef} onOpen={(hit) => void openSearchHit(hit)} />}
+          {sidebarMode === 'tags' && <div className="sidebar-search"><SearchIcon /><input ref={searchRef} value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} placeholder="Фильтр тегов…" /><kbd>Ctrl K</kbd></div>}
+          {sidebarMode !== 'search' && <>
           <div className="sidebar-content">{sidebarMode === 'files' && <FileTree entries={vault.entries} activePath={[GRAPH_TAB, PLANNER_TAB].includes(activeTab ?? '') ? null : activeTab} query="" onOpen={(path) => void loadNote(path)} onOpenResource={(path) => void loadResource(path)} onSelectFolder={setSelectedFolder} onContextMenu={(entry, x, y) => setContextMenu({ entry, x, y })} />}
-            {sidebarMode === 'search' && <SearchResults query={sidebarQuery} hits={searchHits} onOpen={(path) => void loadNote(path)} />}
             {sidebarMode === 'tags' && <TagBrowser index={index} query={sidebarQuery} onChoose={(tag) => { setSidebarMode('search'); setSidebarQuery(`tag:${tag}`) }} />}
           </div>
+          </>}
           <button className="sidebar-vault-footer" onClick={() => void openVault()}><span>{vault.name}</span><MoreIcon /></button>
         </>}
         {!vault && <button className="sidebar-empty-open" onClick={() => void openVault()}><FolderIcon /><span>Открыть vault</span></button>}
@@ -796,7 +823,7 @@ export function App() {
             </div>
           </div>
 
-          {!vault ? <Welcome onOpen={() => void openVault()} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onCreateBase={() => setDialog({ kind: 'base', value: '', parent: selectedFolder })} onCreateCanvas={() => setDialog({ kind: 'canvas', value: '', parent: selectedFolder })} onOpen={() => setPalette('notes')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className="document">
+          {!vault ? <Welcome onOpen={() => void openVault()} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onCreateBase={() => setDialog({ kind: 'base', value: '', parent: selectedFolder })} onCreateCanvas={() => setDialog({ kind: 'canvas', value: '', parent: selectedFolder })} onOpen={() => setPalette('notes')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView index={index} onOpen={(path) => void loadNote(path)} /> : <article className="document">
             <div className="writing-toolbar">
               <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(true); setViewMode('edit') }}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => { setVisualEditing(false); setViewMode('edit') }}>Markdown</button></div></div>
               <button className="quick-insert-button" onClick={() => { if (viewMode === 'preview') setViewMode('edit'); setQuickInsertOpen(true) }}><PlusIcon /><span>Быстрая вставка</span><kbd>Ctrl /</kbd></button>
@@ -808,6 +835,7 @@ export function App() {
           </article>}
         </section>
         {rightOpen && note && workspaceView === 'note' && <RightSidebar activePath={note.path} index={index} onOpen={(path) => void loadNote(path)} />}
+        {searchAttachment?.root === vault?.root && searchAttachment && <AttachmentDetails key={searchAttachment.path} path={searchAttachment.path} onClose={() => setSearchAttachment(null)} />}
       </div>
     </main>
 
@@ -823,12 +851,6 @@ export function App() {
 
 function SidebarHeading({ mode, onRefresh, onNewNote, onNewFolder }: { mode: SidebarMode; onRefresh: () => void; onNewNote: () => void; onNewFolder: () => void }) {
   return <div className="section-heading"><span>{mode === 'files' ? '' : mode === 'search' ? 'Поиск' : 'Теги'}</span><div>{mode === 'files' && <><button title="Новая заметка" onClick={onNewNote}><EditIcon /></button><button title="Новая папка" onClick={onNewFolder}><FolderIcon /></button></>}<button title="Обновить" onClick={onRefresh}><RefreshIcon /></button></div></div>
-}
-
-function SearchResults({ query, hits, onOpen }: { query: string; hits: SearchHit[]; onOpen: (path: string) => void }) {
-  if (!query.trim()) return <div className="sidebar-placeholder"><SearchIcon /><strong>Поиск по всему vault</strong><p>Слова, фразы и фильтры <code>tag:</code> и <code>path:</code></p></div>
-  if (!hits.length) return <div className="empty-filter">Совпадений нет</div>
-  return <div className="search-results">{hits.map((hit) => <button key={hit.path} onClick={() => onOpen(hit.path)}><strong>{hit.title}</strong><span>{hit.path} · строка {hit.line}</span><p>{hit.snippet || 'Совпадение в названии'}</p></button>)}</div>
 }
 
 function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; query: string; onChoose: (tag: string) => void }) {

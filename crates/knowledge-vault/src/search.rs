@@ -15,7 +15,10 @@ use std::{
 };
 
 const CACHE: &str = "search-v1.sqlite3";
-const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+const INDEX_POLICY_VERSION: &str = "4";
+// A valid 20k-card Canvas exceeds 2 MiB even with short text. Keep the read
+// bounded without silently demoting the product's supported board sizes.
+const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_SOURCES: usize = 50_000;
 const MAX_CHUNKS: usize = 1024;
@@ -63,6 +66,67 @@ struct Query {
     kind: Option<String>,
 }
 impl Query {
+    fn literal(value: &str) -> Result<Self> {
+        if value.chars().count() > 512 {
+            return Err(VaultError::InvalidPath(
+                "Поисковый запрос ограничен 512 символами",
+            ));
+        }
+        // Preserve the exact text, including quotes and repeated whitespace.
+        // Only explicit path:/tag:/type: tokens retain their filter meaning.
+        let (mut start, mut quoted, mut parts) = (None, false, Vec::new());
+        for (offset, ch) in value.char_indices() {
+            if start.is_none() && !ch.is_whitespace() {
+                start = Some(offset);
+            }
+            if ch == '"' {
+                quoted = !quoted;
+            }
+            if ch.is_whitespace()
+                && !quoted
+                && let Some(start) = start.take()
+            {
+                parts.push((start, offset));
+            }
+        }
+        if let Some(start) = start {
+            parts.push((start, value.len()));
+        }
+        let (mut query, mut literal, mut previous_end) = (Self::default(), String::new(), None);
+        for (start, end) in parts {
+            let token = &value[start..end];
+            let folded = token.to_lowercase();
+            if ["path:", "tag:", "type:"]
+                .iter()
+                .any(|prefix| folded.starts_with(prefix))
+            {
+                let filter = Self::parse(token)?;
+                if filter.path.is_some() {
+                    query.path = filter.path;
+                }
+                if filter.tag.is_some() {
+                    query.tag = filter.tag;
+                }
+                if filter.kind.is_some() {
+                    query.kind = filter.kind;
+                }
+                previous_end = None;
+            } else {
+                if let Some(previous) = previous_end {
+                    literal.push_str(&value[previous..start]);
+                } else if !literal.is_empty() {
+                    literal.push(' ');
+                }
+                literal.push_str(token);
+                previous_end = Some(end);
+            }
+        }
+        if !literal.trim().is_empty() {
+            query.terms.push(literal.trim().to_lowercase());
+        }
+        Ok(query)
+    }
+
     fn parse(value: &str) -> Result<Self> {
         if value.chars().count() > 512 {
             return Err(VaultError::InvalidPath(
@@ -158,8 +222,8 @@ struct Source {
     metadata: fs::Metadata,
 }
 
-// Compatibility path for the current release. Experimental FTS stays opt-in at
-// the Rust API and is not activated by an unrelated desktop UI rebuild.
+// Compatibility helper for callers expecting a Markdown-only Vec<SearchHit>.
+// The desktop uses search_local and its explicit coverage report instead.
 pub(super) fn markdown_search(vault: &Vault, value: &str, limit: usize) -> Result<Vec<SearchHit>> {
     let mut query = Query::default();
     for token in value.split_whitespace() {
@@ -357,11 +421,11 @@ fn task_fields(directory: &Path) -> Result<HashMap<String, String>> {
         Ok((
             row.get(0)?,
             format!(
-                "{title}\n{}\nscheduled: {}\ndue: {}",
+                "{title}\n{}\nЗапланировано: {}\nДедлайн: {}",
                 if completed {
-                    "Выполнено completed"
+                    "Выполнено"
                 } else {
-                    "В работе active"
+                    "В работе"
                 },
                 scheduled.unwrap_or_default(),
                 due.unwrap_or_default()
@@ -386,7 +450,7 @@ fn schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn markdown_chunks(path: &str, source: &str) -> Vec<Chunk> {
+fn markdown_chunks(path: &str, source: &str) -> Option<Vec<Chunk>> {
     let document = parse_document(path, source, 0);
     let tags = format!("|{}|", document.tags.join("|").to_lowercase());
     let (mut result, mut body, mut start) = (Vec::new(), String::new(), 1);
@@ -402,15 +466,17 @@ fn markdown_chunks(path: &str, source: &str) -> Vec<Chunk> {
                 node: None,
             });
             if result.len() >= MAX_CHUNKS {
-                break;
+                // Do not label a silently truncated note as content-indexed.
+                return None;
             }
         }
         if new_heading {
-            heading = format!(
-                "{} · {}",
-                document.title,
-                line.trim_start_matches('#').trim()
-            );
+            let section = line.trim().trim_start_matches('#').trim();
+            heading = if section == document.title {
+                document.title.clone()
+            } else {
+                format!("{} · {section}", document.title)
+            };
         }
         if body.is_empty() {
             start = offset + 1;
@@ -436,7 +502,7 @@ fn markdown_chunks(path: &str, source: &str) -> Vec<Chunk> {
             node: None,
         });
     }
-    result
+    Some(result)
 }
 
 fn canvas_chunks(source: &str) -> Option<Vec<Chunk>> {
@@ -488,7 +554,11 @@ impl Vault {
         limit: usize,
     ) -> Result<SearchResponse> {
         let started = Instant::now();
-        let query = Query::parse(query)?;
+        let query = if mode == SearchMode::Literal {
+            Query::literal(query)?
+        } else {
+            Query::parse(query)?
+        };
         if query.empty() {
             return Ok(SearchResponse::default());
         }
@@ -510,7 +580,7 @@ impl Vault {
         for file in sources {
             let task = tasks.get(&file.path);
             let stamp = format!(
-                "{}:{}:{}",
+                "{INDEX_POLICY_VERSION}:{}:{}:{}",
                 file.metadata.len(),
                 file.metadata
                     .modified()
@@ -576,8 +646,10 @@ impl Vault {
                                 status = "failed";
                             }
                         } else {
-                            chunks = markdown_chunks(&file.path, &source);
-                            status = "indexed";
+                            if let Some(sections) = markdown_chunks(&file.path, &source) {
+                                chunks = sections;
+                                status = "indexed";
+                            }
                         }
                     } else {
                         status = "failed";
@@ -595,7 +667,9 @@ impl Vault {
                         .into_owned(),
                     body: fields.clone(),
                     tags: String::new(),
-                    line: 1,
+                    // Operational fields belong to SQLite, not fictional lines
+                    // in the Markdown file. Zero marks a source-title anchor.
+                    line: 0,
                     node: None,
                 });
             }
@@ -644,11 +718,11 @@ impl Vault {
         let mut values = Vec::<String>::new();
         if words {
             values.push(query.fts());
-        } else {
-            for term in &query.terms {
-                sql.push_str(" AND instr(c.literal,?)>0");
-                values.push(term.clone());
-            }
+        } else if !query.terms.is_empty() {
+            // Literal mode is one contiguous substring, not token conjunction.
+            // Quoted input also preserves repeated whitespace inside the phrase.
+            sql.push_str(" AND instr(c.literal,?)>0");
+            values.push(query.terms.join(" "));
         }
         if let Some(path) = &query.path {
             sql.push_str(" AND instr(c.path_folded,?)>0");
@@ -662,20 +736,36 @@ impl Vault {
             sql.push_str(" AND c.kind=?");
             values.push(kind.clone());
         }
+        if query.terms.is_empty() {
+            // Browsing a type/path/tag lists resources, not duplicate chunks.
+            sql.push_str(" GROUP BY c.path");
+        }
         sql.push_str(" ORDER BY rank,c.path,c.line LIMIT ?");
         values.push((limit.clamp(1, 200) * 3).to_string());
         let mut statement = connection.prepare(&sql)?;
         let rows = statement.query_map(params_from_iter(values.iter()), |row| {
             let body: String = row.get(2)?;
-            let base = row.get::<_, i64>(3)?.max(1) as usize;
-            let matched = body.lines().enumerate().find(|(_, line)| {
-                query
-                    .terms
-                    .iter()
-                    .any(|term| line.to_lowercase().contains(term.trim_end_matches('*')))
-            });
+            let stored_line = row.get::<_, i64>(3)?;
+            let base = stored_line.max(1) as usize;
+            let matched = if mode == SearchMode::Literal && !query.terms.is_empty() {
+                let folded = body.to_lowercase();
+                folded.find(&query.terms[0]).map(|offset| {
+                    let line = folded[..offset]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count();
+                    (line, body.lines().nth(line).unwrap_or(body.as_str()))
+                })
+            } else {
+                body.lines().enumerate().find(|(_, line)| {
+                    query
+                        .terms
+                        .iter()
+                        .any(|term| line.to_lowercase().contains(term.trim_end_matches('*')))
+                })
+            };
             let (line, snippet) = matched.map_or((base, body.as_str()), |(offset, line)| {
-                (base + offset, line)
+                (if stored_line == 0 { 1 } else { base + offset }, line)
             });
             Ok(SearchHit {
                 path: row.get(0)?,
@@ -691,8 +781,18 @@ impl Vault {
         })?;
         let mut anchors = HashSet::new();
         for row in rows {
-            let hit = row?;
-            if !anchors.insert((hit.path.clone(), hit.node_id.clone(), hit.line))
+            let mut hit = row?;
+            if query.terms.is_empty() && hit.kind == "canvas" {
+                hit.title = Path::new(&hit.path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                hit.node_id = None;
+                hit.snippet = "Открыть холст целиком".into();
+            }
+            let anchor_line = if hit.kind == "task" { 0 } else { hit.line };
+            if !anchors.insert((hit.path.clone(), hit.node_id.clone(), anchor_line))
                 || self.public_attachment_path(&hit.path).is_err()
             {
                 continue;

@@ -758,9 +758,12 @@ Afternoon autonomy and local-search delivery checkpoint, 18 October 2026:
   Screenshot inspection also covers the compact dark search sidebar and line jump.
 - Standalone Windows executable and NSIS installer have been built locally at
   `target/release/knowledge-desktop.exe` and
-  `target/release/bundle/nsis/Brandon_0.1.0_x64-setup.exe`. The final one-shot-jump
-  regression passed on this build. The full local release-gate run follows this
-  checkpoint; do not treat the previous code's CI as its result.
+  `target/release/bundle/nsis/Brandon_0.1.0_x64-setup.exe`. Eleven search UI checks,
+  including the final one-shot-jump regression, pass on this build. Full local
+  `scripts/release-check.ps1` on **1b9713d** finished with `Release gate PASS`,
+  including both restore drills, policy/security checks and 18 browser E2E.
+  This source commit remains local, not published. Installation itself and native
+  macOS search UI are not claimed as tested.
 - A single synthetic 20k-card Rust debug run measured roughly 0.8 s cold indexing
   and 1–2 ms warm lookup. This is not a multi-run benchmark, UI latency or display
   FPS. The latest GPU stress report is `target/qa/canvas-render.json`; it was a
@@ -775,11 +778,16 @@ Afternoon autonomy and local-search delivery checkpoint, 18 October 2026:
   New product changes stay local;
   a prior remote CI result is not verification of unpublished product changes.
 
-Next bounded continuation: finish the local release-gate checkpoint and remote
-CI audit without weakening tests; then inspect/test attachment/note rename and
-move behavior so relative Canvas references remain usable. If that scenario is
-already correct, choose a small media/board UX improvement with explicit safety
-limits. Before vector/MCP integration, extend ranking/candidate-budget coverage,
+Next bounded continuation: repair the now-confirmed Canvas reference bug on note
+and attachment rename/move. Isolated IPC reproduction at
+`target/qa/canvas-rename-probe.mjs` / `target/qa/canvas-rename-probe.json` shows that
+Markdown `[[Old]]` becomes `[[New]]`, but Canvas keeps `Old.md` and
+`Attachments/picture.png` after the files become `New.md` and
+`Media/Attachments/renamed.png`. Only synthetic fixtures were mutated, then the
+prior vault was restored. This bug is reproduced, NOT fixed yet. Promote it to
+regression tests first; preserve unknown JSON values and non-file-node text,
+refuse unsafe paths, and do not overwrite concurrent external board edits.
+Before vector/MCP integration, extend ranking/candidate-budget coverage,
 50k-source measurements and rebuild/recovery UX. PDF/media text extraction,
 vector search, embeddings and agent grants remain unimplemented in this slice.
 

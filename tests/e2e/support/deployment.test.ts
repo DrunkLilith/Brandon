@@ -16,6 +16,7 @@ import {
 } from './deployment.ts'
 
 const alpine = 'alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1'
+const largeBuildBytes = 2 * 1024 * 1024 + 17
 
 function fakeDocker() {
   const root = path.join(os.tmpdir(), `kp-e2e-native-${randomBytes(6).toString('hex')}`)
@@ -68,7 +69,10 @@ function fakeDocker() {
       process.exit(1)
     }
     if (args[0] === 'compose' && args.includes('build') && process.env.KP_FAKE_DOCKER_LARGE_BUILD === '1') {
-      process.stdout.write('x'.repeat(2 * 1024 * 1024 + 17))
+      // Unix pipes are asynchronous: process.exit() must not discard queued bytes.
+      await new Promise((resolve, reject) => {
+        process.stdout.write('x'.repeat(${largeBuildBytes}), error => error ? reject(error) : resolve())
+      })
       process.exit(0)
     }
     if (args[0] === 'compose' && args.includes('up') && process.env.KP_FAKE_DOCKER_LARGE_BUILD === '1') process.exit(2)
@@ -175,7 +179,7 @@ test('verbose Compose output larger than two MiB is not globally captured', () =
       maxBuffer: 4 * 1024 * 1024,
     })
     assert.equal(result.status, 0, result.stderr)
-    assert.ok(result.stdout.length > 2 * 1024 * 1024, 'large child output was not streamed through the deployment runner')
+    assert.equal(result.stdout.length, largeBuildBytes, 'large child output was not streamed completely through the deployment runner')
   } finally {
     rmSync(fake.root, { recursive: true, force: true })
   }

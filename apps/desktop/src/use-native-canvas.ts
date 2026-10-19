@@ -13,16 +13,16 @@ export type NativeCanvasStats = {
   drawBatches:number;translucentBatches:number
   rasterImages:number;rasterBytes:number;rasterLimited:number;missingImages:string[];rasterPaths:string[]
 }
-type Inputs = { root:string;document: CanvasDocument; edges:PreparedCanvasEdge[]; camera: { x: number; y: number; zoom: number }; selected: Set<string>; selectedEdge:string|null; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null }
-type Session = { id:string;root:string;imagePending:Set<string>;imageDirty:Set<string>;imageVersions:Map<string,number>;imageFailed:Map<string,number>;disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: PreparedCanvasEdge[] | null; publishedAt: number }
+type Inputs = { root:string;document: CanvasDocument; labels:ReadonlyMap<string,string>;edges:PreparedCanvasEdge[]; camera: { x: number; y: number; zoom: number }; selected: Set<string>; selectedEdge:string|null; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null }
+type Session = { id:string;root:string;labels:ReadonlyMap<string,string>|null;imagePending:Set<string>;imageDirty:Set<string>;imageVersions:Map<string,number>;imageFailed:Map<string,number>;disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: PreparedCanvasEdge[] | null; publishedAt: number }
 let lifecycle: Promise<unknown> = Promise.resolve()
 
-function renderNode(node: CanvasNode) {
+function renderNode(node: CanvasNode,label?:string) {
   const appearance=canvasAppearance(node),raster=isCanvasRaster(node)?canvasRasterLayout(node):null
   return { id: node.id, x: node.x, y: node.y, width: node.width, height: node.height, kind: node.type, fill:appearance.fill,border:appearance.border,
     style:raster?{shape:0,centerText:false,radius:8,fontSize:raster.fontSize,align:appearance.textAlign,textColor:appearance.text,strokeWidth:appearance.strokeWidth,bounds:raster.footer}:appearance.styled?{shape:appearance.shape,centerText:appearance.centerText,radius:appearance.radius,fontSize:appearance.fontSize,align:appearance.textAlign,textColor:appearance.text,strokeWidth:appearance.strokeWidth,bounds:appearance.bounds}:null,
     image:raster?{path:node.file,bounds:raster.image}:null,
-    text: raster?node.file?.split('/').at(-1)??'Изображение':node.type === 'text' ? node.text ?? '' : node.type === 'file' ? `${node.file?.split('/').at(-1)?.replace(/\.md$/i, '') ?? 'Заметка'}\n${node.file ?? ''}` : node.label ?? node.url ?? 'Группа' }
+    text: label??(raster?node.file?.split('/').at(-1)??'Изображение':node.type === 'text' ? node.text ?? '' : node.type === 'file' ? `${node.file?.split('/').at(-1)?.replace(/\.md$/i, '') ?? 'Заметка'}\n${node.file ?? ''}` : node.label ?? node.url ?? 'Группа') }
 }
 
 export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inputs: Inputs, enabled = true) {
@@ -42,23 +42,24 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     if (!element || session.disposed) return
     const value = latest.current
     if(value.root!==session.root)return
-    if (session.document !== value.document) {
+    if (session.document !== value.document||session.labels!==value.labels) {
       const references=new Set(value.document.nodes.filter(isCanvasRaster).map(node=>node.file!))
       for(const path of session.imageFailed.keys())if(!references.has(path))session.imageFailed.delete(path)
       for(const path of session.imageDirty)if(!references.has(path))session.imageDirty.delete(path)
       for(const path of session.imageVersions.keys())if(!references.has(path)&&!session.imagePending.has(path))session.imageVersions.delete(path)
       setImageErrors(session.imageFailed.size)
       const nextNodes = new Map(value.document.nodes.map((node) => [node.id, node]))
-      const nodes = value.document.nodes.filter((node) => session.nodes.get(node.id) !== node)
+      const nodes = value.document.nodes.filter((node) => session.nodes.get(node.id) !== node||session.labels?.get(node.id)!==value.labels.get(node.id))
       const removed = [...session.nodes.keys()].filter((id) => !nextNodes.has(id))
       const order = value.document.nodes.map((node) => node.id)
       const orderChanged = order.length !== session.order.length || order.some((id, index) => id !== session.order[index])
       const edgeOrderChanged=!session.edges||session.edges.length!==value.edges.length||value.edges.some((edge,i)=>edge.id!==session.edges![i].id),previousEdges=new Map(session.edges?.map(edge=>[edge.id,edge])),edgeUpdates=edgeOrderChanged?[]:value.edges.filter(edge=>!samePreparedEdge(previousEdges.get(edge.id),edge))
       if (nodes.length || removed.length || edgeOrderChanged || edgeUpdates.length || orderChanged) {
-        await invoke('canvas_gpu_scene', { sessionId:session.id,delta: { reset: session.edges === null, nodes: nodes.map(renderNode), removed, order: orderChanged ? order : null, edges: edgeOrderChanged?value.edges:null,edgeUpdates } })
+        await invoke('canvas_gpu_scene', { sessionId:session.id,delta: { reset: session.edges === null, nodes: nodes.map(node=>renderNode(node,value.labels.get(node.id))), removed, order: orderChanged ? order : null, edges: edgeOrderChanged?value.edges:null,edgeUpdates } })
         session.nodes = nextNodes; session.order = order; session.edges = value.edges
       }
       session.document = value.document
+      session.labels=value.labels
     }
     if (session.disposed) return
     const rect = element.getBoundingClientRect()
@@ -99,7 +100,7 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
 
   useEffect(() => {
     if (!enabled || failed) { setActive(false); setStarting(false); return }
-    const session: Session = { id:crypto.randomUUID(),root:inputs.root,imagePending:new Set(),imageDirty:new Set(),imageVersions:new Map(),imageFailed:new Map(),disposed: false, started: false, ready: false, dirty: false, raf: 0, pending: null, document: null, nodes: new Map(), order: [], edges: null, publishedAt: 0 }
+    const session: Session = { id:crypto.randomUUID(),root:inputs.root,labels:null,imagePending:new Set(),imageDirty:new Set(),imageVersions:new Map(),imageFailed:new Map(),disposed: false, started: false, ready: false, dirty: false, raf: 0, pending: null, document: null, nodes: new Map(), order: [], edges: null, publishedAt: 0 }
     current.current = session
     setStarting(true); setError('');setImageErrors(0)
     lifecycle = lifecycle.catch(() => {}).then(async () => {
@@ -127,7 +128,7 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     }
   }, [draw, failed, enabled,inputs.root])
 
-  useEffect(() => { schedule() }, [inputs.document, inputs.edges, inputs.camera, inputs.selected, inputs.selectedEdge, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking, active, schedule])
+  useEffect(() => { schedule() }, [inputs.document, inputs.labels, inputs.edges, inputs.camera, inputs.selected, inputs.selectedEdge, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking, active, schedule])
   useEffect(() => {
     if (!active) return
     window.addEventListener('resize', schedule); window.addEventListener('focus', schedule)

@@ -1,4 +1,5 @@
 import type { CanvasDocument, CanvasNode } from './canvas-view'
+import {validTaskFallback} from './canvas-tasks.ts'
 
 // JSON.parse would silently round a foreign 64-bit ID or a high-precision
 // decimal, then stringify would persist the changed value on an unrelated move.
@@ -23,6 +24,7 @@ function validateExtension(value:unknown,edge=false){
   const enums:Record<string,unknown[]>=edge?{dash:['solid','dashed'],strokeWidth:[1,2,4]}:{primitive:['sticky','text','rectangle','ellipse','diamond','triangle','divider'],fontSize:[12,16,24,32],textAlign:['left','center','right'],strokeWidth:[1,2,4]}
   for(const [key,values]of Object.entries(enums))if(extension[key]!==undefined&&!values.includes(extension[key]))throw Error(`Неизвестное значение Brandon.${key}; исходный файл не изменён`)
   if(!edge&&extension.locked!==undefined&&typeof extension.locked!=='boolean')throw Error('Некорректная блокировка Brandon')
+  if(!edge&&extension.taskId!==undefined&&!(typeof extension.taskId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(extension.taskId)))throw Error('Некорректная ссылка Brandon.taskId')
   if(!edge)for(const key of ['fillColor','strokeColor','textColor'])if(extension[key]!==undefined&&!(key==='fillColor'&&extension[key]==='transparent')&&!(typeof extension[key]==='string'&&/^#[\da-f]{6}$/i.test(extension[key] as string)))throw Error(`Некорректный цвет Brandon.${key}`)
 }
 
@@ -41,6 +43,7 @@ export function parseCanvasDocument(source: string): { document: CanvasDocument;
       if (![node.x, node.y, node.width, node.height].every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 10_000_000) || node.width <= 0 || node.height <= 0) throw new Error('Некорректные координаты или размер карточки')
       for (const key of ['text', 'file', 'url', 'label', 'color'] as const) if (node[key] !== undefined && typeof node[key] !== 'string') throw new Error(`Поле ${key} должно быть строкой`)
       validateExtension(node.brandon)
+      if(node.brandon&&typeof node.brandon==='object'&&'taskId' in node.brandon&&(node.brandon as {taskId?:unknown}).taskId!==undefined&&(node.type!=='file'||!validTaskFallback(node.file)))throw Error('Задача Brandon требует относительный Markdown file fallback')
       if(node.type!=='text'&&node.brandon&&typeof node.brandon==='object'&&'primitive' in node.brandon&&(node.brandon as {primitive?:unknown}).primitive!==undefined)throw Error('Фигура Brandon требует текстовый fallback')
     }
     const edgeIds = new Set<string>()

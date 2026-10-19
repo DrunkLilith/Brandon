@@ -1,0 +1,11 @@
+{
+  "nodes": [
+    {"id":"group","type":"group","foreignGroup":{"keep":1},"x":-340,"y":-200,"width":680,"height":400,"label":"Portable group"},
+    {"id":"alpha","type":"text","text":"# Compatibility probe\n\nEdit only this isolated card.","brandon":{"version":1,"primitive":"sticky","locked":true,"future":{"keep":2}},"foreignNode":{"keep":3},"x":-280,"y":-100,"width":240,"height":180,"color":"3"},
+    {"id":"beta","type":"text","text":"Readable text fallback","x":100,"y":-80,"width":220,"height":180,"color":"6"}
+  ],
+  "edges": [
+    {"id":"alpha-beta","brandon":{"version":1,"dash":"dashed"},"foreignEdge":{"keep":4},"fromNode":"alpha","fromSide":"right","toNode":"beta","toSide":"left","label":"Portable edge"}
+  ],
+  "foreignDocument":{"keep":5}
+}

@@ -80,6 +80,10 @@ pub struct Frame {
     pub pixel_ratio: f32,
     #[serde(default)]
     pub selected: Vec<String>,
+    #[serde(default)]
+    pub locked: Vec<String>,
+    #[serde(default)]
+    pub overlay_text: bool,
     pub editing: Option<String>,
 }
 
@@ -193,9 +197,18 @@ fn color(hex: u32) -> [f32; 4] {
 fn rgb(value: Option<&str>, fallback: u32) -> u32 {
     value
         .and_then(|value| value.strip_prefix('#'))
-        .filter(|value| value.len() == 6)
+        .filter(|value| value.len() == 6 || value.len() == 8)
+        .and_then(|value| value.get(..6))
         .and_then(|value| u32::from_str_radix(value, 16).ok())
         .unwrap_or(fallback)
+}
+fn opacity(value: Option<&str>) -> f32 {
+    value
+        .and_then(|value| value.strip_prefix('#'))
+        .filter(|value| value.len() == 8)
+        .and_then(|value| value.get(6..))
+        .and_then(|value| u8::from_str_radix(value, 16).ok())
+        .map_or(1., |value| f32::from(value) / 255.)
 }
 fn layer_depth(index: usize, total: usize) -> f32 {
     0.9 - index as f32 / total.max(1) as f32 * 0.8
@@ -228,8 +241,20 @@ fn depth_view(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgp
         .create_view(&Default::default())
 }
 fn instance(output: &mut Vec<f32>, rect: [f32; 4], fill: u32, border: u32, style: [f32; 4]) {
+    instance_alpha(output, rect, fill, border, style, 1.);
+}
+fn instance_alpha(
+    output: &mut Vec<f32>,
+    rect: [f32; 4],
+    fill: u32,
+    border: u32,
+    style: [f32; 4],
+    alpha: f32,
+) {
     output.extend(rect);
-    output.extend(color(fill));
+    let mut fill = color(fill);
+    fill[3] = alpha;
+    output.extend(fill);
     output.extend(color(border));
     output.extend(style);
 }
@@ -492,6 +517,7 @@ impl Renderer {
         };
         let visible = self.spatial.query(world, &self.nodes);
         let selected: HashSet<&str> = frame.selected.iter().map(String::as_str).collect();
+        let locked: HashSet<&str> = frame.locked.iter().map(String::as_str).collect();
         let offset = (
             (vp.x + vp.width / 2. + frame.camera.x) * ratio,
             (vp.y + vp.height / 2. + frame.camera.y) * ratio,
@@ -559,7 +585,7 @@ impl Renderer {
                 continue;
             };
             let position = screen(node.x, node.y);
-            instance(
+            instance_alpha(
                 &mut shapes,
                 [
                     position[0],
@@ -590,8 +616,9 @@ impl Renderer {
                     },
                     layer_depth(*self.layers.get(*id).unwrap_or(&0), self.order.len()),
                 ],
+                opacity(node.fill.as_deref()),
             );
-            if selected.contains(id.as_str()) {
+            if selected.contains(id.as_str()) && !locked.contains(id.as_str()) {
                 instance(
                     &mut shapes,
                     [
@@ -642,7 +669,7 @@ impl Renderer {
         let text_areas: Vec<TextArea<'_>> = ids
             .iter()
             .filter_map(|id| {
-                if zoom < 0.5 || frame.editing.as_ref() == Some(*id) {
+                if zoom < 0.5 || frame.overlay_text || frame.editing.as_ref() == Some(*id) {
                     return None;
                 }
                 let node = self.nodes.get(*id)?;
@@ -868,6 +895,37 @@ pub async fn canvas_gpu_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rgba_group_fill_preserves_lines_behind_its_background_without_changing_border_alpha() {
+        assert_eq!(rgb(Some("#322b3e33"), 0), 0x322b3e);
+        assert!((opacity(Some("#322b3e33")) - 0.2).abs() < f32::EPSILON);
+        assert_eq!(opacity(Some("#322b3e")), 1.);
+        assert_eq!(rgb(Some("#🧠abcd"), 7), 7);
+        let mut data = Vec::new();
+        instance_alpha(
+            &mut data,
+            [0., 0., 100., 100.],
+            0x322b3e,
+            0x9381ba,
+            [0.; 4],
+            0.2,
+        );
+        assert_eq!(data[7], 0.2);
+        assert_eq!(data[11], 1.);
+    }
+    #[test]
+    fn locked_selection_frame_is_backward_compatible_and_keeps_render_policy_separate_from_scene() {
+        let value = serde_json::json!({"viewport":{"x":0,"y":0,"width":900,"height":600},"camera":{"x":0,"y":0,"zoom":1},"pixelRatio":1,"selected":["child"],"editing":null});
+        let old: Frame = serde_json::from_value(value.clone()).unwrap();
+        assert!(old.locked.is_empty());
+        assert!(!old.overlay_text);
+        let mut value = value;
+        value["locked"] = serde_json::json!(["child"]);
+        value["overlayText"] = serde_json::json!(true);
+        let new: Frame = serde_json::from_value(value).unwrap();
+        assert_eq!(new.locked, new.selected);
+        assert!(new.overlay_text);
+    }
     #[test]
     fn spatial_query_handles_negative_coordinates_large_groups_and_boundaries() {
         let nodes: HashMap<_, _> = [

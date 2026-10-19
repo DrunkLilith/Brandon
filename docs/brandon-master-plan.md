@@ -564,6 +564,15 @@ Sticky/text/shapes, connector styles, selection/layout/lock, стили и ка�
 
 **Выход:** собрать схему из заметок, задач, стикеров и фигур, скопировать/сгруппировать/изменить, отменить и открыть снова без расхождения файла и картинки.
 
+**Промежуточный checkpoint R3A, 19 октября 2026, поверх `54ca5852df68462cc7bf0654f4837d28b0cb17af`. R3A ещё не закрыт.**
+
+- Общие transforms/commands: геометрические вложенные группы, copy с remap внутренних edges, align/distribute, stack/grid, z-order, lock с защитой потомков. Палитра, toolbar, ПКМ и hotkeys используют один эффект для активной native/fallback панели; кастомные RU bindings заменяют default без двойного вызова.
+- Неизвестные fields сохраняются; namespace/version описаны до writer. Future version и JSON numbers, которые нельзя сохранить без потери точности, открываются read-only. Отмена pointer gesture и external edit во время drag не публикуют старую геометрию. Сохранение по-прежнему идёт через Rust/CAS.
+- **134 Rust + 80 frontend + 136 Windows UI cases**, все PASS; native 10k/20k board repeat без DOM explosion. Computer-use выявил и помог исправить перекрытие connections заливкой группы и дублирование текста под прозрачным DOM overlay. Отдельный реальный Obsidian 1.14.4 open/edit/save/reopen сохранил расширения и foreign fields в изолированном fixture; это не гарантия для всех writers и не исполнение lock в Obsidian.
+- [Контракт, fixture, logs, финальный EXE hash и ограничения](canvas-r3a-contract.md). NSIS в этом промежуточном срезе не пересобирался; native macOS/server gate не запускались. Финальные suites использовали временный software WebView для известного host RTSS-конфликта; native wgpu и системные настройки не менялись.
+
+Остаток R3A: собственно sticky/text/shapes, стили и палитры, connector styling/anchors/labels и полный смешанный сценарий с задачами. Этот checkpoint закрывает только operations-срез, не весь пакет или master plan.
+
 ### R3B. Фреймы и рабочие форматы
 
 Frames, presentation navigation, локальный каталог собственных templates, linked Document/Table/Kanban/Timeline и первый export. Использовать отобранные решения Advanced Canvas после аудита; не устанавливать весь плагин поверх native Canvas.

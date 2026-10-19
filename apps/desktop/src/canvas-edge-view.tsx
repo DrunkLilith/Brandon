@@ -1,0 +1,5 @@
+import type {PreparedCanvasEdge} from './canvas-edges'
+const path=(edge:PreparedCanvasEdge)=>`M ${edge.segments[0][0]} ${edge.segments[0][1]} `+edge.segments.map(s=>`L ${s[2]} ${s[3]}`).join(' ')
+export function CanvasEdgeView({edges,selected,zoom}:{edges:PreparedCanvasEdge[];selected:string|null;zoom:number}){
+  return <svg className="canvas-edges" viewBox="-50000 -50000 100000 100000" aria-hidden="true">{edges.map(edge=><g key={edge.id} data-edge-id={edge.id} style={{color:edge.id===selected?'#b8a9ef':edge.color}}><path className="canvas-edge-path" d={path(edge)} fill="none" stroke="currentColor" strokeWidth={Math.max(edge.strokeWidth,.75/zoom)} strokeDasharray={edge.dashed?'8 6':undefined}/><path d={edge.heads.map(s=>`M ${s[0]} ${s[1]} L ${s[2]} ${s[3]}`).join(' ')} fill="none" stroke="currentColor" strokeWidth={Math.max(edge.strokeWidth,.75/zoom)}/>{edge.label&&zoom>=.5&&<foreignObject {...edge.labelRect}><div className={`canvas-edge-label ${selected===edge.id?'selected':''}`} title={edge.label}>{edge.label}</div></foreignObject>}</g>)}</svg>
+}

@@ -20,7 +20,7 @@ function validateExtension(value:unknown,edge=false){
   if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Расширение Brandon не является объектом; файл доступен только для чтения')
   const extension=value as Record<string,unknown>
   if(extension.version!==1)throw Error('Неизвестная версия расширения Brandon; исходный файл не изменён')
-  const enums:Record<string,unknown[]>=edge?{dash:['solid','dashed']}:{primitive:['sticky','text','rectangle','ellipse','diamond','triangle','divider'],fontSize:[12,16,24,32],textAlign:['left','center','right'],strokeWidth:[1,2,4]}
+  const enums:Record<string,unknown[]>=edge?{dash:['solid','dashed'],strokeWidth:[1,2,4]}:{primitive:['sticky','text','rectangle','ellipse','diamond','triangle','divider'],fontSize:[12,16,24,32],textAlign:['left','center','right'],strokeWidth:[1,2,4]}
   for(const [key,values]of Object.entries(enums))if(extension[key]!==undefined&&!values.includes(extension[key]))throw Error(`Неизвестное значение Brandon.${key}; исходный файл не изменён`)
   if(!edge&&extension.locked!==undefined&&typeof extension.locked!=='boolean')throw Error('Некорректная блокировка Brandon')
   if(!edge)for(const key of ['fillColor','strokeColor','textColor'])if(extension[key]!==undefined&&!(key==='fillColor'&&extension[key]==='transparent')&&!(typeof extension[key]==='string'&&/^#[\da-f]{6}$/i.test(extension[key] as string)))throw Error(`Некорректный цвет Brandon.${key}`)
@@ -47,6 +47,9 @@ export function parseCanvasDocument(source: string): { document: CanvasDocument;
     for (const edge of document.edges) {
       if (!edge || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id) || typeof edge.fromNode !== 'string' || typeof edge.toNode !== 'string') throw new Error('Некорректная связь или повторяющийся ID')
       edgeIds.add(edge.id)
+      for(const key of ['fromSide','toSide']as const)if(edge[key]!==undefined&&!['top','right','bottom','left'].includes(edge[key]!))throw Error(`Некорректная сторона связи ${key}`)
+      for(const key of ['fromEnd','toEnd']as const)if(edge[key]!==undefined&&!['none','arrow'].includes(edge[key]!))throw Error(`Некорректный конец связи ${key}`)
+      for(const key of ['color','label']as const)if(edge[key]!==undefined&&typeof edge[key]!=='string')throw Error(`Поле связи ${key} должно быть строкой`)
       validateExtension(edge.brandon,true)
     }
     return { document, error: null }

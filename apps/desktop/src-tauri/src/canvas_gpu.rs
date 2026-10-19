@@ -1,6 +1,6 @@
 //! Native D3D12 canvas. The WebView owns input and focused editing overlays; pixels
 //! are presented to the host HWND, without a CPU texture readback or image IPC.
-use glyphon::cosmic_text::Align;
+use glyphon::cosmic_text::{Align, Wrap};
 use glyphon::{
     Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -86,8 +86,53 @@ impl Node {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
-    pub from_node: String,
-    pub to_node: String,
+    id: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    segments: Vec<[f32; 4]>,
+    heads: Vec<[f32; 4]>,
+    color: String,
+    stroke_width: f32,
+    dashed: bool,
+    label: String,
+    label_rect: Rect,
+}
+impl Edge {
+    fn valid(&self) -> bool {
+        !self.id.is_empty()
+            && self.id.len() <= 4096
+            && !self.segments.is_empty()
+            && self.segments.len() <= 4
+            && self.heads.len() <= 4
+            && [1., 2., 4.].contains(&self.stroke_width)
+            && self.label.len() <= 4096
+            && self
+                .color
+                .strip_prefix('#')
+                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+            && [
+                self.x,
+                self.y,
+                self.width,
+                self.height,
+                self.label_rect.x,
+                self.label_rect.y,
+                self.label_rect.width,
+                self.label_rect.height,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 30_000_000.)
+            && self.width > 0.
+            && self.height > 0.
+            && (1.0..=300.0).contains(&self.label_rect.width)
+            && (1.0..=100.0).contains(&self.label_rect.height)
+            && self.segments.iter().chain(&self.heads).all(|s| {
+                s.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.)
+                    && (s[2] - s[0]).hypot(s[3] - s[1]) > 0.0001
+            })
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -101,6 +146,8 @@ pub struct SceneDelta {
     pub removed: Vec<String>,
     pub order: Option<Vec<String>>,
     pub edges: Option<Vec<Edge>>,
+    #[serde(default)]
+    pub edge_updates: Vec<Edge>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -133,6 +180,8 @@ pub struct Frame {
     #[serde(default)]
     pub selected: Vec<String>,
     #[serde(default)]
+    pub selected_edge: Option<String>,
+    #[serde(default)]
     pub locked: Vec<String>,
     #[serde(default)]
     pub overlay_text: bool,
@@ -149,6 +198,7 @@ pub struct Stats {
     pub total_nodes: usize,
     pub visible_nodes: usize,
     pub visible_edges: usize,
+    pub edge_labels: usize,
     pub frame_cpu_ms: f64,
     pub scene_update_ms: f64,
     pub frames: u64,
@@ -336,6 +386,7 @@ struct Renderer {
     edges: Vec<Edge>,
     spatial: SpatialIndex,
     buffers: HashMap<String, Buffer>,
+    edge_buffers: HashMap<String, Buffer>,
     stats: Stats,
     window: Arc<WebviewWindow>,
 }
@@ -459,6 +510,7 @@ impl Renderer {
             edges: Vec::new(),
             spatial: SpatialIndex::default(),
             buffers: HashMap::new(),
+            edge_buffers: HashMap::new(),
             stats: Stats {
                 adapter: info.name,
                 backend: format!("{:?}", info.backend),
@@ -473,10 +525,41 @@ impl Renderer {
         if delta.nodes.len() > 100_000 {
             return Err("Canvas prototype limit: 100,000 objects".into());
         }
+        if delta
+            .edges
+            .as_ref()
+            .is_some_and(|edges| edges.len() > 100_000)
+            || delta.edge_updates.len() > 100_000
+            || delta.edges.is_some() && !delta.edge_updates.is_empty()
+            || delta.reset && !delta.edge_updates.is_empty()
+        {
+            return Err("Invalid canvas edge delta".into());
+        }
+        let mut edge_ids = HashSet::new();
+        if let Some(edges) = &delta.edges {
+            for edge in edges {
+                if !edge.valid() || !edge_ids.insert(edge.id.as_str()) {
+                    return Err("Invalid prepared canvas edge".into());
+                }
+            }
+        }
+        edge_ids.clear();
+        let existing_edge_ids: HashSet<_> =
+            self.edges.iter().map(|edge| edge.id.as_str()).collect();
+        for edge in &delta.edge_updates {
+            if !edge.valid()
+                || !edge_ids.insert(edge.id.as_str())
+                || !existing_edge_ids.contains(edge.id.as_str())
+            {
+                return Err("Invalid prepared canvas edge update".into());
+            }
+        }
         if delta.reset {
             self.nodes.clear();
             self.order.clear();
             self.buffers.clear();
+            self.edges.clear();
+            self.edge_buffers.clear();
         }
         for id in delta.removed {
             self.nodes.remove(&id);
@@ -526,6 +609,24 @@ impl Renderer {
             .collect();
         if let Some(edges) = delta.edges {
             self.edges = edges;
+            self.edge_buffers.clear();
+        } else if !delta.edge_updates.is_empty() {
+            let mut changes: HashMap<_, _> = delta
+                .edge_updates
+                .into_iter()
+                .map(|edge| (edge.id.clone(), edge))
+                .collect();
+            for edge in &mut self.edges {
+                if let Some(next) = changes.remove(&edge.id) {
+                    if next.label != edge.label
+                        || next.label_rect.width != edge.label_rect.width
+                        || next.label_rect.height != edge.label_rect.height
+                    {
+                        self.edge_buffers.remove(&edge.id);
+                    }
+                    *edge = next;
+                }
+            }
         }
         self.spatial.rebuild(&self.nodes);
         self.stats.total_nodes = self.nodes.len();
@@ -607,36 +708,77 @@ impl Renderer {
             ],
         );
         let mut edge_count = 0;
+        let mut visible_edge_ids = HashSet::new();
         for edge in &self.edges {
-            let (Some(a), Some(b)) = (
-                self.nodes.get(&edge.from_node),
-                self.nodes.get(&edge.to_node),
-            ) else {
-                continue;
-            };
-            let (x1, y1, x2, y2) = (
-                a.x + a.width / 2.,
-                a.y + a.height / 2.,
-                b.x + b.width / 2.,
-                b.y + b.height / 2.,
-            );
             if !world.intersects(Rect {
-                x: x1.min(x2),
-                y: y1.min(y2),
-                width: (x2 - x1).abs().max(1.),
-                height: (y2 - y1).abs().max(1.),
+                x: edge.x,
+                y: edge.y,
+                width: edge.width,
+                height: edge.height,
             }) {
                 continue;
             }
-            let a = screen(x1, y1);
-            let b = screen(x2, y2);
-            instance(
-                &mut shapes,
-                [a[0], a[1], b[0], b[1]],
-                0x817aab,
-                0x817aab,
-                [1.5 * ratio, 1., 0., 0.],
-            );
+            let color = if frame.selected_edge.as_deref() == Some(edge.id.as_str()) {
+                0xb8a9ef
+            } else {
+                rgb(Some(&edge.color), 0x817aab)
+            };
+            let width = (edge.stroke_width * scale).max(0.75 * ratio);
+            let mut phase = 0.;
+            for segment in &edge.segments {
+                let a = screen(segment[0], segment[1]);
+                let b = screen(segment[2], segment[3]);
+                instance(
+                    &mut shapes,
+                    [a[0], a[1], b[0], b[1]],
+                    color,
+                    color,
+                    [width, 1., if edge.dashed { 14. * scale } else { 0. }, phase],
+                );
+                phase += (segment[2] - segment[0]).hypot(segment[3] - segment[1]) * scale;
+            }
+            for segment in &edge.heads {
+                let a = screen(segment[0], segment[1]);
+                let b = screen(segment[2], segment[3]);
+                instance(
+                    &mut shapes,
+                    [a[0], a[1], b[0], b[1]],
+                    color,
+                    color,
+                    [width, 1., 0., 0.],
+                );
+            }
+            if zoom >= 0.5 && !edge.label.is_empty() {
+                visible_edge_ids.insert(edge.id.clone());
+                let r = edge.label_rect;
+                let p = screen(r.x, r.y);
+                instance(
+                    &mut shapes,
+                    [p[0], p[1], r.width * scale, r.height * scale],
+                    0x211f28,
+                    if frame.selected_edge.as_deref() == Some(edge.id.as_str()) {
+                        0xb8a9ef
+                    } else {
+                        0x54485f
+                    },
+                    [4. * scale, 0., scale, 0.979],
+                );
+                if !self.edge_buffers.contains_key(&edge.id) {
+                    let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(14., 20.));
+                    buffer.set_size(Some((r.width - 16.).max(1.)), Some((r.height - 8.).max(1.)));
+                    buffer.set_wrap(Wrap::None);
+                    buffer.set_text(
+                        &edge.label,
+                        &Attrs::new()
+                            .family(Family::Name("Segoe UI"))
+                            .metadata(usize::MAX),
+                        Shaping::Advanced,
+                        Some(Align::Center),
+                    );
+                    buffer.shape_until_scroll(&mut self.fonts, false);
+                    self.edge_buffers.insert(edge.id.clone(), buffer);
+                }
+            }
             edge_count += 1;
         }
         let ids: Vec<&String> = self
@@ -753,7 +895,7 @@ impl Renderer {
                 height: size.height,
             },
         );
-        let text_areas: Vec<TextArea<'_>> = ids
+        let mut text_areas: Vec<TextArea<'_>> = ids
             .iter()
             .filter_map(|id| {
                 if zoom < 0.5
@@ -802,6 +944,30 @@ impl Renderer {
                 })
             })
             .collect();
+        for edge in &self.edges {
+            if !visible_edge_ids.contains(&edge.id) {
+                continue;
+            }
+            let Some(buffer) = self.edge_buffers.get(&edge.id) else {
+                continue;
+            };
+            let r = edge.label_rect;
+            let p = screen(r.x + 8., r.y + 4.);
+            text_areas.push(TextArea {
+                buffer,
+                left: p[0],
+                top: p[1],
+                scale,
+                bounds: TextBounds {
+                    left: (vp.x * ratio).max(p[0]) as i32,
+                    top: (vp.y * ratio).max(p[1]) as i32,
+                    right: ((vp.x + vp.width) * ratio).min(p[0] + (r.width - 16.) * scale) as i32,
+                    bottom: ((vp.y + vp.height) * ratio).min(p[1] + (r.height - 8.) * scale) as i32,
+                },
+                default_color: Color::rgb(222, 214, 232),
+                custom_glyphs: &[],
+            });
+        }
         self.text_renderer
             .prepare_with_depth(
                 &self.device,
@@ -811,7 +977,13 @@ impl Renderer {
                 &self.text_viewport,
                 text_areas,
                 &mut self.swash,
-                |metadata| layer_depth(metadata, self.order.len()) - 0.000001,
+                |metadata| {
+                    if metadata == usize::MAX {
+                        0.978
+                    } else {
+                        layer_depth(metadata, self.order.len()) - 0.000001
+                    }
+                },
             )
             .map_err(|error| error.to_string())?;
         let texture = match self.surface.get_current_texture() {
@@ -906,8 +1078,13 @@ impl Renderer {
         if self.buffers.len() > 6000 {
             self.buffers.retain(|id, _| visible.contains(id));
         }
+        if self.edge_buffers.len() > 6000 {
+            self.edge_buffers
+                .retain(|id, _| visible_edge_ids.contains(id));
+        }
         self.stats.visible_nodes = ids.len();
         self.stats.visible_edges = edge_count;
+        self.stats.edge_labels = visible_edge_ids.len();
         self.stats.frames += 1;
         self.stats.text_buffers = self.buffers.len();
         self.stats.frame_cpu_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -999,6 +1176,57 @@ pub async fn canvas_gpu_stop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_connector_geometry_fixtures_are_consumed_without_a_second_anchor_resolver() {
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../tests/desktop/fixtures/r3a-edge-geometry.json"
+        ))
+        .unwrap();
+        for fixture in fixtures {
+            let edges: Vec<Edge> = serde_json::from_value(fixture["prepared"].clone()).unwrap();
+            assert!(edges.iter().all(Edge::valid));
+            let edge = &edges[0];
+            match fixture["name"].as_str().unwrap() {
+                "default" => {
+                    assert_eq!(edge.segments, vec![[100., 50., 300., 50.]]);
+                    assert_eq!(edge.heads.len(), 2);
+                    assert!(!edge.dashed)
+                }
+                "explicit" => {
+                    assert_eq!(edge.segments, vec![[50., 100., 350., 0.]]);
+                    assert_eq!(edge.stroke_width, 4.);
+                    assert!(edge.dashed);
+                    assert_eq!(edge.label, "Semantic label")
+                }
+                "loop" => assert_eq!(edge.segments.len(), 4),
+                _ => panic!("Unknown fixture"),
+            }
+        }
+    }
+    #[test]
+    fn malformed_prepared_connectors_fail_before_geometry_or_font_allocation() {
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tests/desktop/fixtures/r3a-edge-geometry.json"
+        ))
+        .unwrap();
+        let source = fixtures[0]["prepared"][0].clone();
+        for (key, value) in [
+            ("segments", serde_json::json!([])),
+            ("heads", serde_json::json!([[0, 0, 0, 0]])),
+            ("strokeWidth", serde_json::json!(10000)),
+            ("color", serde_json::json!("url(x)")),
+            ("label", serde_json::json!("x".repeat(4097))),
+            (
+                "labelRect",
+                serde_json::json!({"x":0,"y":0,"width":1000000,"height":30}),
+            ),
+        ] {
+            let mut malformed = source.clone();
+            malformed[key] = value;
+            let edge: Edge = serde_json::from_value(malformed).unwrap();
+            assert!(!edge.valid(), "{key}")
+        }
+    }
     #[test]
     fn primitive_style_dto_has_bounded_font_geometry_and_backward_compatible_legacy_nodes() {
         let mut node: Node = serde_json::from_value(

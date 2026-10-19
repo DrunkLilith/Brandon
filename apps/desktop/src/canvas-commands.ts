@@ -18,6 +18,9 @@ export const CANVAS_COMMANDS=[
   {id:'canvas-stack',label:'Разложить стопкой'},
   {id:'canvas-grid',label:'Разложить сеткой'},
   {id:'canvas-style',label:'Стиль выбранных объектов'},
+  {id:'canvas-edge-style',label:'Стиль выбранной связи'},
+  {id:'canvas-edge-reverse',label:'Развернуть выбранную связь'},
+  {id:'canvas-edge-delete',label:'Удалить выбранную связь'},
   ...CANVAS_CREATE_COMMANDS,
 ] as const
 

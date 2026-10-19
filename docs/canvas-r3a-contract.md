@@ -8,8 +8,9 @@ order. Groups use standard geometric containment, not hidden parent IDs.
 The operations slice implements grouping/layout/z-order/locking and shared
 command dispatch. The following primitive/style slice implements the seven
 tools, bounded typography/paint and native/fallback rendering described below.
-R3A remains open for connectors, the complete task/note mixed scenario and
-remaining cross-layer composition acceptance; this is not full-plan completion.
+The connector slice also implements the common prepared geometry and native
+labels described below. R3A remains open for the complete task/note mixed
+scenario and cross-layer composition acceptance; this is not full-plan completion.
 
 ## Storage and compatibility
 
@@ -24,7 +25,8 @@ conflicting transform rather than apply arbitrary double movement.
 Optional node `brandon` is a namespaced object with `version: 1`. Its bounded
 fields are `primitive` (sticky/text/rectangle/ellipse/diamond/triangle/divider),
 `locked` (boolean), `fontSize` (12/16/24/32), `textAlign` (left/center/right),
-and `strokeWidth` (1/2/4). Optional edge `brandon` v1 has `dash` (solid/dashed).
+and `strokeWidth` (1/2/4). Optional edge `brandon` v1 has `dash` (solid/dashed)
+and, fixed before the connector writer, `strokeWidth` (1/2/4).
 Before the primitive/style writer, v1 adds inert paint fields `fillColor`,
 `strokeColor`, `textColor` (six-digit hex; fill alone may be `transparent`).
 Standard `color` remains the portable fallback. The shader's shape IDs and
@@ -79,6 +81,24 @@ Straight connectors come first. Explicit sides, arrow/none endpoints, color,
 label and dashed style share prepared geometry across renderers. Complex elbow/
 curve routing, pen/highlighter/strokes, hidden layers and advanced text styling
 remain separate bounded acceptance work, not silently declared implemented.
+
+Connector writer contract: omitted `fromEnd` means `none`, omitted `toEnd`
+means `arrow`, as JSON Canvas 1.0 specifies. Omitted sides use a deterministic
+facing cardinal side. Triangles attach at their actual side midpoint; standard
+rectangular fallback bounds remain unchanged. A degenerate/coincident connection
+uses a bounded visible loop, not an invisible zero-length line. Prepared world
+segments, arrow wings, label layout and hit bounds are shared by all renderers;
+the native engine consumes changed edge DTOs, not a second side/arrow resolver.
+Labels render as bounded plain text while the complete original label survives
+unrelated edits. Edge edits/reversal/deletion are one command and respect locked
+endpoints, preserve foreign fields and reject stale source proposals. New links
+cannot bypass endpoint locks. Its bounded acceptance is recorded below, not
+claimed as full R3A or full-plan completion.
+When an edge crosses a group, the common 64-unit header zone selects the group;
+the edge stroke in the remaining group body selects the edge. Group selection
+tests use the visible header explicitly, rather than an ambiguous bounding-box
+center that may land on a connection. Body drags away from strokes still select
+the group. Both header and interior-edge paths require native/fallback coverage.
 
 ## Actual other-writer probe: Obsidian 1.14.4
 
@@ -240,10 +260,86 @@ and visually verified on restored `r1b-visual-vault` / Alpha. Its WebView child
 had neither software-GPU override nor remote-debugging-port flag. This successful
 startup is not a cure claim for the intermittent injected-overlay host issue.
 
-Still required before closing **R3A**: connector sides/endpoints/labels/styles,
+The remainder at this primitive/style checkpoint was connectors,
 the complete canonical task/note/sticky/shape workflow, and broader translucent
 image/group/text cross-layer parity on larger boards. Small-compositor/image
 and ordinary large native fixtures do not prove arbitrary mixed-media layering.
 Cross-editor preservation was verified for the earlier Obsidian v1 snapshot,
 not separately for every new custom-paint combination. No full-parity or
 lossless export claim is made. The full master-plan goal remains active.
+
+## Connector checkpoint, 19 October 2026
+
+Implemented over primitive/style commit
+`5fb97736dca8e82c038b474b2f25124ae9780ed0`:
+
+- One prepared-edge module resolves automatic/explicit sides, actual triangle
+  side anchors, standard none/arrow ends, open arrow wings, bounded coincident
+  loops, colors, label layout/bounds and exact line/label hit tests. The renderer
+  DTO is derived; the original standard edge and every unknown field stay in
+  the Canvas file. Dangling references are retained, not silently deleted.
+- Native wgpu consumes those segments directly, including dashed lines and
+  GPU-shaped label glyphs. DOM/SVG and far overview use the same prepared
+  geometry. Golden fixtures are recomputed in frontend tests and deserialized/
+  validated by Rust; the native renderer does not have another side resolver.
+  Source labels remain complete; display is compact plain text (up to 49
+  codepoints in two explicit lines), not Markdown or arbitrary rich layout.
+- Selection by stroke or label, real double-click/Enter configuration, context
+  menu, global palette commands, standard endpoint reconnection, reversal,
+  deletion, two-selected-node linking and the two-click tool. Apply/reverse/
+  delete/create each contribute one Undo; cancel writes nothing. Open proposals
+  reject a changed source. Locked endpoints/ancestors cannot be bypassed by
+  reconnecting, deleting, reversing or creating a link.
+- Prepared edge deltas update only changed geometry/styles. A real node-drag
+  test observes one incident edge in IPC `edgeUpdates`, no full edge resend and
+  no unrelated-edge update. Structural edge additions/removals still send the
+  new ordered list. No authoritative Markdown/task source is copied or changed.
+- The initial regression exposed ambiguous group-body/line selection. Fixed a
+  common header priority zone, retained all original grouping/lock assertions,
+  made the group-selection helper target its visible header, and added explicit
+  header-versus-interior-stroke scenarios in both renderers. The diagnostic
+  remains in `target/qa/r3a-edges-layout-selection-diagnostic.log`.
+- Computer-use visually verified actual GPU arrows/dashes/labels on a 303-node
+  board with zero DOM cards/SVG paths, then physical double-click opened the
+  configuration form. The compact form keeps Apply/Cancel visible. All visual
+  inspection changes were cancelled; the synthetic source was not edited by
+  that inspection. No external plugin source or dependency was introduced.
+
+Final validation for this **connector slice**, not all R3A:
+
+- **138 Rust tests**, **103 frontend contracts**, strict Clippy/fmt,
+  lint/typecheck and native production build passed.
+- **180 Windows/Tauri UI cases**: connectors 26, primitives 18, layout 23,
+  render 10, R1A 25, cards 6, capture 11, DQL 7, properties 10, tasks/backup 14,
+  R2A 11 and owned-child R1B lifecycle/drafts 19. New cases cover main native
+  and secondary fallback, actual pointer/key/menu actions, endpoint mutations,
+  cancellation, source CAS, locks, one Undo/Redo, native edge deltas and reopen.
+- RTX 3090/DX12/DPR 1, ordinary synthetic 10k/20k boards, far-zoom DOM cards 0:
+  input-ack p95 **22.1/24.2 ms**, native CPU p95 **7.32/9.67 ms**. Same
+  70-iteration/10-warmup method above; not GPU time, FPS or a dense-label/mixed-
+  media performance guarantee. The 303-node labeled connector fixture is a
+  separate correctness case, not a mislabeled 20k label benchmark.
+- Logs: `target/qa/r3a-edges-{build,rust,clippy,contracts,lint,typecheck,fmt}.log`,
+  `target/qa/r3a-edges-final-{edges,primitives,layout,render,r1a,cards,capture,dql,properties,tasks,r2a,r1b}.log`
+  and `target/qa/canvas-render.json`. Connector fixture:
+  `C:/Users/ADMIN/AppData/Local/Temp/brandon-r3a-edges-DpQ0vc`.
+  Two initial harness diagnostics are separate: a read-only Tauri invoke property
+  required observing the actual fetch transport, and a narrow secondary pane
+  required a visible interior node point instead of an offscreen center. The
+  source/delta assertions were retained; neither run was reclassified as PASS.
+
+Final EXE `target/release/knowledge-desktop.exe`, SHA-256
+`89cc0c78077939d97c87073b8c19e87e80b610e6815fb727b4465dbd4dc218f7`.
+NSIS was not regenerated; nothing installed or pushed. macOS and server gate
+were not run. QA software WebView was per-process only; native wgpu stayed on
+and the documented RTSS host caveat remains, with no system-setting change.
+After the tests restored Alpha, an ordinary production-default launch was
+visually verified again. Its WebView child had neither software-GPU override
+nor remote-debugging-port flag. The successful startup does not resolve the
+intermittent injected-overlay host issue.
+
+**Still required for R3A:** the full canonical task/note/sticky/shape workflow
+and acceptance of arbitrary larger translucent image/group/text layering.
+The new connector tests do not establish arbitrary mixed-media pixel parity,
+complex elbow/curve routing, or new cross-editor lossless guarantees. Pen and
+R3B frames remain subsequent work. The full master-plan goal stays active.

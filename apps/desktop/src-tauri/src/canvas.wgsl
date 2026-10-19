@@ -53,7 +53,10 @@ fn cross2(a:vec2<f32>,b:vec2<f32>)->f32{return a.x*b.y-a.y*b.x;}
     let dot = 1. - smoothstep(0.5, 1.3, length(point));
     return vec4(mix(input.fill.rgb, input.border.rgb, dot), 1.);
   }
-  if (shape > 0.5 && shape < 1.5) { return input.fill; }
+  if (shape > 0.5 && shape < 1.5) {
+    if(input.style.z>0. && ((input.local.x+input.style.w)%input.style.z)>input.style.z*(8./14.)){discard;}
+    return input.fill;
+  }
   if (shape > 5.5 && shape < 6.5 && input.style.z <= 0.) { discard; }
   let radius = min(input.style.x, min(input.dimensions.x, input.dimensions.y) * 0.5);
   let q = abs(input.local - input.dimensions * 0.5) - input.dimensions * 0.5 + radius;

@@ -2,13 +2,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { CanvasDocument, CanvasNode } from './canvas-view'
 import {canvasAppearance} from './canvas-primitives'
+import {samePreparedEdge,type PreparedCanvasEdge} from './canvas-edges'
 
 export type NativeCanvasStats = {
   adapter: string; backend: string; totalNodes: number; visibleNodes: number; visibleEdges: number
   frameCpuMs: number; sceneUpdateMs: number; frames: number; textBuffers: number; surfaceRecoveries: number
+  edgeLabels:number
 }
-type Inputs = { document: CanvasDocument; camera: { x: number; y: number; zoom: number }; selected: Set<string>; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null }
-type Session = { disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: CanvasDocument['edges'] | null; publishedAt: number }
+type Inputs = { document: CanvasDocument; edges:PreparedCanvasEdge[]; camera: { x: number; y: number; zoom: number }; selected: Set<string>; selectedEdge:string|null; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null }
+type Session = { disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: PreparedCanvasEdge[] | null; publishedAt: number }
 let lifecycle: Promise<unknown> = Promise.resolve()
 
 function renderNode(node: CanvasNode) {
@@ -38,9 +40,10 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
       const removed = [...session.nodes.keys()].filter((id) => !nextNodes.has(id))
       const order = value.document.nodes.map((node) => node.id)
       const orderChanged = order.length !== session.order.length || order.some((id, index) => id !== session.order[index])
-      if (nodes.length || removed.length || session.edges !== value.document.edges || orderChanged) {
-        await invoke('canvas_gpu_scene', { delta: { reset: session.edges === null, nodes: nodes.map(renderNode), removed, order: orderChanged ? order : null, edges: session.edges !== value.document.edges ? value.document.edges.map((edge) => ({ fromNode: edge.fromNode, toNode: edge.toNode })) : null } })
-        session.nodes = nextNodes; session.order = order; session.edges = value.document.edges
+      const edgeOrderChanged=!session.edges||session.edges.length!==value.edges.length||value.edges.some((edge,i)=>edge.id!==session.edges![i].id),previousEdges=new Map(session.edges?.map(edge=>[edge.id,edge])),edgeUpdates=edgeOrderChanged?[]:value.edges.filter(edge=>!samePreparedEdge(previousEdges.get(edge.id),edge))
+      if (nodes.length || removed.length || edgeOrderChanged || edgeUpdates.length || orderChanged) {
+        await invoke('canvas_gpu_scene', { delta: { reset: session.edges === null, nodes: nodes.map(renderNode), removed, order: orderChanged ? order : null, edges: edgeOrderChanged?value.edges:null,edgeUpdates } })
+        session.nodes = nextNodes; session.order = order; session.edges = value.edges
       }
       session.document = value.document
     }
@@ -48,7 +51,7 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     const rect = element.getBoundingClientRect()
     const selection = [...value.selected]
     if (value.linking && !value.selected.has(value.linking)) selection.push(value.linking)
-    const result = await invoke<NativeCanvasStats>('canvas_gpu_frame', { frame: { viewport: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, camera: value.camera, pixelRatio: window.devicePixelRatio, selected: selection, locked: selection.filter(id=>value.locked.has(id)), overlayNodes:value.overlayNodes, overlayText: value.document.nodes.length<=200&&value.camera.zoom>=.5, editing: value.editing } })
+    const result = await invoke<NativeCanvasStats>('canvas_gpu_frame', { frame: { viewport: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, camera: value.camera, pixelRatio: window.devicePixelRatio, selected: selection, selectedEdge:value.selectedEdge, locked: selection.filter(id=>value.locked.has(id)), overlayNodes:value.overlayNodes, overlayText: value.document.nodes.length<=200&&value.camera.zoom>=.5, editing: value.editing } })
     if (!session.disposed) {
       element.dataset.frameCpuMs = String(result.frameCpuMs)
       element.dataset.nativeFrames = String(result.frames)
@@ -99,7 +102,7 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     }
   }, [draw, failed, enabled])
 
-  useEffect(() => { schedule() }, [inputs.document, inputs.camera, inputs.selected, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking, active, schedule])
+  useEffect(() => { schedule() }, [inputs.document, inputs.edges, inputs.camera, inputs.selected, inputs.selectedEdge, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking, active, schedule])
   useEffect(() => {
     if (!active) return
     window.addEventListener('resize', schedule); window.addEventListener('focus', schedule)

@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef } from 'react'
 import type { CanvasNode } from './canvas-view'
 import {canvasAppearance,canvasShapePath} from './canvas-primitives'
+import type {PreparedCanvasEdge} from './canvas-edges'
 
-export type RenderEdge = { id: string; x: number; y: number; width: number; height: number; x1: number; y1: number; x2: number; y2: number }
+export type RenderEdge = PreparedCanvasEdge
 
 /** Far overview: one bitmap layer instead of thousands of off-scale textareas. */
-export function CanvasOverview({ nodes, edges, camera, size, selected, linking }: {
+export function CanvasOverview({ nodes, edges, camera, size, selected, selectedEdge, linking }: {
   nodes: CanvasNode[]; edges: RenderEdge[]; camera: { x: number; y: number; zoom: number }
-  size: { width: number; height: number }; selected: Set<string>; linking: string | null
+  size: { width: number; height: number }; selected: Set<string>; selectedEdge:string|null; linking: string | null
 }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   useLayoutEffect(() => {
@@ -20,10 +21,7 @@ export function CanvasOverview({ nodes, edges, camera, size, selected, linking }
     context.setTransform(1, 0, 0, 1, 0, 0)
     context.clearRect(0, 0, width, height)
     context.setTransform(ratio * camera.zoom, 0, 0, ratio * camera.zoom, (size.width / 2 + camera.x) * ratio, (size.height / 2 + camera.y) * ratio)
-    context.strokeStyle = '#817aab'; context.lineWidth = 1 / camera.zoom
-    context.beginPath()
-    for (const edge of edges) { context.moveTo(edge.x1, edge.y1); context.lineTo(edge.x2, edge.y2) }
-    context.stroke()
+    for(const edge of edges){context.strokeStyle=edge.id===selectedEdge?'#b8a9ef':edge.color;context.lineWidth=Math.max(edge.strokeWidth,.75/camera.zoom);context.setLineDash(edge.dashed?[8,6]:[]);context.beginPath();context.moveTo(edge.segments[0][0],edge.segments[0][1]);for(const s of edge.segments){context.lineTo(s[2],s[3])}context.stroke();context.setLineDash([]);context.beginPath();for(const s of edge.heads){context.moveTo(s[0],s[1]);context.lineTo(s[2],s[3])}context.stroke()}
     for (const node of nodes) {
       const a=canvasAppearance(node)
       context.save();context.translate(node.x,node.y)
@@ -35,6 +33,6 @@ export function CanvasOverview({ nodes, edges, camera, size, selected, linking }
       if(a.primitive!=='text'||selected.has(node.id))context.stroke(path)
       context.restore()
     }
-  }, [nodes, edges, camera, size, selected, linking])
+  }, [nodes, edges, camera, size, selected, selectedEdge, linking])
   return <canvas className="canvas-overview" ref={canvas} aria-hidden="true" />
 }

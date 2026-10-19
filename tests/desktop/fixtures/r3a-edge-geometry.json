@@ -1,0 +1,251 @@
+[
+  {
+    "name": "default",
+    "document": {
+      "nodes": [
+        {
+          "id": "a",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "text": "Alpha"
+        },
+        {
+          "id": "b",
+          "type": "text",
+          "x": 300,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "text": "Beta"
+        }
+      ],
+      "edges": [
+        {
+          "id": "default",
+          "fromNode": "a",
+          "toNode": "b"
+        }
+      ]
+    },
+    "prepared": [
+      {
+        "id": "default",
+        "fromNode": "a",
+        "toNode": "b",
+        "x": 96,
+        "y": 40.6,
+        "width": 208,
+        "height": 18.799999999999997,
+        "segments": [
+          [
+            100,
+            50,
+            300,
+            50
+          ]
+        ],
+        "heads": [
+          [
+            288,
+            44.6,
+            300,
+            50
+          ],
+          [
+            288,
+            55.4,
+            300,
+            50
+          ]
+        ],
+        "color": "#817aab",
+        "strokeWidth": 2,
+        "dashed": false,
+        "label": "",
+        "labelRect": {
+          "x": 168,
+          "y": 35,
+          "width": 64,
+          "height": 30
+        }
+      }
+    ]
+  },
+  {
+    "name": "explicit",
+    "document": {
+      "nodes": [
+        {
+          "id": "a",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "text": "Alpha"
+        },
+        {
+          "id": "b",
+          "type": "text",
+          "x": 300,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "text": "Beta"
+        }
+      ],
+      "edges": [
+        {
+          "id": "explicit",
+          "fromNode": "a",
+          "toNode": "b",
+          "fromSide": "bottom",
+          "toSide": "top",
+          "fromEnd": "arrow",
+          "toEnd": "none",
+          "color": "#ff5500",
+          "label": "Semantic label",
+          "brandon": {
+            "version": 1,
+            "dash": "dashed",
+            "strokeWidth": 4,
+            "future": {
+              "keep": 7
+            }
+          }
+        }
+      ]
+    },
+    "prepared": [
+      {
+        "id": "explicit",
+        "fromNode": "a",
+        "toNode": "b",
+        "x": 46,
+        "y": -4,
+        "width": 308,
+        "height": 109.32815661727072,
+        "segments": [
+          [
+            50,
+            100,
+            350,
+            0
+          ]
+        ],
+        "heads": [
+          [
+            63.09182951309709,
+            101.32815661727072,
+            50,
+            100
+          ],
+          [
+            59.67656964011524,
+            91.08237699832516,
+            50,
+            100
+          ]
+        ],
+        "color": "#ff5500",
+        "strokeWidth": 4,
+        "dashed": true,
+        "label": "Semantic label",
+        "labelRect": {
+          "x": 127,
+          "y": 35,
+          "width": 146,
+          "height": 30
+        }
+      }
+    ]
+  },
+  {
+    "name": "loop",
+    "document": {
+      "nodes": [
+        {
+          "id": "a",
+          "type": "text",
+          "x": 0,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "text": "Alpha"
+        }
+      ],
+      "edges": [
+        {
+          "id": "loop",
+          "fromNode": "a",
+          "toNode": "a",
+          "label": "Self"
+        }
+      ]
+    },
+    "prepared": [
+      {
+        "id": "loop",
+        "fromNode": "a",
+        "toNode": "a",
+        "x": 90.6,
+        "y": -67,
+        "width": 93.4,
+        "height": 121,
+        "segments": [
+          [
+            100,
+            50,
+            148,
+            50
+          ],
+          [
+            148,
+            50,
+            148,
+            -48
+          ],
+          [
+            148,
+            -48,
+            100,
+            -48
+          ],
+          [
+            100,
+            -48,
+            100,
+            50
+          ]
+        ],
+        "heads": [
+          [
+            105.4,
+            38,
+            100,
+            50
+          ],
+          [
+            94.6,
+            38,
+            100,
+            50
+          ]
+        ],
+        "color": "#817aab",
+        "strokeWidth": 2,
+        "dashed": false,
+        "label": "Self",
+        "labelRect": {
+          "x": 116,
+          "y": -63,
+          "width": 64,
+          "height": 30
+        }
+      }
+    ]
+  }
+]

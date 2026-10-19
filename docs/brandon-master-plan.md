@@ -575,7 +575,11 @@ Sticky/text/shapes, connector styles, selection/layout/lock, стили и ка�
 
 Проверки этого среза: **136 Rust + 89 frontend + 154 Windows UI cases**, все PASS; визуально проверены настоящая GPU-доска из 300 фигур, центрирование подписей, окно стилей и узкая панель инструментов. Повтор 10k/20k: input-ack p95 22.5/21.4 ms, native CPU p95 7.29/10.47 ms, RTX 3090/DX12/DPR1, без DOM cards на far zoom. Метод, EXE hash, logs, охват и ограничения — в [контракте R3A](canvas-r3a-contract.md#primitivestyle-checkpoint-19-october-2026). Это не FPS/GPU time и не проверка другой платформы; NSIS/server gate не заявлены.
 
-Остаток R3A: connector styling/anchors/labels, полный смешанный сценарий с canonical tasks и дополнительная приёмка полупрозрачных image/group/text слоёв на больших досках. Эти checkpoints закрывают operations и primitive/style-срезы, не весь пакет или master plan.
+**Следующий проверенный срез — коннекторы, поверх `5fb9773`:** общий prepared geometry для native/SVG/overview, стороны присоединения, none/arrow ends с правильными стандартными defaults, цвет, пунктир/толщина, подписи, точный hit test. Работают создание, переподключение, разворот, ПКМ/Enter/double-click, source CAS, locks, один Undo и только изменившиеся edge DTO при переносе узла. Визуально проверены GPU-линии/стрелки/подписи без DOM/SVG подмены и форма с доступными действиями. Приоритет заголовка группы и линии в её теле явно проверен в обеих панелях.
+
+Проверки коннекторов: **138 Rust + 103 frontend + 180 Windows UI cases**, все PASS. Повтор 10k/20k: input-ack p95 22.1/24.2 ms, native CPU p95 7.32/9.67 ms на том же RTX 3090/DX12/DPR1; это обычные большие доски, не benchmark 20k подписей или mixed media. [Контракт, logs, EXE hash и границы приёмки](canvas-r3a-contract.md#connector-checkpoint-19-october-2026).
+
+Остаток R3A: полный смешанный сценарий с canonical tasks и приёмка полупрозрачных image/group/text слоёв на больших досках. Эти checkpoints закрывают operations, primitive/style и connector-срезы, не весь пакет или master plan.
 
 ### R3B. Фреймы и рабочие форматы
 

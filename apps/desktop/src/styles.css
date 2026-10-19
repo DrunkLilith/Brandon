@@ -899,6 +899,15 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .canvas-toolbar.compact .canvas-tool-toggle { height: 33px; }
 .canvas-toolbar.compact .canvas-tool-toggle button { height: 29px; }
 .canvas-style-grid select { height: 36px; padding: 5px 9px; border: 1px solid #5b4e67; border-radius: 7px; color: #e3d8ee; background: #2a2431; color-scheme: dark; }
+.canvas-edge-label { width: 100%; height: 100%; padding: 4px 8px; border: 1px solid #54485f; border-radius: 4px; background: #211f28; color: #ded6e8; white-space: pre; text-align: center; overflow: hidden; font: 14px/20px "Segoe UI",sans-serif; }
+.canvas-edge-label.selected { border-color: #b8a9ef; }
+.canvas-edge-endpoints { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.canvas-edge-dialog fieldset { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.canvas-edge-dialog input:not([type=color]),.canvas-edge-endpoints select { width: 100%; min-width: 0; padding: 8px; color: #e3d8ee; background: #2a2431; border: 1px solid #5b4e67; border-radius: 7px; color-scheme: dark; }
+.canvas-edge-dialog select { max-width: 100%; }
+.canvas-edge-dialog { gap: 12px; }.canvas-edge-dialog textarea { min-height: 64px; }
+.canvas-edge-dialog > footer { position: sticky; bottom: -1px; padding-block: 10px 2px; background: #242027; box-shadow: 0 -10px 12px #242027; }
+@media(max-width:700px){.canvas-edge-endpoints{grid-template-columns:minmax(0,1fr)}}
 .canvas-node { border-color: #4c4c4c; border-radius: 10px; background: #292929; box-shadow: 0 10px 28px #0006; }
 .canvas-node-grip { height: 36px; padding: 0 9px 0 12px; border-radius: 9px 9px 0 0; font-size: 12px; }
 .canvas-node-grip button { width: 28px; height: 28px; border-radius: 6px; }

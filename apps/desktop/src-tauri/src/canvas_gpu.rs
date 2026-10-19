@@ -189,6 +189,18 @@ pub struct Rect {
     pub height: f32,
 }
 impl Rect {
+    fn intersection(self, other: Self) -> Option<Self> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+        (right > x && bottom > y).then_some(Self {
+            x,
+            y,
+            width: right - x,
+            height: bottom - y,
+        })
+    }
     fn intersects(self, other: Self) -> bool {
         self.x <= other.x + other.width
             && self.x + self.width >= other.x
@@ -202,10 +214,57 @@ pub struct Camera {
     pub y: f32,
     pub zoom: f32,
 }
+fn presentation_scissor(
+    viewport: Rect,
+    camera: Camera,
+    clip: Option<Rect>,
+    ratio: f32,
+    size: [u32; 2],
+) -> Result<[u32; 4], String> {
+    let mut area = viewport;
+    if let Some(clip) = clip {
+        if ![clip.x, clip.y, clip.width, clip.height]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 10_000_000.)
+            || clip.width <= 0.
+            || clip.height <= 0.
+        {
+            return Err("Invalid presentation clip".into());
+        }
+        let screen = Rect {
+            x: viewport.x + viewport.width / 2. + camera.x + clip.x * camera.zoom,
+            y: viewport.y + viewport.height / 2. + camera.y + clip.y * camera.zoom,
+            width: clip.width * camera.zoom,
+            height: clip.height * camera.zoom,
+        };
+        let Some(intersection) = area.intersection(screen) else {
+            return Ok([0, 0, 0, 0]);
+        };
+        area = intersection;
+    }
+    let left = (area.x * ratio).floor().clamp(0., size[0] as f32) as u32;
+    let top = (area.y * ratio).floor().clamp(0., size[1] as f32) as u32;
+    let right = ((area.x + area.width) * ratio)
+        .ceil()
+        .clamp(left as f32, size[0] as f32) as u32;
+    let bottom = ((area.y + area.height) * ratio)
+        .ceil()
+        .clamp(top as f32, size[1] as f32) as u32;
+    Ok([left, top, right - left, bottom - top])
+}
+fn presentation_budget(clipped: bool, count: usize) -> Result<(), String> {
+    if clipped && count > 2000 {
+        Err("Presentation object budget exceeded".into())
+    } else {
+        Ok(())
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
     pub viewport: Rect,
+    #[serde(default)]
+    pub clip: Option<Rect>,
     pub camera: Camera,
     pub pixel_ratio: f32,
     #[serde(default)]
@@ -238,6 +297,7 @@ pub struct Stats {
     pub ink_strokes: usize,
     pub ink_segments: usize,
     pub ink_mask_bytes: u64,
+    pub presentation_clip: Option<[u32; 4]>,
     pub missing_images: Vec<String>,
     pub raster_paths: Vec<String>,
     pub frame_cpu_ms: f64,
@@ -759,7 +819,7 @@ impl Renderer {
         if !ratio.is_finite()
             || !(0.25..=8.).contains(&ratio)
             || !zoom.is_finite()
-            || !(0.05..=10.).contains(&zoom)
+            || !(if frame.clip.is_some() { 0.000001 } else { 0.05 }..=10.).contains(&zoom)
         {
             return Err("Invalid camera scale".into());
         }
@@ -779,13 +839,30 @@ impl Renderer {
         {
             return Err("Invalid canvas viewport".into());
         }
+        let scissor = presentation_scissor(
+            vp,
+            frame.camera,
+            frame.clip,
+            ratio,
+            [size.width, size.height],
+        )?;
+        let detailed = zoom >= 0.5 || frame.clip.is_some();
         let world = Rect {
             x: (-vp.width / 2. - frame.camera.x) / zoom,
             y: (-vp.height / 2. - frame.camera.y) / zoom,
             width: vp.width / zoom,
             height: vp.height / zoom,
         };
+        let world = frame.clip.map_or(world, |clip| {
+            world.intersection(clip).unwrap_or(Rect {
+                x: 0.,
+                y: 0.,
+                width: 0.,
+                height: 0.,
+            })
+        });
         let visible = self.spatial.query(world, &self.nodes);
+        presentation_budget(frame.clip.is_some(), visible.len())?;
         let selected: HashSet<&str> = frame.selected.iter().map(String::as_str).collect();
         let locked: HashSet<&str> = frame.locked.iter().map(String::as_str).collect();
         let offset = (
@@ -853,7 +930,7 @@ impl Renderer {
                     [width, 1., 0., 0.],
                 );
             }
-            if zoom >= 0.5 && !edge.label.is_empty() {
+            if detailed && !edge.label.is_empty() {
                 visible_edge_ids.insert(edge.id.clone());
                 let r = edge.label_rect;
                 let p = screen(r.x, r.y);
@@ -894,7 +971,7 @@ impl Renderer {
             .filter(|id| visible.contains(*id))
             .collect();
         self.rasters
-            .visible(&self.nodes, &ids, zoom >= 0.5 && !frame.overlay_nodes);
+            .visible(&self.nodes, &ids, detailed && !frame.overlay_nodes);
         for id in &ids {
             let Some(node) = self.nodes.get(*id) else {
                 continue;
@@ -961,9 +1038,7 @@ impl Renderer {
                     },
                 );
             }
-            if zoom >= 0.5
-                && let Some(image) = &node.image
-            {
+            if detailed && let Some(image) = &node.image {
                 let r = image.bounds;
                 let p = screen(node.x + r.x, node.y + r.y);
                 instance(
@@ -1007,7 +1082,7 @@ impl Renderer {
                 alpha > 0. && alpha < 1. || node.image.is_some() && alpha < 1.,
             ));
             if node.ink.is_some()
-                || zoom < 0.5
+                || !detailed
                 || node.width < 30.
                 || node.height < 30.
                 || node.style.as_ref().is_some_and(|s| s.shape == 7)
@@ -1046,7 +1121,7 @@ impl Renderer {
         let batches = composition_batches(
             prelude,
             &spans,
-            (zoom >= 0.5
+            (detailed
                 || ids
                     .iter()
                     .any(|id| self.nodes.get(*id).is_some_and(|node| node.ink.is_some())))
@@ -1120,7 +1195,7 @@ impl Renderer {
                 }
             }
             text_areas.extend(ids[batch.nodes.clone()].iter().filter_map(|id| {
-                if zoom < 0.5
+                if !detailed
                     || frame.overlay_text
                     || frame.overlay_nodes
                     || frame.editing.as_ref() == Some(*id)
@@ -1226,10 +1301,9 @@ impl Renderer {
         );
         let view = texture.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let left = (vp.x * ratio).clamp(0., size.width as f32) as u32;
-        let top = (vp.y * ratio).clamp(0., size.height as f32) as u32;
-        let right = ((vp.x + vp.width) * ratio).clamp(left as f32, size.width as f32) as u32;
-        let bottom = ((vp.y + vp.height) * ratio).clamp(top as f32, size.height as f32) as u32;
+        let [left, top, width, height] = scissor;
+        let right = left + width;
+        let bottom = top + height;
         let target = ink::CanvasTarget {
             color: &view,
             depth: &self.depth,
@@ -1295,6 +1369,7 @@ impl Renderer {
         self.stats.ink_strokes = self.inks.count;
         self.stats.ink_segments = self.inks.segment_count;
         self.stats.ink_mask_bytes = self.inks.mask_bytes();
+        self.stats.presentation_clip = frame.clip.map(|_| scissor);
         self.stats.frames += 1;
         self.stats.text_buffers = self.buffers.len();
         self.stats.frame_cpu_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -1488,6 +1563,113 @@ pub async fn canvas_gpu_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_presentation_enforces_its_budget_without_limiting_ordinary_boards() {
+        assert!(presentation_budget(true, 2000).is_ok());
+        assert!(presentation_budget(true, 2001).is_err());
+        assert!(presentation_budget(true, usize::MAX).is_err());
+        assert!(presentation_budget(false, 20000).is_ok());
+    }
+    #[test]
+    fn presentation_scissor_uses_world_frame_camera_dpr_and_surface_intersection() {
+        let viewport = Rect {
+            x: 100.,
+            y: 50.,
+            width: 1000.,
+            height: 800.,
+        };
+        let camera = Camera {
+            x: 0.,
+            y: 0.,
+            zoom: 0.5,
+        };
+        let clip = Rect {
+            x: -400.,
+            y: -200.,
+            width: 800.,
+            height: 400.,
+        };
+        assert_eq!(
+            presentation_scissor(viewport, camera, Some(clip), 2., [2400, 1800]).unwrap(),
+            [800, 700, 800, 400]
+        );
+        let huge = Rect {
+            x: -2000.,
+            y: -2000.,
+            width: 4000.,
+            height: 4000.,
+        };
+        assert_eq!(
+            presentation_scissor(viewport, camera, Some(huge), 2., [2000, 1400]).unwrap(),
+            [200, 100, 1800, 1300]
+        );
+        assert_eq!(
+            presentation_scissor(viewport, camera, None, 1., [1200, 900]).unwrap(),
+            [100, 50, 1000, 800]
+        );
+        let outside = Rect {
+            x: 10000.,
+            y: 10000.,
+            width: 100.,
+            height: 100.,
+        };
+        assert_eq!(
+            presentation_scissor(viewport, camera, Some(outside), 1., [1200, 900]).unwrap(),
+            [0, 0, 0, 0]
+        );
+    }
+    #[test]
+    fn presentation_clip_rejects_bad_geometry_and_rounds_conservatively() {
+        let viewport = Rect {
+            x: 0.,
+            y: 0.,
+            width: 100.,
+            height: 100.,
+        };
+        let camera = Camera {
+            x: 0.,
+            y: 0.,
+            zoom: 1.,
+        };
+        for clip in [
+            Rect {
+                x: f32::NAN,
+                y: 0.,
+                width: 10.,
+                height: 10.,
+            },
+            Rect {
+                x: 0.,
+                y: 0.,
+                width: 0.,
+                height: 10.,
+            },
+            Rect {
+                x: 0.,
+                y: 0.,
+                width: 10.,
+                height: -10.,
+            },
+            Rect {
+                x: 10_000_001.,
+                y: 0.,
+                width: 10.,
+                height: 10.,
+            },
+        ] {
+            assert!(presentation_scissor(viewport, camera, Some(clip), 1., [100, 100]).is_err());
+        }
+        let clip = Rect {
+            x: -10.25,
+            y: -10.25,
+            width: 20.5,
+            height: 20.5,
+        };
+        assert_eq!(
+            presentation_scissor(viewport, camera, Some(clip), 1., [100, 100]).unwrap(),
+            [39, 39, 22, 22]
+        );
+    }
     #[test]
     fn raster_reference_cannot_escape_card_bounds_or_attach_to_a_non_file_node() {
         let mut node: Node = serde_json::from_value(

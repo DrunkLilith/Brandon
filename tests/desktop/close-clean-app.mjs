@@ -1,5 +1,7 @@
 // Developer-only lifecycle helper: never close a window containing an unsaved draft.
-const targets = await fetch('http://127.0.0.1:9222/json').then(r => r.json())
+const endpoint=process.env.BRANDON_CDP??'http://127.0.0.1:9222/json'
+if(new URL(endpoint).hostname!=='127.0.0.1'||new URL(endpoint).protocol!=='http:')throw Error('Only a local QA endpoint is accepted')
+const targets = await fetch(endpoint).then(r => r.json())
 const target = targets.find(entry => entry.type === 'page' && entry.title === 'Brandon')
 if (!target) throw new Error('No Brandon QA window found')
 const socket = new WebSocket(target.webSocketDebuggerUrl)
@@ -18,7 +20,7 @@ if (!process.exitCode) {
   let closed = false
   for (let attempt = 0; attempt < 30; attempt++) {
     try {
-      const remaining = await fetch('http://127.0.0.1:9222/json').then(response => response.json())
+      const remaining = await fetch(endpoint).then(response => response.json())
       if (!remaining.some(entry => entry.id === target.id)) { closed = true; break }
     } catch { closed = true; break }
     await new Promise(resolve => setTimeout(resolve, 100))

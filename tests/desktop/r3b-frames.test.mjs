@@ -2,10 +2,15 @@ import assert from 'node:assert/strict'
 import {test} from 'node:test'
 import {CANVAS_FRAME_PRESETS,createCanvasFrame,canvasFrame,canvasPresentation,orderedCanvasFrames,editCanvasFrame,reorderCanvasFrames,fitCanvasFrame,canvasFrameScreenRect,FRAME_LIMIT,FRAME_ORDER_LIMIT,FRAME_NOTES_LIMIT} from '../../apps/desktop/src/canvas-frames.ts'
 import {parseCanvasDocument} from '../../apps/desktop/src/canvas-document.ts'
+import {assertCanvasFramePresentable,FRAME_OBJECT_LIMIT} from '../../apps/desktop/src/canvas-frames.ts'
+import {CANVAS_FRAME_COMMANDS} from '../../apps/desktop/src/canvas-commands.ts'
+import {validShortcut} from '../../apps/desktop/src/commands.ts'
 import {moveCanvasNodes,toggleCanvasLock,deleteCanvasSelection,ungroupCanvasSelection,groupCanvasSelection} from '../../apps/desktop/src/canvas-operations.ts'
 const selection=(...ids)=>new Set(ids),empty=()=>({nodes:[],edges:[],foreign:{keep:7},metadata:{version:'1.0-1.0',startNode:'foreign-start'}}),card=(id,x,y)=>({id,type:'text',x,y,width:120,height:80,text:id,foreign:{keep:id}})
 const create=(d=empty(),id='frame',selected=new Set(),preset='16:9',center={x:0,y:0})=>createCanvasFrame(d,selected,id,preset,'Фрейм',center)
 const source=d=>parseCanvasDocument(JSON.stringify(d)),frame=d=>d.nodes.find(n=>canvasFrame(n))
+test('frame commands expose valid shared bindings and a complete presentation lifecycle',()=>{for(const c of CANVAS_FRAME_COMMANDS)if(c.defaultShortcut)assert.equal(validShortcut(c.defaultShortcut),true);assert.ok(['canvas-add-frame','canvas-frame-details','canvas-frame-remove','canvas-present','canvas-present-end','canvas-present-next','canvas-present-prev'].every(id=>CANVAS_FRAME_COMMANDS.some(c=>c.id===id)))})
+test('presentation object budget refuses rather than trimming the frame or rewriting source',()=>{const d=create(),f=frame(d),full={...d,nodes:[f,...Array.from({length:FRAME_OBJECT_LIMIT},(_,i)=>card('n'+i,0,0))]},before=JSON.stringify(full);assert.throws(()=>assertCanvasFramePresentable(full,f.id),/2000/);assert.equal(JSON.stringify(full),before);assert.equal(assertCanvasFramePresentable({...full,nodes:full.nodes.slice(0,FRAME_OBJECT_LIMIT)},f.id),f);assert.throws(()=>assertCanvasFramePresentable(d,'missing'),/существует/)})
 
 test('all nine presets create standard groups at the camera centre without source copies',()=>{
   for(const p of CANVAS_FRAME_PRESETS){const before=empty(),d=create(before,'f',selection(),p.id,{x:400,y:-300}),n=frame(d);assert.equal(n.type,'group');assert.equal(n.width,p.width);assert.equal(n.height,p.height);assert.deepEqual(canvasFrame(n),{version:1,preset:p.id,notes:''});assert.deepEqual(canvasPresentation(d),{version:1,frames:['f']});assert.equal(d.metadata,before.metadata);assert.equal(d.foreign,before.foreign);assert.equal(d.edges,before.edges);assert.equal(source(d).error,null);assert.deepEqual(before,empty())}
@@ -41,6 +46,7 @@ test('future or malformed frame/document extensions fail read-only without silen
   const d=create();for(const ext of [{version:2},[],null,{version:1,presentation:{version:2,frames:[]}},{version:1,presentation:{version:1,frames:['a','a']}},{version:1,presentation:{version:1,frames:['']}},{version:1,presentation:{version:1,frames:[3]}}])assert.ok(source({...d,brandon:ext}).error)
   for(const f of [{version:2,preset:'16:9'},{version:1,preset:'unknown'},{version:1,preset:'custom',notes:[]},null])assert.ok(source({...d,nodes:[{...d.nodes[0],brandon:{version:1,frame:f}}]}).error)
   for(const patch of [{type:'text'},{brandon:{...d.nodes[0].brandon,primitive:'rectangle'}},{brandon:{...d.nodes[0].brandon,taskId:'task-1'}}])assert.ok(source({...d,nodes:[{...d.nodes[0],...patch}]}).error)
+  assert.ok(source({...d,nodes:[{...d.nodes[0],id:'x'.repeat(513)}]}).error)
 })
 test('frame/order/name/geometry budgets reject all-or-nothing and leave original bytes unchanged',()=>{
   const d=create(),before=JSON.stringify(d);assert.throws(()=>create(d,'frame'),/ID/);assert.throws(()=>create(d,'x',selection(),'custom',{x:1e8,y:0}),/координаты/);assert.throws(()=>createCanvasFrame(d,selection(),'x','custom','x'.repeat(513),{x:0,y:0}),/Название/);assert.ok(source({...d,nodes:Array.from({length:FRAME_LIMIT+1},(_,i)=>({...d.nodes[0],id:'f'+i}))}).error);assert.ok(source({...d,brandon:{version:1,presentation:{version:1,frames:Array.from({length:FRAME_ORDER_LIMIT+1},(_,i)=>'f'+i)}}}).error);assert.equal(JSON.stringify(d),before)

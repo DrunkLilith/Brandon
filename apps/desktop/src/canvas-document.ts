@@ -49,6 +49,7 @@ export function parseCanvasDocument(source: string): { document: CanvasDocument;
       for (const key of ['text', 'file', 'url', 'label', 'color'] as const) if (node[key] !== undefined && typeof node[key] !== 'string') throw new Error(`Поле ${key} должно быть строкой`)
       validateExtension(node.brandon)
       if(node.type!=='group'&&node.brandon&&typeof node.brandon==='object'&&'frame' in node.brandon&&(node.brandon as {frame?:unknown}).frame!==undefined)throw Error('Фрейм Brandon требует group fallback')
+      if(node.id.length>512&&node.brandon&&typeof node.brandon==='object'&&'frame' in node.brandon&&(node.brandon as {frame?:unknown}).frame!==undefined)throw Error('ID фрейма Brandon длиннее 512 символов')
       if(node.type!=='text'&&node.brandon&&typeof node.brandon==='object'&&'ink' in node.brandon&&(node.brandon as {ink?:unknown}).ink!==undefined)throw Error('Штрих Brandon требует текстовый fallback')
       if(node.brandon&&typeof node.brandon==='object'&&'taskId' in node.brandon&&(node.brandon as {taskId?:unknown}).taskId!==undefined&&(node.type!=='file'||!validTaskFallback(node.file)))throw Error('Задача Brandon требует относительный Markdown file fallback')
       if(node.type!=='text'&&node.brandon&&typeof node.brandon==='object'&&'primitive' in node.brandon&&(node.brandon as {primitive?:unknown}).primitive!==undefined)throw Error('Фигура Brandon требует текстовый fallback')

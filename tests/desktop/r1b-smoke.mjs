@@ -5,11 +5,12 @@ import {mkdtemp,writeFile,readFile,rm,mkdir} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join,resolve,sep} from 'node:path'
 import {connect} from './cdp-test-client.mjs'
-const executable=resolve('target/release/knowledge-desktop.exe')
+const executable=resolve(process.env.BRANDON_QA_EXE??'target/release/knowledge-desktop.exe'),endpoint=process.env.BRANDON_CDP??'http://127.0.0.1:9222/json',address=new URL(endpoint)
+if(address.hostname!=='127.0.0.1'||address.protocol!=='http:'||!address.port)throw Error('Only a local QA endpoint with an explicit port is accepted')
 let running
-try{const targets=await fetch('http://127.0.0.1:9222/json').then(r=>r.json());if(targets.some(t=>t.title==='Brandon'))throw new Error('Close the clean QA window before this lifecycle test')}catch(error){if(error.message.startsWith('Close the'))throw error}
+try{const targets=await fetch(endpoint).then(r=>r.json());if(targets.some(t=>t.title==='Brandon'))throw new Error('Close the clean QA window before this lifecycle test')}catch(error){if(error.message.startsWith('Close the'))throw error}
 // Test-only opt-in for diagnosing an injected overlay; production flags stay unchanged.
-const browserArguments=(process.env.BRANDON_QA_SOFTWARE_WEBVIEW==='1'?'--disable-gpu ':'')+'--remote-debugging-port=9222'
+const browserArguments=(process.env.BRANDON_QA_SOFTWARE_WEBVIEW==='1'?'--disable-gpu ':'')+'--remote-debugging-port='+address.port
 const launch=()=>{running=spawn(executable,[],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:browserArguments},stdio:'ignore',windowsHide:true});return running}
 launch()
 let client=await connect()

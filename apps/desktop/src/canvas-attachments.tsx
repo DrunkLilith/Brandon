@@ -11,14 +11,15 @@ type Progress = { id: string; name: string; copied: number; total: number }
 type Point = { x: number; y: number }
 export const isRasterPath = (path: string | undefined) => Boolean(path && /\.(png|jpe?g|gif|webp)$/i.test(path))
 
-export function useCanvasAttachments(viewport: RefObject<HTMLDivElement | null>, onImported: (attachment: AttachmentInfo, position?: Point) => void) {
+export function useCanvasAttachments(viewport: RefObject<HTMLDivElement | null>, onImported: (attachment: AttachmentInfo, position?: Point) => void,enabled=true) {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [error, setError] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const alive = useRef(true), activeId = useRef<string | null>(null), stopped = useRef(false), busy = useRef(false)
   const imported = useRef(onImported); imported.current = onImported
+  const allowed=useRef(enabled);allowed.current=enabled
   const importFiles = async (paths: string[], position?: Point) => {
-    if (busy.current || !paths.length) return
+    if (!allowed.current || busy.current || !paths.length) return
     if (paths.length > 32) { setError('Добавляйте до 32 файлов за один раз.'); return }
     busy.current = true; stopped.current = false; setError(''); setDragOver(false)
     try {
@@ -44,7 +45,7 @@ export function useCanvasAttachments(viewport: RefObject<HTMLDivElement | null>,
       if (!disposed && payload.id === activeId.current) setProgress((current) => current ? { ...current, ...payload } : current)
     }).then(retain)
     void getCurrentWebviewWindow().onDragDropEvent(({ payload }) => {
-      if (disposed) return
+      if (disposed||!allowed.current) return
       if (payload.type === 'leave') { setDragOver(false); return }
       const element = viewport.current
       if (!element) return
@@ -56,14 +57,16 @@ export function useCanvasAttachments(viewport: RefObject<HTMLDivElement | null>,
     return () => { disposed = true; alive.current = false; stopped.current = true; if (activeId.current) void invoke('cancel_attachment_import', { requestId: activeId.current }); unlisteners.forEach((unlisten) => unlisten()) }
   }, [viewport])
   const choose = async () => {
+    if(!allowed.current)return
     try { const selected = await open({ multiple: true, directory: false, title: 'Добавить файлы на холст' }); if (selected && alive.current) await importFiles(Array.isArray(selected) ? selected : [selected]) }
     catch (reason) { if (alive.current) setError(String(reason)) }
   }
   const referenceFile = async (path: string, position: Point) => {
-    try { const attachment = await invoke<AttachmentInfo>('attachment_info', { relativePath: path }); if (alive.current) imported.current(attachment, position) }
+    if(!allowed.current)return
+    try { const attachment = await invoke<AttachmentInfo>('attachment_info', { relativePath: path }); if (alive.current&&allowed.current) imported.current(attachment, position) }
     catch (reason) { if (alive.current) setError(String(reason)) }
   }
-  return { progress, error, dragOver, choose, cancel, referenceFile, dismissError: () => setError('') }
+  return { progress, error, dragOver, choose, cancel, referenceFile,isBusy:()=>busy.current, dismissError: () => setError('') }
 }
 
 export function AttachmentImage({ root,path, large = false }: { root:string;path: string; large?: boolean }) {

@@ -7,7 +7,7 @@ export type InkTool='pen'|'highlighter'|'eraser'
 type Point={x:number;y:number}
 type Inputs={document:CanvasDocument;locked:ReadonlySet<string>;disabled:boolean;zoom:number;toWorld:(x:number,y:number)=>Point;onPreview:(document:CanvasDocument|null)=>void;onCommit:(document:CanvasDocument,createdId?:string)=>void;onError:(message:string)=>void}
 type Gesture={pointerId:number;pointerType:string;base:CanvasDocument;tool:InkTool;id:string;size:number;color:string;pressure:boolean;samples:InkSample[];last:Point;removed:Set<string>;locked:ReadonlySet<string>;work:number}
-const isUi=(target:EventTarget|null)=>target instanceof Element&&Boolean(target.closest('.canvas-toolbar,.canvas-ink-options,.canvas-note-picker,.canvas-minimap,.command-menu,.canvas-selection-actions,.canvas-operation-error,.dialog-backdrop,.image-viewer-backdrop,.canvas-attachment-details,.canvas-import-status,.canvas-raster-notice'))
+const isUi=(target:EventTarget|null)=>target instanceof Element&&Boolean(target.closest('.canvas-toolbar,.canvas-ink-options,.canvas-frame-panel,.canvas-presentation-controls,.canvas-speaker-notes,.canvas-note-picker,.canvas-minimap,.command-menu,.canvas-selection-actions,.canvas-operation-error,.dialog-backdrop,.image-viewer-backdrop,.canvas-attachment-details,.canvas-import-status,.canvas-raster-notice'))
 export function useCanvasInk(inputs:Inputs){
   const [mode,setMode]=useState<InkTool|null>(null),[penSize,setPenSize]=useState(4),[markerSize,setMarkerSize]=useState(16),[eraserSize,setEraserSize]=useState(24),[color,setColor]=useState('#c3a4dc'),[pressure,setPressure]=useState(true)
   const size=mode==='highlighter'?markerSize:penSize,setSize=mode==='highlighter'?setMarkerSize:setPenSize

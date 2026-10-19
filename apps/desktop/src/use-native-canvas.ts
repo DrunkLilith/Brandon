@@ -14,8 +14,9 @@ export type NativeCanvasStats = {
   drawBatches:number;translucentBatches:number
   rasterImages:number;rasterBytes:number;rasterLimited:number;missingImages:string[];rasterPaths:string[]
   inkStrokes:number;inkSegments:number;inkMaskBytes:number
+  presentationClip:[number,number,number,number]|null
 }
-type Inputs = { root:string;document: CanvasDocument; labels:ReadonlyMap<string,string>;edges:PreparedCanvasEdge[]; camera: { x: number; y: number; zoom: number }; selected: Set<string>; selectedEdge:string|null; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null }
+type Inputs = { root:string;document: CanvasDocument; labels:ReadonlyMap<string,string>;edges:PreparedCanvasEdge[]; camera: { x: number; y: number; zoom: number }; selected: Set<string>; selectedEdge:string|null; locked: Set<string>; overlayNodes:boolean; editing: string | null; linking: string | null;clip?:{x:number;y:number;width:number;height:number}|null }
 type Session = { id:string;root:string;labels:ReadonlyMap<string,string>|null;imagePending:Set<string>;imageDirty:Set<string>;imageVersions:Map<string,number>;imageFailed:Map<string,number>;disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: PreparedCanvasEdge[] | null; publishedAt: number }
 let lifecycle: Promise<unknown> = Promise.resolve()
 
@@ -68,10 +69,11 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     const rect = element.getBoundingClientRect()
     const selection = [...value.selected]
     if (value.linking && !value.selected.has(value.linking)) selection.push(value.linking)
-    const result = await invoke<NativeCanvasStats>('canvas_gpu_frame', { sessionId:session.id,frame: { viewport: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, camera: value.camera, pixelRatio: window.devicePixelRatio, selected: selection, selectedEdge:value.selectedEdge, locked: selection.filter(id=>value.locked.has(id)), overlayNodes:value.overlayNodes, overlayText: value.document.nodes.length<=200&&value.camera.zoom>=.5, editing: value.editing } })
+    const result = await invoke<NativeCanvasStats>('canvas_gpu_frame', { sessionId:session.id,frame: { viewport: { x: rect.left, y: rect.top, width: rect.width, height: rect.height }, camera: value.camera, pixelRatio: window.devicePixelRatio, selected: selection, selectedEdge:value.selectedEdge, locked: selection.filter(id=>value.locked.has(id)), overlayNodes:value.overlayNodes, overlayText: value.document.nodes.length<=200&&(value.camera.zoom>=.5||Boolean(value.clip)), editing: value.editing,clip:value.clip?{x:value.clip.x,y:value.clip.y,width:value.clip.width,height:value.clip.height}:null } })
     if (!session.disposed) {
       element.dataset.frameCpuMs = String(result.frameCpuMs)
       element.dataset.nativeFrames = String(result.frames)
+      if(result.presentationClip)element.dataset.nativePresentationClip=JSON.stringify(result.presentationClip);else delete element.dataset.nativePresentationClip
       if (performance.now() - session.publishedAt > 250 || !session.ready) { setStats(result); session.publishedAt = performance.now() }
       const paths=[...new Set([...session.imageDirty].filter(path=>result.rasterPaths.includes(path)).concat(result.missingImages))]
       for(const path of paths){if(session.imagePending.size>=2)break;const version=session.imageVersions.get(path)??0;if(session.imagePending.has(path)||session.imageFailed.get(path)===version)continue;session.imagePending.add(path);const force=session.imageDirty.has(path);let reschedule=true
@@ -131,7 +133,7 @@ export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inpu
     }
   }, [draw, failed, enabled,inputs.root])
 
-  useEffect(() => { schedule() }, [inputs.document, inputs.labels, inputs.edges, inputs.camera, inputs.selected, inputs.selectedEdge, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking, active, schedule])
+  useEffect(() => { schedule() }, [inputs.document, inputs.labels, inputs.edges, inputs.camera, inputs.selected, inputs.selectedEdge, inputs.locked, inputs.overlayNodes, inputs.editing, inputs.linking,inputs.clip, active, schedule])
   useEffect(() => {
     if (!active) return
     window.addEventListener('resize', schedule); window.addEventListener('focus', schedule)

@@ -4,6 +4,7 @@ import {canvasSelectionEditable,expandCanvasSelection,insertCanvasNodes} from '.
 import {parseCanvasDocument} from './canvas-document.ts'
 
 export const FRAME_LIMIT=512,FRAME_ORDER_LIMIT=4096,FRAME_NOTES_LIMIT=16384
+export const FRAME_OBJECT_LIMIT=2000
 export const CANVAS_FRAME_PRESETS:ReadonlyArray<{id:CanvasFramePreset;label:string;width:number;height:number}>=[
   {id:'custom',label:'Свободный',width:960,height:640},{id:'a4',label:'A4',width:794,height:1123},{id:'letter',label:'Letter',width:816,height:1056},
   {id:'16:9',label:'16 : 9',width:1280,height:720},{id:'4:3',label:'4 : 3',width:1024,height:768},{id:'1:1',label:'1 : 1',width:900,height:900},
@@ -71,6 +72,12 @@ export function reorderCanvasFrames(document:CanvasDocument,id:string,direction:
   return checked(withOrder(document,order))
 }
 export type FrameCamera={x:number;y:number;zoom:number}
+export function assertCanvasFramePresentable(document:CanvasDocument,id:string){
+  const frame=document.nodes.find(n=>n.id===id&&canvasFrame(n));if(!frame)throw Error('Фрейм больше не существует')
+  let count=0
+  for(const node of document.nodes)if(node.x<=frame.x+frame.width&&node.x+node.width>=frame.x&&node.y<=frame.y+frame.height&&node.y+node.height>=frame.y&&++count>FRAME_OBJECT_LIMIT)throw Error('До 2000 объектов на один показываемый фрейм. Разделите содержимое на несколько фреймов; файл не изменён.')
+  return frame
+}
 export function fitCanvasFrame(frame:CanvasNode,size:{width:number;height:number},padding=48):FrameCamera{
   if(![frame.x,frame.y,frame.width,frame.height,size.width,size.height,padding].every(Number.isFinite)||frame.width<=0||frame.height<=0||size.width<=0||size.height<=0||padding<0)throw Error('Некорректная область показа фрейма')
   const zoom=Math.min(3,Math.max(.000001,Math.min(Math.max(1,size.width-padding*2)/frame.width,Math.max(1,size.height-padding*2)/frame.height)))

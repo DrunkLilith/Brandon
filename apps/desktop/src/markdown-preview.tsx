@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { NoteDocument } from './types'
 import { AttachmentImage,isRasterPath } from './canvas-attachments'
 import { withoutFrontmatter } from './properties'
+import { DataviewBlock } from './dataview-block'
 
 function CodePreview({ code, language }: { code: string; language: string }) {
   const [tokens, setTokens] = useState([{ text: code, className: '' }])
@@ -171,6 +172,8 @@ export function MarkdownPreview({ source, index, resourcePath='', onOpen, onChan
       const classes = element.properties.className
       const language = (Array.isArray(classes) ? classes.map(String).find((value) => value.startsWith('language-')) : '')?.slice(9) ?? ''
       const code = element.children.map((child) => child.type === 'text' ? child.value : '').join('').replace(/\n$/, '')
+      if(language.toLowerCase()==='dataview')return <DataviewBlock source={code} index={current.current.index} onOpen={path=>current.current.onOpen(path,'wiki')}/>
+      if(language.toLowerCase()==='dataviewjs')return <section className="dql-block dql-error" role="alert"><strong>DataviewJS не исполняется</strong><p>Используйте декларативный блок dataview. Код сохранён как текст.</p><pre>{code}</pre></section>
       return <CodePreview code={code} language={language} />
     },
     a: ({ href, children }) => {

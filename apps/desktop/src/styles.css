@@ -1621,3 +1621,19 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .task-backup-preview button { margin-top:10px; }.task-backup-dialog small { display:block;font-size:10px;line-height:1.5;color:#927f9d; }
 .task-backup-dialog small { margin-top:12px; }.task-backup-dialog > div:last-child { margin-top:12px; }
 @media (max-width:1100px) { .planner-header-actions { justify-content:flex-start; }.planner-header { padding:12px 18px; }.task-filters { padding:8px 12px; }.planner-body.with-detail { grid-template-columns:minmax(0,1fr) 280px; } }
+.dql-block { border:1px solid var(--line);border-radius:12px;margin:18px 0;padding:14px;background:var(--surface-2);font-size:13px; }
+.dql-block header { display:flex;justify-content:space-between;gap:12px;margin-bottom:6px; }
+.dql-block small,.dql-block details { color:var(--muted);font-size:11px; }
+.dql-block details { margin-top:12px; }
+.dql-block pre { white-space:pre-wrap;overflow-wrap:anywhere; }
+.dql-error { border-color:#b77b55; }
+.dql-scroll { overflow:auto;max-height:440px;margin-top:12px; }
+.markdown-body .dql-table { width:100%;margin:0;border-collapse:collapse;table-layout:fixed; }
+.markdown-body .dql-table td,.markdown-body .dql-table th { height:44px;box-sizing:border-box;padding:8px 12px;font-size:13px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+.markdown-body .dql-table th { position:sticky;top:0;background:var(--surface-2);z-index:1; }
+.dql-block button { color:var(--accent);background:transparent;border:0;border-radius:4px;cursor:pointer;text-decoration:underline;text-underline-offset:3px;font:inherit;min-height:0;height:26px;line-height:20px;padding:0 2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle; }
+.dql-block button:hover { background:var(--surface-3); }
+.markdown-body .dql-list { margin:0;list-style:none;padding-left:0; }
+.markdown-body .dql-list li { height:44px;box-sizing:border-box;display:flex;align-items:center;gap:12px;margin:0;border-bottom:1px solid var(--line); }
+.dql-list span { color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.dql-empty { padding:16px; }

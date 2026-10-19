@@ -38,7 +38,8 @@ function tokens(source:string):Token[] {
   }
   return result
 }
-export function compileExpression(source:string,validateField:(field:string)=>unknown=propertyKey,validateFunction:(name:string)=>unknown=()=>{}):Expression {
+export function compileExpression(source:string,validateField:(field:string)=>unknown=propertyKey,validateFunction:(name:string)=>unknown=()=>{},semantics:{truthy?:(value:unknown)=>boolean;compare?:(a:unknown,b:unknown)=>number}={}):Expression {
+  const truthy=semantics.truthy??Boolean
   const list=tokens(source);let i=0,depth=0
   const accept=(value:string)=>{if(list[i]?.kind==='symbol'&&list[i].value===value){i++;return true}return false}
   const required=(value:string)=>{if(!accept(value))throw new Error(`Ожидается «${value}»`)}
@@ -67,16 +68,16 @@ export function compileExpression(source:string,validateField:(field:string)=>un
       propertyKey(field);validateField(field);return row=>row.field(field)
     }finally{depth--}
   }
-  const unary=():Expression=>{if(accept('!')){if(++depth>32)throw new Error('Слишком глубокое выражение');const expr=unary();depth--;return row=>!expr(row)}return primary()}
+  const unary=():Expression=>{if(accept('!')){if(++depth>32)throw new Error('Слишком глубокое выражение');const expr=unary();depth--;return row=>!truthy(expr(row))}return primary()}
   const compare=():Expression=>{
     const left=unary(),operator=list[i];if(operator?.kind!=='symbol'||!['==','!=','>','<','>=','<='].includes(operator.value))return left
     i++;const right=unary()
-    return row=>{const a=left(row),b=right(row);if(operator.value==='==')return a===b;if(operator.value==='!=')return a!==b;if(typeof a!==typeof b||a==null||b==null||!(typeof a==='number'||typeof a==='string'))return false
-      const order=typeof a==='number'&&typeof b==='number'?a-b:typeof a==='string'&&typeof b==='string'?(a<b?-1:a>b?1:0):0
+    return row=>{const a=left(row),b=right(row);if(operator.value==='==')return semantics.compare?semantics.compare(a,b)===0:a===b;if(operator.value==='!=')return semantics.compare?semantics.compare(a,b)!==0:a!==b;if(!semantics.compare&&(typeof a!==typeof b||a==null||b==null||!(typeof a==='number'||typeof a==='string')))return false
+      const order=semantics.compare?semantics.compare(a,b):typeof a==='number'&&typeof b==='number'?a-b:typeof a==='string'&&typeof b==='string'?(a<b?-1:a>b?1:0):0
       switch(operator.value){case '>':return order>0;case '<':return order<0;case '>=':return order>=0;case '<=':return order<=0;default:return false}}
   }
-  const and=():Expression=>{let left=compare();while(accept('&&')){const before=left,right=compare();left=row=>Boolean(before(row))&&Boolean(right(row))}return left}
-  const or=():Expression=>{let left=and();while(accept('||')){const before=left,right=and();left=row=>Boolean(before(row))||Boolean(right(row))}return left}
+  const and=():Expression=>{let left=compare();while(accept('&&')){const before=left,right=compare();left=row=>truthy(before(row))&&truthy(right(row))}return left}
+  const or=():Expression=>{let left=and();while(accept('||')){const before=left,right=and();left=row=>truthy(before(row))||truthy(right(row))}return left}
   const expression=or();if(i!==list.length)throw new Error(`Лишний или неподдерживаемый токен: ${list[i].value}`);return expression
 }
 export function compileFilter(filter:unknown,depth=0):Expression {

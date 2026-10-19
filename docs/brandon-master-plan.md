@@ -50,7 +50,7 @@ Brandon объединяет локальное хранилище знаний 
 
 В журнале последней реализации зафиксированы 82 desktop UI-проверки, 54 Windows и 57 Linux vault-тестов, а также полный локальный release gate с 115 web-тестами и 18 production browser E2E. Это история проверок конкретного кода, не доказательство готовности будущих функций. Windows EXE/NSIS были собраны; установка и native macOS-проверка не следуют из этой сборки. [Подробные checkpoints](canvas-planner-product.md).
 
-Исходный аудит выявил три ложных впечатления от UI: `BaseView` не читает определение открытого `.base`; outline отображал кнопки без перехода; граф ограничивает показ 500 документами. В R1A переходы outline исправлены. В R2A широкий `loadIndex` на обычном изменении заменён общими metadata deltas, а ограничение графа стало явным в счётчике. Чтение определения `.base` остаётся R2B; полный граф сверх 500 отображаемых узлов не заявляется.
+Исходный аудит выявил три ложных впечатления от UI: `BaseView` не читал определение открытого `.base`; outline отображал кнопки без перехода; граф ограничивает показ 500 документами. В R1A переходы outline исправлены. В R2A широкий `loadIndex` на обычном изменении заменён общими metadata deltas, а ограничение графа стало явным в счётчике. Чтение определения `.base` реализовано ограниченным table subset в R2B (`2d94a1b`); полный граф сверх 500 отображаемых узлов не заявляется.
 
 ## 3. Единая модель данных
 
@@ -538,6 +538,15 @@ Metadata ready не означает, что FTS уже полностью за�
 - Синтетические 3 000 canonical tasks: List body 144 000 px, Kanban status stack 124 000 px/1 000 карточек, bounded DOM, последние элементы доступны. Одна смена status: ответ 371 B, один task delta, ноль Markdown parses/full scans; mutation→projection ~155 ms с CDP polling, не универсальная гарантия latency. Logs: `target/qa/r2b-tasks-{rust,clippy,frontend,ui,build}-final.log`, `r2b-task-scale-ui-final.log`, `r2b-*-regression.log`. Финальный EXE SHA-256: `cd42d7ff5f64b9eb60125520b1690b6d18cf9fd72eb4448b662b5ef328588097`. NSIS installation/macOS/full server gate не запускались; новый installer остаётся закрывающим шагом R2B.
 
 Остаток R2B: ограниченный pinned license/version audit и первые работающие декларативные QuickAdd captures/Dataview queries с fixtures и проверкой в приложении. Это не разрешение исполнять JS-плагины или запускать QuickAdd macro scripts. Timeline/recurrence и общий registry типов свойств не объявляются готовыми этим checkpoint.
+
+**Следующий промежуточный checkpoint, 19 октября 2026: DQL subset, поверх task commit `ddfd6741a9bf4e76e3894f0481bdd37fd507c48e`. R2B ещё не закрыт.**
+
+- Закреплены QuickAdd 2.32.1 / Dataview 0.5.68 и точные upstream SHA; прочитаны лицензии, manifest и выбранные contracts. [Аудит и mapping](plugin-compatibility-r2b.md) фиксируют источники, допустимое переиспользование и ограничения. Upstream runtime/скрипты и новые зависимости не устанавливались. QuickAdd capture writer пока не реализован.
+- Fenced `dataview` в общем Markdown renderer теперь выводит TABLE/LIST/read-only TASK. FROM — одна папка/тег, WHERE — ограниченные выражения, SORT/LIMIT выполняются в написанном порядке. Общий Query Service получил отдельные DQL scalar ordering/truthiness adapters; это не подмена синтаксиса Dataview конфигурацией `.base`. TASK читает именно Markdown-чекбоксы, не каноническую SQLite DB. Поддерживаемые поля/типы и bounds перечислены в аудите. Inline fields, DateTime/Link objects/functions, GROUP/FLATTEN и DataviewJS не заявляются.
+- Неизвестный запрос/JS показывается с явным отказом и исходным текстом; никакого eval/сетевого fetch/plugin API. Внешнее изменение одного YAML-поля обновляет блок через одну source parse, без полного индекса. Ссылки ведут к исходной заметке/блоку и остаются в нужной split-панели. Raw Markdown не переписывается. Результаты виртуализированы; на 450 строках tbody ровно 19 800 px, DOM ограничен, последняя строка доступна.
+- Проверки: 10 новых DQL contracts, **60** frontend cases суммарно, lint/typecheck/native production build. Real Tauri: **7** DQL + **10** properties/Bases + **14** tasks/backup + **25** R1A + **6** cards/images (**62** case). Rust в этом срезе не менялся; 113 tests относятся к предыдущему task checkpoint. Computer-use осмотрел TABLE/LIST/TASK/error в обычном Windows-окне; исправлены высота строки и дефолтные цвета кнопок. Logs `target/qa/r2b-dql-{frontend,build,ui}.log`, `r2b-dql-*-regression.log`. Полный plugin parity, NSIS installation, macOS и server gate не заявляются.
+
+Текущий остаток R2B: **QuickAdd declarative captures** — импорт выбранной поддерживаемой choice без утраты исходного JSON, preview точного изменения, CAS/dirty-buffer защита, команды и native acceptance; затем закрывающая сборка installer. Общий master plan остаётся активным дальше R2B.
 
 ### R3A. Законченный набор инструментов доски
 

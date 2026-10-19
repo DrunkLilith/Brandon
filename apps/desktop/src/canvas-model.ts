@@ -14,6 +14,7 @@ export type CanvasPrimitive = 'sticky' | 'text' | 'rectangle' | 'ellipse' | 'dia
 export type NodeExtension = {
   version: 1; primitive?: CanvasPrimitive; locked?: boolean
   fontSize?: 12 | 16 | 24 | 32; textAlign?: 'left' | 'center' | 'right'; strokeWidth?: 1 | 2 | 4
+  fillColor?: string; strokeColor?: string; textColor?: string
   [key: string]: unknown
 }
 export function canvasExtension(node: CanvasNode | undefined): NodeExtension | undefined {

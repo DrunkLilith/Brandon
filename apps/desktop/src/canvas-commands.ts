@@ -1,3 +1,5 @@
+import {CANVAS_PRIMITIVES} from './canvas-primitives.ts'
+export const CANVAS_CREATE_COMMANDS=[...CANVAS_PRIMITIVES.map(primitive=>({id:`canvas-add-${primitive.id}`,label:`Добавить: ${primitive.label}`})),{id:'canvas-add-stack',label:'Стикеры списком'}]
 // Descriptors are shared by the app palette, board toolbar/context and keyboard.
 export const CANVAS_COMMANDS=[
   {id:'canvas-group',label:'Сгруппировать',defaultShortcut:'Mod+Shift+KeyG'},
@@ -15,6 +17,8 @@ export const CANVAS_COMMANDS=[
   {id:'canvas-distribute-y',label:'Равные промежутки по вертикали'},
   {id:'canvas-stack',label:'Разложить стопкой'},
   {id:'canvas-grid',label:'Разложить сеткой'},
+  {id:'canvas-style',label:'Стиль выбранных объектов'},
+  ...CANVAS_CREATE_COMMANDS,
 ] as const
 
 export function dispatchCanvasCommand(element:Element|null,id:string){

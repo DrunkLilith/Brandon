@@ -571,7 +571,11 @@ Sticky/text/shapes, connector styles, selection/layout/lock, стили и ка�
 - **134 Rust + 80 frontend + 136 Windows UI cases**, все PASS; native 10k/20k board repeat без DOM explosion. Computer-use выявил и помог исправить перекрытие connections заливкой группы и дублирование текста под прозрачным DOM overlay. Отдельный реальный Obsidian 1.14.4 open/edit/save/reopen сохранил расширения и foreign fields в изолированном fixture; это не гарантия для всех writers и не исполнение lock в Obsidian.
 - [Контракт, fixture, logs, финальный EXE hash и ограничения](canvas-r3a-contract.md). NSIS в этом промежуточном срезе не пересобирался; native macOS/server gate не запускались. Финальные suites использовали временный software WebView для известного host RTSS-конфликта; native wgpu и системные настройки не менялись.
 
-Остаток R3A: собственно sticky/text/shapes, стили и палитры, connector styling/anchors/labels и полный смешанный сценарий с задачами. Этот checkpoint закрывает только operations-срез, не весь пакет или master plan.
+**Следующий проверенный срез R3A, поверх `02f5aa3`:** семь инструментов (sticky/text/rectangle/ellipse/diamond/triangle/divider), точные hit regions, общие appearance/text bounds, настоящий native shader + DOM/overview fallback. Стиль применяется одним Undo: палитра, собственные цвета заливки/контура/текста с точечным сбросом, форма, типографика, текст. Есть Cancel/CAS, стикеры из строк и видимый отказ создания внутри locked group. На небольших досках с изображениями используется явно ограниченный DOM geometry/image compositor, а не выдаваемая за native подмена всех досок.
+
+Проверки этого среза: **136 Rust + 89 frontend + 154 Windows UI cases**, все PASS; визуально проверены настоящая GPU-доска из 300 фигур, центрирование подписей, окно стилей и узкая панель инструментов. Повтор 10k/20k: input-ack p95 22.5/21.4 ms, native CPU p95 7.29/10.47 ms, RTX 3090/DX12/DPR1, без DOM cards на far zoom. Метод, EXE hash, logs, охват и ограничения — в [контракте R3A](canvas-r3a-contract.md#primitivestyle-checkpoint-19-october-2026). Это не FPS/GPU time и не проверка другой платформы; NSIS/server gate не заявлены.
+
+Остаток R3A: connector styling/anchors/labels, полный смешанный сценарий с canonical tasks и дополнительная приёмка полупрозрачных image/group/text слоёв на больших досках. Эти checkpoints закрывают operations и primitive/style-срезы, не весь пакет или master plan.
 
 ### R3B. Фреймы и рабочие форматы
 

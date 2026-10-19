@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react'
 import type { CanvasNode } from './canvas-view'
-import { canvasColors } from './canvas-document'
+import {canvasAppearance,canvasShapePath} from './canvas-primitives'
 
 export type RenderEdge = { id: string; x: number; y: number; width: number; height: number; x1: number; y1: number; x2: number; y2: number }
 
@@ -25,18 +25,16 @@ export function CanvasOverview({ nodes, edges, camera, size, selected, linking }
     for (const edge of edges) { context.moveTo(edge.x1, edge.y1); context.lineTo(edge.x2, edge.y2) }
     context.stroke()
     for (const node of nodes) {
-      context.fillStyle = canvasColors(node).fill
-      context.fillRect(node.x, node.y, node.width, node.height)
+      const a=canvasAppearance(node)
+      context.save();context.translate(node.x,node.y)
+      const path=new Path2D(canvasShapePath(node))
+      context.fillStyle=a.fill
+      if(a.primitive!=='text'&&a.primitive!=='divider')context.fill(path)
+      context.strokeStyle=selected.has(node.id)||linking===node.id?'#aca1ee':a.border
+      context.lineWidth=a.primitive?Math.max(a.strokeWidth,selected.has(node.id)?2/camera.zoom:0):1/camera.zoom
+      if(a.primitive!=='text'||selected.has(node.id))context.stroke(path)
+      context.restore()
     }
-    // Batch ordinary outlines; selection remains legible at any zoom.
-    context.strokeStyle = '#4a484f'; context.lineWidth = 1 / camera.zoom
-    context.beginPath()
-    for (const node of nodes) context.rect(node.x, node.y, node.width, node.height)
-    context.stroke()
-    context.strokeStyle = '#aca1ee'; context.lineWidth = 2 / camera.zoom
-    context.beginPath()
-    for (const node of nodes) if (selected.has(node.id) || linking === node.id) context.rect(node.x, node.y, node.width, node.height)
-    context.stroke()
   }, [nodes, edges, camera, size, selected, linking])
   return <canvas className="canvas-overview" ref={canvas} aria-hidden="true" />
 }

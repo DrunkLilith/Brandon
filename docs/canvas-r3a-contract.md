@@ -5,10 +5,11 @@ this document is not an acceptance claim. JSON Canvas 1.0 remains the base:
 [official specification](https://jsoncanvas.org/spec/1.0/). Array order is paint
 order. Groups use standard geometric containment, not hidden parent IDs.
 
-The first operations slice implements grouping/layout/z-order/locking and shared
-command dispatch. Primitive/typography/stroke fields below are reserved and
-validated/preserved, **not yet a completed shapes/style renderer**. R3A remains
-open until those tools and their native/fallback acceptance are finished.
+The operations slice implements grouping/layout/z-order/locking and shared
+command dispatch. The following primitive/style slice implements the seven
+tools, bounded typography/paint and native/fallback rendering described below.
+R3A remains open for connectors, the complete task/note mixed scenario and
+remaining cross-layer composition acceptance; this is not full-plan completion.
 
 ## Storage and compatibility
 
@@ -24,6 +25,10 @@ Optional node `brandon` is a namespaced object with `version: 1`. Its bounded
 fields are `primitive` (sticky/text/rectangle/ellipse/diamond/triangle/divider),
 `locked` (boolean), `fontSize` (12/16/24/32), `textAlign` (left/center/right),
 and `strokeWidth` (1/2/4). Optional edge `brandon` v1 has `dash` (solid/dashed).
+Before the primitive/style writer, v1 adds inert paint fields `fillColor`,
+`strokeColor`, `textColor` (six-digit hex; fill alone may be `transparent`).
+Standard `color` remains the portable fallback. The shader's shape IDs and
+relative text bounds are derived renderer DTOs, never authoritative file data.
 Unknown fields survive edits; an unknown version or invalid known field makes
 the board read-only with a visible error, never a blank writable replacement.
 An existing unrelated/non-object `brandon` is not silently overwritten.
@@ -164,8 +169,81 @@ visually checked an ordinary production-default startup. Its WebView process
 had neither `--disable-gpu` nor port 9222, and the QA listener was closed. That
 successful startup is not a claim that the intermittent host issue is solved.
 
-**Still required in R3A:** sticky/text/shape creation and style palettes,
-connector sides/endpoints/labels/styles, the remaining primitive geometry/hit
-testing/native-fallback coverage and the complete mixed note/task/sticky/shape
-scenario. Pen is a subsequent bounded slice, frames/formats belong to R3B.
-The whole master-plan goal remains active.
+The remainder recorded at this operations checkpoint was primitive/style tools,
+connectors and the mixed task scenario. The next checkpoint below supersedes
+only its primitive/style portion. Pen is a subsequent bounded slice;
+frames/formats belong to R3B. The whole master-plan goal remains active.
+
+## Primitive/style checkpoint, 19 October 2026
+
+Implemented over operations commit `02f5aa30eae642bca708606798f7fe8b5ef24dc9`:
+
+- Sticky, plain text, rectangle, ellipse, diamond, triangle and divider tools;
+  portable text/color/bounds fallback plus versioned extension. Shape IDs,
+  interior text bounds and centered labels are shared derived presentation,
+  not a second authoritative format. Filled shape labels default to centered;
+  sticky/plain text retain their own defaults. Text is plain with wrapping,
+  not an inline Markdown/WYSIWYG formatting claim.
+- The actual native wgpu shader draws geometry and bounded glyphs on larger
+  boards. Exact hit regions exclude empty ellipse/diamond/triangle corners;
+  separate resize handles remain usable. Fully transparent shader fragments
+  do not become invisible depth occluders. The DOM/SVG and far-overview paths
+  use the same appearance and shape geometry.
+- Explicit style dialog: fallback palette, custom fill/stroke/text colors,
+  transparent fill, font size/alignment, stroke width, shape, text/group label.
+  Apply is one undo item; cancel writes nothing. A changed source invalidates
+  an open proposal. Explicit color reset removes only that override and retains
+  other/future fields. Dark controls and a wrapping narrow-board toolbar were
+  visually checked in the packaged app, not just in a browser mock.
+- Up to 100 nonempty pasted lines become separate stickies in one command.
+  Fresh tool placement wholly inside an existing locked group refuses visibly,
+  without creating an immediately uneditable child or changing board bytes.
+- Small raster boards (at most 200 objects, zoom at least 0.5) deliberately use
+  a bounded DOM geometry/image compositor for correct shape/image stacking;
+  native wgpu still owns grid/edges. This is an explicitly mixed renderer,
+  not a claim that those nodes are GPU pixels. A separate 300-object fixture
+  has zero DOM nodes and visibly renders all primitive kinds on the real GPU.
+
+Final acceptance for this **primitive/style slice**:
+
+- **136 Rust tests**, strict Clippy/fmt, **89 frontend contracts**, lint/typecheck
+  and native production build passed. No new dependency or plugin source.
+- **154 actual Windows/Tauri UI cases**: primitives/style 18, layout 23,
+  render 10, R1A 25, cards/images 6, capture 11, DQL 7, properties 10,
+  tasks/backup 14, R2A 11 and owned-process R1B lifecycle/drafts 19.
+  New cases exercise both main native and secondary DOM panels, custom paints
+  and reset, one Undo/Redo, cancel, stale source, batch creation, reopen,
+  exact corner hit-through to an underlying image and locked-group refusal.
+- RTX 3090/DX12, DPR 1, synthetic 10k/20k native boards, zero far-zoom DOM cards:
+  input-ack p95 **22.5/21.4 ms**, native CPU p95 **7.29/10.47 ms**. Same bounded
+  70-iteration/10-warmup method as above; not GPU execution, FPS or a different
+  device/platform guarantee. The 300-shape screenshot is a separate correctness
+  inspection, not the 10k/20k performance workload.
+- Logs: `target/qa/r3a-primitives-{build,rust-all,clippy,contracts,lint,typecheck,fmt}.log`,
+  `target/qa/r3a-primitives-final-{primitives,layout,render,r1a,cards,capture,dql,properties,tasks,r2a,r1b}.log`,
+  and `target/qa/canvas-render.json`. Final primitive fixture:
+  `C:/Users/ADMIN/AppData/Local/Temp/brandon-r3a-primitives-JdXSYw`.
+  An accidentally overbroad store test invocation stopped on missing
+  `DATABASE_URL`; its diagnostic is retained separately as
+  `target/qa/r3a-primitives-store-prerequisite.log`. It is neither a desktop
+  failure nor a passed server gate. The scoped desktop/vault/Markdown suite
+  was then run successfully in full.
+
+Final EXE: `target/release/knowledge-desktop.exe`, SHA-256
+`0d514456a15fe4fa9914ecf4f373b04b0186ccfd0c42d30efba7edbd7c40f975`.
+The R2B NSIS installer is not regenerated by this intermediate slice. Nothing
+installed or pushed; native macOS and the server release gate remain untested.
+The existing RTSS host caveat and per-process QA-only software WebView scope
+above still apply; no production default or system setting was changed.
+After the lifecycle suite, the ordinary production-default EXE was launched
+and visually verified on restored `r1b-visual-vault` / Alpha. Its WebView child
+had neither software-GPU override nor remote-debugging-port flag. This successful
+startup is not a cure claim for the intermittent injected-overlay host issue.
+
+Still required before closing **R3A**: connector sides/endpoints/labels/styles,
+the complete canonical task/note/sticky/shape workflow, and broader translucent
+image/group/text cross-layer parity on larger boards. Small-compositor/image
+and ordinary large native fixtures do not prove arbitrary mixed-media layering.
+Cross-editor preservation was verified for the earlier Obsidian v1 snapshot,
+not separately for every new custom-paint combination. No full-parity or
+lossless export claim is made. The full master-plan goal remains active.

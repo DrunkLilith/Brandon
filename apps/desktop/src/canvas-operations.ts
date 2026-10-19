@@ -1,5 +1,6 @@
 import type {CanvasDocument,CanvasNode,NodeExtension} from './canvas-model'
 import {canvasExtension,withCanvasExtension} from './canvas-model.ts'
+import {parseCanvasDocument} from './canvas-document.ts'
 
 const MAX_WORK=2_000_000
 function contains(parent:CanvasNode,child:CanvasNode){
@@ -22,6 +23,21 @@ export function canvasSelectionEditable(document:CanvasDocument,selected:Readonl
   const ids=expandCanvasSelection(document,selected),locked=lockedCanvasNodes(document)
   return ids.size>0&&![...ids].some(id=>locked.has(id))
 }
+/** Fresh tools must not silently create an immediately uneditable child. */
+export function insertCanvasNodes(document:CanvasDocument,nodes:CanvasNode[]){
+  const ids=new Set(document.nodes.map(node=>node.id)),lockedGroups=document.nodes.filter(node=>node.type==='group'&&canvasExtension(node)?.locked)
+  let work=0
+  for(const node of nodes){
+    if(ids.has(node.id))throw Error('Повторяющийся ID объекта');ids.add(node.id)
+    for(const group of lockedGroups){
+      if(++work>MAX_WORK)throw Error('Слишком много заблокированных групп: операция отменена')
+      if(contains(group,node))throw Error('Место внутри заблокированной группы. Переместите холст или разблокируйте группу.')
+    }
+  }
+  const next={...document,nodes:[...document.nodes,...nodes]},checked=parseCanvasDocument(JSON.stringify(next))
+  if(checked.error)throw Error(checked.error)
+  return next
+}
 export function canvasSelectionRoots(document:CanvasDocument,selected:ReadonlySet<string>){
   const nodes=document.nodes.filter(n=>selected.has(n.id)),groups=nodes.filter(n=>n.type==='group')
   let work=0
@@ -42,10 +58,12 @@ export function moveCanvasNodes(document:CanvasDocument,selected:ReadonlySet<str
   if(!canvasSelectionEditable(document,selected))return document
   return moved(document,new Map([...expandCanvasSelection(document,selected)].map(id=>[id,{x:dx,y:dy}])))
 }
-export function patchCanvasSelection(document:CanvasDocument,selected:ReadonlySet<string>,patch:{color?:string;extension?:Partial<NodeExtension>}){
+export function patchCanvasSelection(document:CanvasDocument,selected:ReadonlySet<string>,patch:{color?:string;extension?:Partial<NodeExtension>;text?:string;label?:string}){
   if(!canvasSelectionEditable(document,selected))return document
   // Styles target explicit selection, not the contents of a group.
-  return {...document,nodes:document.nodes.map(n=>selected.has(n.id)?(patch.extension?withCanvasExtension({...n,...(patch.color!==undefined?{color:patch.color}:{})},patch.extension):{...n,color:patch.color}):n)}
+  const next={...document,nodes:document.nodes.map(n=>{if(!selected.has(n.id))return n;const next={...n,...(patch.color!==undefined?{color:patch.color}:{}),...(patch.text!==undefined&&n.type==='text'?{text:patch.text}:{}),...(patch.label!==undefined&&n.type==='group'?{label:patch.label}:{})};return patch.extension?withCanvasExtension(next,patch.extension):next})}
+  const checked=parseCanvasDocument(JSON.stringify(next));if(checked.error)throw Error(checked.error)
+  return next
 }
 export function toggleCanvasLock(document:CanvasDocument,selected:ReadonlySet<string>){
   const nodes=canvasSelectionRoots(document,selected);if(!nodes.length)return document

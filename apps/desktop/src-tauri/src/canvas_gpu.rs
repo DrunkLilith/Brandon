@@ -1,5 +1,6 @@
 //! Native D3D12 canvas. The WebView owns input and focused editing overlays; pixels
 //! are presented to the host HWND, without a CPU texture readback or image IPC.
+use glyphon::cosmic_text::Align;
 use glyphon::{
     Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -29,6 +30,57 @@ pub struct Node {
     pub fill: Option<String>,
     #[serde(default)]
     pub border: Option<String>,
+    #[serde(default)]
+    pub style: Option<NodeStyle>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeStyle {
+    shape: u32,
+    radius: f32,
+    font_size: f32,
+    align: String,
+    text_color: String,
+    stroke_width: f32,
+    bounds: Rect,
+    #[serde(default)]
+    center_text: bool,
+}
+impl NodeStyle {
+    fn valid_for(&self, node: &Node) -> bool {
+        let b = self.bounds;
+        matches!(self.shape, 0 | 3 | 4 | 5 | 6 | 7)
+            && [12., 16., 24., 32.].contains(&self.font_size)
+            && [1., 2., 4.].contains(&self.stroke_width)
+            && matches!(self.align.as_str(), "left" | "center" | "right")
+            && self.radius.is_finite()
+            && (0.0..=20.0).contains(&self.radius)
+            && [b.x, b.y, b.width, b.height].iter().all(|v| v.is_finite())
+            && b.x >= 0.
+            && b.y >= 0.
+            && b.width > 0.
+            && b.height > 0.
+            && b.x + b.width <= node.width + 0.01
+            && b.y + b.height <= node.height + 0.01
+            && self
+                .text_color
+                .strip_prefix('#')
+                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    }
+}
+impl Node {
+    fn text_rect(&self) -> Rect {
+        self.style.as_ref().map_or(
+            Rect {
+                x: 20.,
+                y: 20.,
+                width: (self.width - 40.).max(1.),
+                height: (self.height - 40.).max(1.),
+            },
+            |s| s.bounds,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -51,7 +103,7 @@ pub struct SceneDelta {
     pub edges: Option<Vec<Edge>>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -84,6 +136,8 @@ pub struct Frame {
     pub locked: Vec<String>,
     #[serde(default)]
     pub overlay_text: bool,
+    #[serde(default)]
+    pub overlay_nodes: bool,
     pub editing: Option<String>,
 }
 
@@ -438,11 +492,21 @@ impl Renderer {
             {
                 return Err("Invalid canvas object geometry".into());
             }
+            if node
+                .style
+                .as_ref()
+                .is_some_and(|style| !style.valid_for(&node))
+            {
+                return Err("Invalid canvas object style".into());
+            }
             if !self.nodes.contains_key(&node.id) {
                 self.order.push(node.id.clone());
             }
             if self.nodes.get(&node.id).is_none_or(|old| {
-                old.text != node.text || old.width != node.width || old.height != node.height
+                old.text != node.text
+                    || old.width != node.width
+                    || old.height != node.height
+                    || old.style != node.style
             }) {
                 self.buffers.remove(&node.id);
             }
@@ -584,6 +648,9 @@ impl Renderer {
             let Some(node) = self.nodes.get(*id) else {
                 continue;
             };
+            if frame.overlay_nodes {
+                continue;
+            }
             let position = screen(node.x, node.y);
             instance_alpha(
                 &mut shapes,
@@ -607,12 +674,24 @@ impl Renderer {
                     rgb(node.border.as_deref(), 0x4a484f)
                 },
                 [
-                    8. * scale.min(2.),
-                    0.,
+                    node.style
+                        .as_ref()
+                        .map_or(8. * scale.min(2.), |s| s.radius * scale),
+                    node.style.as_ref().map_or(0., |s| s.shape as f32),
                     if selected.contains(id.as_str()) {
-                        2. * ratio
+                        (2. * ratio).max(
+                            node.style
+                                .as_ref()
+                                .map_or(ratio, |s| s.stroke_width * scale),
+                        )
                     } else {
-                        ratio
+                        node.style.as_ref().map_or(ratio, |s| {
+                            if s.shape == 6 {
+                                0.
+                            } else {
+                                s.stroke_width * scale
+                            }
+                        })
                     },
                     layer_depth(*self.layers.get(*id).unwrap_or(&0), self.order.len()),
                 ],
@@ -638,22 +717,30 @@ impl Renderer {
                     ],
                 );
             }
-            if zoom < 0.5 || node.width < 30. || node.height < 30. {
+            if zoom < 0.5
+                || node.width < 30.
+                || node.height < 30.
+                || node.style.as_ref().is_some_and(|s| s.shape == 7)
+            {
                 continue;
             }
             if !self.buffers.contains_key(*id) {
-                let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(16., 25.));
-                buffer.set_size(
-                    Some((node.width - 40.).max(1.)),
-                    Some((node.height - 40.).max(1.)),
-                );
+                let font_size = node.style.as_ref().map_or(16., |s| s.font_size);
+                let rect = node.text_rect();
+                let mut buffer =
+                    Buffer::new(&mut self.fonts, Metrics::new(font_size, font_size * 1.55));
+                buffer.set_size(Some(rect.width), Some(rect.height));
                 buffer.set_text(
                     &node.text,
                     &Attrs::new()
                         .family(Family::Name("Segoe UI"))
                         .metadata(*self.layers.get(*id).unwrap_or(&0)),
                     Shaping::Advanced,
-                    None,
+                    node.style.as_ref().map(|s| match s.align.as_str() {
+                        "center" => Align::Center,
+                        "right" => Align::Right,
+                        _ => Align::Left,
+                    }),
                 );
                 buffer.shape_until_scroll(&mut self.fonts, false);
                 self.buffers.insert((*id).clone(), buffer);
@@ -669,7 +756,11 @@ impl Renderer {
         let text_areas: Vec<TextArea<'_>> = ids
             .iter()
             .filter_map(|id| {
-                if zoom < 0.5 || frame.overlay_text || frame.editing.as_ref() == Some(*id) {
+                if zoom < 0.5
+                    || frame.overlay_text
+                    || frame.overlay_nodes
+                    || frame.editing.as_ref() == Some(*id)
+                {
                     return None;
                 }
                 let node = self.nodes.get(*id)?;
@@ -677,7 +768,18 @@ impl Renderer {
                     return None;
                 }
                 let buffer = self.buffers.get(*id)?;
-                let position = screen(node.x + 20., node.y + 20.);
+                let rect = node.text_rect();
+                let content_height = buffer
+                    .layout_runs()
+                    .map(|run| run.line_top + run.line_height)
+                    .fold(0., f32::max);
+                let center_offset = if node.style.as_ref().is_some_and(|s| s.center_text) {
+                    ((rect.height - content_height) / 2.).max(0.)
+                } else {
+                    0.
+                };
+                let position = screen(node.x + rect.x, node.y + rect.y + center_offset);
+                let text_color = rgb(node.style.as_ref().map(|s| s.text_color.as_str()), 0xdad8e0);
                 Some(TextArea {
                     buffer,
                     left: position[0],
@@ -686,14 +788,16 @@ impl Renderer {
                     bounds: TextBounds {
                         left: (vp.x * ratio).max(position[0]) as i32,
                         top: (vp.y * ratio).max(position[1]) as i32,
-                        right: ((vp.x + vp.width) * ratio)
-                            .min(position[0] + (node.width - 40.) * scale)
+                        right: ((vp.x + vp.width) * ratio).min(position[0] + rect.width * scale)
                             as i32,
-                        bottom: ((vp.y + vp.height) * ratio)
-                            .min(position[1] + (node.height - 28.) * scale)
+                        bottom: ((vp.y + vp.height) * ratio).min(position[1] + rect.height * scale)
                             as i32,
                     },
-                    default_color: Color::rgb(218, 216, 224),
+                    default_color: Color::rgb(
+                        (text_color >> 16) as u8,
+                        (text_color >> 8) as u8,
+                        text_color as u8,
+                    ),
                     custom_glyphs: &[],
                 })
             })
@@ -896,6 +1000,45 @@ pub async fn canvas_gpu_stop(
 mod tests {
     use super::*;
     #[test]
+    fn primitive_style_dto_has_bounded_font_geometry_and_backward_compatible_legacy_nodes() {
+        let mut node: Node = serde_json::from_value(
+            serde_json::json!({"id":"n","x":0,"y":0,"width":260,"height":180}),
+        )
+        .unwrap();
+        assert!(node.style.is_none());
+        assert_eq!(node.text_rect().x, 20.);
+        for shape in [0, 3, 4, 5, 6, 7] {
+            let style:NodeStyle=serde_json::from_value(serde_json::json!({"shape":shape,"radius":0,"fontSize":24,"align":"right","textColor":"#ffeedd","strokeWidth":4,"bounds":{"x":65,"y":90,"width":130,"height":60}})).unwrap();
+            assert!(style.valid_for(&node));
+            node.style = Some(style);
+            assert_eq!(node.text_rect().width, 130.);
+        }
+    }
+    #[test]
+    fn malformed_primitive_style_is_refused_before_font_shaping() {
+        let node: Node = serde_json::from_value(
+            serde_json::json!({"id":"n","x":0,"y":0,"width":260,"height":180}),
+        )
+        .unwrap();
+        let source = serde_json::json!({"shape":3,"radius":0,"fontSize":16,"align":"left","textColor":"#ffeedd","strokeWidth":2,"bounds":{"x":20,"y":20,"width":220,"height":140}});
+        for (key, value) in [
+            ("shape", serde_json::json!(2)),
+            ("fontSize", serde_json::json!(1000000)),
+            ("align", serde_json::json!("script")),
+            ("textColor", serde_json::json!("url(x)")),
+            ("strokeWidth", serde_json::json!(0)),
+            (
+                "bounds",
+                serde_json::json!({"x":-1,"y":20,"width":220,"height":140}),
+            ),
+        ] {
+            let mut value_source = source.clone();
+            value_source[key] = value;
+            let style: NodeStyle = serde_json::from_value(value_source).unwrap();
+            assert!(!style.valid_for(&node));
+        }
+    }
+    #[test]
     fn rgba_group_fill_preserves_lines_behind_its_background_without_changing_border_alpha() {
         assert_eq!(rgb(Some("#322b3e33"), 0), 0x322b3e);
         assert!((opacity(Some("#322b3e33")) - 0.2).abs() < f32::EPSILON);
@@ -939,6 +1082,7 @@ mod tests {
                 kind: String::new(),
                 fill: None,
                 border: None,
+                style: None,
             },
             Node {
                 id: "group".into(),
@@ -950,6 +1094,7 @@ mod tests {
                 kind: "group".into(),
                 fill: None,
                 border: None,
+                style: None,
             },
         ]
         .into_iter()

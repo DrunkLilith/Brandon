@@ -2,7 +2,7 @@
 
 mod attachments;
 mod captures;
-pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
+pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind, AttachmentRaster};
 pub use captures::{
     CaptureApplied, CaptureChoice, CaptureInput, CaptureLibrary, CapturePreview,
     inspect_capture_import, read_capture_import,

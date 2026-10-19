@@ -13,7 +13,7 @@ const scratch=await mkdtemp(join(tmpdir(),'brandon-r3a-primitives-')),passes=[],
 const empty='{"nodes":[],"edges":[],"foreign":{"keep":true}}',main='.content-shell[data-pane="main"]'
 const read=async file=>JSON.parse(await readFile(join(scratch,file),'utf8'))
 const focus=async pane=>evaluate(`document.querySelector(${JSON.stringify(pane+' .canvas-view')}).focus()`)
-const save=async()=>{await key('s','KeyS',2);await waitFor("!document.querySelector('.title-tab.active i,.side-save:not(:disabled)')");await delay(60)}
+const save=async()=>{await key('s','KeyS',2);await waitFor("!document.querySelector('.title-tab.active i,.side-save:not(:disabled)')&&document.querySelector('.side-save')?.textContent!=='Сохраняю…'");await delay(60)}
 const button=async text=>evaluate(`{const button=Array.from(document.querySelectorAll('.workspace-dialog button')).find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!button||button.disabled)throw Error('Missing dialog action: '+${JSON.stringify(text)});button.click()}`)
 const input=async(selector,text)=>{await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);await key('a','KeyA',2);await send('Input.insertText',{text})}
 const select=async(selector,value)=>evaluate(`{const element=document.querySelector(${JSON.stringify(selector)});element.value=${JSON.stringify(value)};element.dispatchEvent(new Event('change',{bubbles:true}))}`)

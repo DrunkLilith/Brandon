@@ -579,7 +579,11 @@ Sticky/text/shapes, connector styles, selection/layout/lock, стили и ка�
 
 Проверки коннекторов: **138 Rust + 103 frontend + 180 Windows UI cases**, все PASS. Повтор 10k/20k: input-ack p95 22.1/24.2 ms, native CPU p95 7.32/9.67 ms на том же RTX 3090/DX12/DPR1; это обычные большие доски, не benchmark 20k подписей или mixed media. [Контракт, logs, EXE hash и границы приёмки](canvas-r3a-contract.md#connector-checkpoint-19-october-2026).
 
-Остаток R3A: полный смешанный сценарий с canonical tasks и приёмка полупрозрачных image/group/text слоёв на больших досках. Эти checkpoints закрывают operations, primitive/style и connector-срезы, не весь пакет или master plan.
+**Следующий срез — смешанные слои и растровые изображения, поверх `99fe67e`:** native geometry/glyph batches сохраняют порядок полупрозрачных групп, текста и изображений; GPU-текст больше не пропадает под заливкой. Настоящие wgpu-текстуры получают ограниченные RGBA-превью напрямую из Rust, без PNG/RGBA через JS и без больших DOM/SVG image overlays. Небольшие rich-text доски явно используют общий ограниченный DOM node compositor. Есть лимиты workers/текстур/decoded pixels, точечная watcher-инвалидация, root/session scope и видимые ошибки превью. Тело группы пропускает клик к дочерней карточке, заголовок сохраняет приоритет. [Контракт и приёмка mixed layers](canvas-r3a-contract.md#mixed-layerraster-checkpoint-19-october-2026).
+
+Проверки mixed-layer среза: **146 Rust + 107 frontend + 197 Windows UI cases**, все PASS на финальной native-сборке; в настоящем окне проверены порядок тонирования/текста/фигур и открытие изображения. 10k/20k ordinary boards: input-ack p95 22.4/25.0 ms, native CPU p95 7.47/9.96 ms, RTX 3090/DX12/DPR1. Лимит проверен двумя наборами по 64 разных текстуры в одной сессии; это не benchmark 20k фото или total VRAM. EXE hash, fixtures, logs и ограничения указаны в контракте. После QA восстановлена Alpha, обычный запуск без debug/software-WebView flags визуально проверен. NSIS/server/macOS не заявлены.
+
+Остаток R3A: полный смешанный сценарий с canonical tasks, заметками, стикерами и фигурами. Эти checkpoints закрывают operations, primitive/style, connector и bounded mixed-layer срезы, не весь пакет или master plan. Перо остаётся следующим отдельным bounded slice; фреймы — R3B.
 
 ### R3B. Фреймы и рабочие форматы
 

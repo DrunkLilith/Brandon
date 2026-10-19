@@ -1,5 +1,5 @@
 import {
-  useEffect, useId, useMemo, useRef, useState,
+  useEffect, useMemo, useRef, useState,
   type KeyboardEvent, type PointerEvent,
 } from 'react'
 import { FileIcon, FitIcon, LinkIcon, PlusIcon } from './icons'
@@ -16,7 +16,8 @@ import { displayProperty } from './properties'
 import type {CanvasDocument,CanvasNode,CanvasPrimitive} from './canvas-model'
 import {canvasExtension,canvasPrimitive} from './canvas-model'
 import {CANVAS_COMMANDS,CANVAS_CREATE_COMMANDS} from './canvas-commands'
-import {canvasAppearance,canvasNodeHit,primitiveNode,canvasShapePath} from './canvas-primitives'
+import {canvasAppearance,canvasNodeHit,primitiveNode,canvasTopHit,canvasGroupHeaderHit as groupHeaderHit} from './canvas-primitives'
+import {canvasRasterLayout} from './canvas-raster'
 import {CanvasPrimitiveView} from './canvas-primitive-view'
 import {CanvasStyleDialog} from './canvas-style-dialog'
 import {CanvasStickyStack} from './canvas-sticky-stack'
@@ -39,12 +40,7 @@ type DragState =
 const MIN_ZOOM = .05
 const MAX_ZOOM = 3
 function editableCanvasText(node:CanvasNode|null|undefined):node is CanvasNode{return node?.type==='text'&&canvasPrimitive(node)!=='divider'}
-function groupHeaderHit(node:CanvasNode,point:Point){return node.type==='group'&&point.y<=node.y+Math.min(64,node.height)}
-function CanvasOccluder({node,origin}:{node:CanvasNode;origin:CanvasNode}){
-  const a=canvasAppearance(node),opacity=a.fill.length===9?Number.parseInt(a.fill.slice(7),16)/255:1
-  if(a.primitive==='text')return null
-  return <g transform={`translate(${node.x-origin.x} ${node.y-origin.y})`}><path d={canvasShapePath(node)} fill={opacity===0?'none':'black'} fillOpacity={opacity} stroke="black" strokeWidth={2*a.strokeWidth}/></g>
-}
+function CanvasRasterContent({node,root}:{node:CanvasNode;root:string}){const layout=canvasRasterLayout(node);return <><div className="canvas-raster-stage" style={{left:layout.image.x,top:layout.image.y,width:layout.image.width,height:layout.image.height}}><AttachmentImage root={root} path={node.file!}/></div><strong className="canvas-raster-caption" style={{left:layout.footer.x,top:layout.footer.y,width:layout.footer.width,height:layout.footer.height,fontSize:layout.fontSize,lineHeight:'1.55'}}>{node.file?.split('/').at(-1)}</strong></>}
 function CanvasFileProperties({properties}:{properties:Record<string,unknown>|undefined}){
   if(!properties)return null
   const entries=Object.entries(properties).filter(([,value])=>value===null||typeof value!=='object'||Array.isArray(value)).slice(0,4)
@@ -86,7 +82,8 @@ function additiveSelection(event: { ctrlKey: boolean; metaKey: boolean; shiftKey
   return event.ctrlKey || event.metaKey || event.shiftKey
 }
 
-export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
+export function CanvasView({ root,value, index, onChange, onOpen, initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
+  root:string
   value: string
   index: VaultIndex | null
   onChange: (value: string) => void
@@ -137,8 +134,10 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
   const clipboard = useRef<{ nodes: CanvasNode[]; edges: CanvasEdge[] } | null>(null)
   const boardRegistry=useRef<CommandRegistry|null>(null)
   const locks=useMemo(()=>{try{return {ids:lockedCanvasNodes(parsed),error:''}}catch(error){return {ids:new Set(parsed.nodes.map(n=>n.id)),error:String(error)}}},[parsed])
-  const domGeometry=parsed.nodes.length<=200&&camera.zoom>=.5&&parsed.nodes.some(node=>node.type==='file'&&isRasterPath(node.file))
-  const native = useNativeCanvas(viewport, { document: parsed, edges:preparedEdges, camera, selected, selectedEdge, locked: locks.ids, overlayNodes:domGeometry, editing: editingId, linking }, nativeEnabled && !validation.error)
+  // Rich text and node geometry must share a compositor to honor alpha order.
+  // This is bounded; larger scenes retain native geometry and glyphs.
+  const domGeometry=parsed.nodes.length<=200&&camera.zoom>=.5
+  const native = useNativeCanvas(viewport, { root,document: parsed, edges:preparedEdges, camera, selected, selectedEdge, locked: locks.ids, overlayNodes:domGeometry, editing: editingId, linking }, nativeEnabled && !validation.error)
   const spatial = useMemo(() => new CanvasSpatialIndex(parsed.nodes), [parsed.nodes])
   const worldBounds = useMemo(() => ({ x: (-viewportSize.width / 2 - camera.x - 80) / camera.zoom, y: (-viewportSize.height / 2 - camera.y - 80) / camera.zoom, width: (viewportSize.width + 160) / camera.zoom, height: (viewportSize.height + 160) / camera.zoom }), [camera, viewportSize])
   const visibleNodes = useMemo(() => spatial.query(worldBounds), [spatial, worldBounds])
@@ -147,12 +146,9 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
   const visibleEdges = useMemo(() => edgeIndex.query(worldBounds), [edgeIndex, worldBounds])
   const overview = !native.active && camera.zoom < .5
   const spatialInput = native.active || overview
-  const imageNodes = useMemo(() => new Set(camera.zoom >= .5 ? visibleNodes.filter((node) => node.type === 'file' && isRasterPath(node.file)).slice(-24).map((node) => node.id) : []), [camera.zoom, visibleNodes])
-  const maskPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '')
-  const nodeOrder = useMemo(() => new Map(parsed.nodes.map((node, index) => [node.id, index])), [parsed.nodes])
-  const imageMasks = useMemo(() => imageNodes.size ? visibleNodes.filter((node) => imageNodes.has(node.id)).map((node) => ({ node, above: spatial.query(node).filter((higher) => nodeOrder.get(higher.id)! > nodeOrder.get(node.id)!) })) : [], [visibleNodes, imageNodes, spatial, nodeOrder])
+  const imageNodes = useMemo(()=>{if(camera.zoom<.5)return new Set<string>();const images=visibleNodes.filter(node=>node.type==='file'&&isRasterPath(node.file)),paths=new Set<string>();for(const node of images.toReversed()){if(paths.size<64||paths.has(node.file!))paths.add(node.file!)}return new Set(images.filter(node=>paths.has(node.file!)).map(node=>node.id))},[camera.zoom,visibleNodes])
   const richCards = parsed.nodes.length <= 200 && camera.zoom >= .5
-  const domNodes = useMemo(() => native.active && !richCards ? visibleNodes.filter((node) => node.id === editingId || imageNodes.has(node.id)) : overview ? [] : visibleNodes, [native.active, richCards, overview, visibleNodes, editingId, imageNodes])
+  const domNodes = useMemo(() => native.starting && nativeEnabled && !richCards ? [] : native.active && !richCards ? visibleNodes.filter((node) => node.id === editingId) : overview ? [] : visibleNodes, [native.starting, nativeEnabled, native.active, richCards, overview, visibleNodes, editingId])
   const attachments = useCanvasAttachments(viewport, (attachment, position) => {
     const document = documentRef.current
     const point = screenToWorld(position ?? { x: viewportSize.width / 2, y: viewportSize.height / 2 })
@@ -292,7 +288,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
     x: (point.x - viewportSize.width / 2 - camera.x) / camera.zoom,
     y: (point.y - viewportSize.height / 2 - camera.y) / camera.zoom,
   })
-  const hitNode=(point:Point)=>spatial.query({x:point.x-12/camera.zoom,y:point.y-12/camera.zoom,width:24/camera.zoom,height:24/camera.zoom}).filter(node=>canvasNodeHit(node,point,6/camera.zoom)||selected.has(node.id)&&!locks.ids.has(node.id)&&Math.abs(point.x-node.x-node.width)*camera.zoom<12&&Math.abs(point.y-node.y-node.height)*camera.zoom<12).at(-1)
+  const hitNode=(point:Point)=>canvasTopHit(spatial.query({x:point.x-12/camera.zoom,y:point.y-12/camera.zoom,width:24/camera.zoom,height:24/camera.zoom}).filter(node=>canvasNodeHit(node,point,6/camera.zoom)||selected.has(node.id)&&!locks.ids.has(node.id)&&Math.abs(point.x-node.x-node.width)*camera.zoom<12&&Math.abs(point.y-node.y-node.height)*camera.zoom<12),point)
   const hitEdge=(point:Point)=>edgeIndex.query({x:point.x-8/camera.zoom,y:point.y-8/camera.zoom,width:16/camera.zoom,height:16/camera.zoom}).filter(edge=>canvasEdgeHit(edge,point,Math.max(6/camera.zoom,edge.strokeWidth/2))).at(-1)
   const selectEdge=(id:string)=>{setSelected(new Set());setSelectedEdge(id);setEditingId(null);viewport.current?.focus()}
   const openEdgeStyle=(id=selectedEdge)=>{const edge=documentRef.current.edges.find(e=>e.id===id);if(edge)setEdgeTarget({source:serializeCanvas(documentRef.current),edge})}
@@ -627,6 +623,10 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
     data-total-nodes={parsed.nodes.length}
     data-selected-edge={selectedEdge??undefined}
     data-native-edge-labels={native.stats?.edgeLabels}
+    data-native-draw-batches={native.stats?.drawBatches}
+    data-native-translucent-batches={native.stats?.translucentBatches}
+    data-native-raster-images={native.stats?.rasterImages}
+    data-native-raster-bytes={native.stats?.rasterBytes}
     data-search-focused-node={focusTarget?.nodeId && selected.has(focusTarget.nodeId) ? focusTarget.nodeId : undefined}
     data-frame-cpu-ms={native.stats?.frameCpuMs}
     data-native-frames={native.stats?.frames}
@@ -697,7 +697,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
         key={node.id}
         className={`canvas-node type-${node.type} ${canvasPrimitive(node)?'primitive-node':''} ${canvasAppearance(node).styled?'is-styled':''} ${node.color?'is-colored':''} ${locks.ids.has(node.id)?'is-locked':''} ${native.active ? 'native-editing' : ''} ${richCards ? 'rich-card' : ''} ${imageNodes.has(node.id) ? 'has-image-preview' : ''} ${linking === node.id ? 'link-source' : ''} ${selected.has(node.id) ? 'selected' : ''}`}
         data-node-id={node.id}
-        style={{ left: node.x, top: node.y, width: node.width, height: node.height, color:canvasAppearance(node).text,fontSize:canvasAppearance(node).fontSize,textAlign:canvasAppearance(node).textAlign,backgroundColor:canvasPrimitive(node)?'transparent':native.active&&!domGeometry&&node.type==='group'?'transparent':canvasAppearance(node).fill, borderColor: selected.has(node.id) ? '#aca1ee' : canvasAppearance(node).border, mask: native.active && !domGeometry && imageNodes.has(node.id) ? `url(#clip-${maskPrefix}-${nodeOrder.get(node.id)})` : undefined }}
+        style={{ left: node.x, top: node.y, width: node.width, height: node.height, color:canvasAppearance(node).text,fontSize:canvasAppearance(node).fontSize,textAlign:canvasAppearance(node).textAlign,backgroundColor:canvasPrimitive(node)?'transparent':native.active&&!domGeometry&&node.type==='group'?'transparent':canvasAppearance(node).fill, borderColor: selected.has(node.id) ? '#aca1ee' : canvasAppearance(node).border }}
         onPointerDown={(event) => nodePointerDown(event, node.id)}
         onDoubleClick={event=>{const p=screenToWorld(localPoint(event.clientX,event.clientY)),edge=node.type==='group'&&!groupHeaderHit(node,p)?hitEdge(p):undefined;if(edge&&canvasEdgeEditable(documentRef.current,edge.id)){selectEdge(edge.id);openEdgeStyle(edge.id);return}if(editableCanvasText(node)&&!locks.ids.has(node.id))setEditingId(node.id)}}
         onClick={(event) => {
@@ -710,20 +710,21 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
         }}
       >
         <div className="canvas-node-grip"><span>{locks.ids.has(node.id)?'🔒 ':''}{node.type === 'text' ? 'Текст' : node.type === 'file' ? 'Заметка' : node.type === 'group' ? 'Группа' : 'Ссылка'}</span><button title="Удалить карточку" disabled={locks.ids.has(node.id)} onClick={(event) => { event.stopPropagation();attempt(()=>commit(deleteCanvasSelection(documentRef.current,new Set([node.id]))))() }}>×</button></div>
-        {node.type === 'text' && (canvasPrimitive(node)?<CanvasPrimitiveView node={node} native={native.active&&!domGeometry} selected={selected.has(node.id)} editing={editingId===node.id} locked={locks.ids.has(node.id)} zoom={camera.zoom} onChange={text=>updateNode(node.id,{text})}/>:editingId!==node.id?(richCards?<div className="canvas-rich-text"><MarkdownPreview source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">{locks.ids.has(node.id)?'Заблокировано':'Двойной клик — редактировать'}</small></div>:<div className="canvas-plain-text">{node.text}</div>):<textarea readOnly={locks.ids.has(node.id)} autoFocus value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
-        {node.type === 'file' && <div className="canvas-file-card" role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <AttachmentImage path={node.file} /> : <FileIcon />}<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong><small>{node.file}</small><CanvasFileProperties properties={noteProperties.get(node.file??'')}/></div>}
+        {node.type === 'text' && (canvasPrimitive(node)?<CanvasPrimitiveView node={node} native={native.active&&!domGeometry} selected={selected.has(node.id)} editing={editingId===node.id} locked={locks.ids.has(node.id)} zoom={camera.zoom} onChange={text=>updateNode(node.id,{text})}/>:editingId!==node.id?(richCards?<div className="canvas-rich-text"><MarkdownPreview root={root} source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">{locks.ids.has(node.id)?'Заблокировано':'Двойной клик — редактировать'}</small></div>:<div className="canvas-plain-text">{node.text}</div>):<textarea readOnly={locks.ids.has(node.id)} autoFocus value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
+        {node.type === 'file' && <div className={`canvas-file-card ${imageNodes.has(node.id)?'canvas-raster-card':''}`} role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <CanvasRasterContent root={root} node={node}/> : <FileIcon />}{!imageNodes.has(node.id)&&<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong>}<small>{node.file}</small><CanvasFileProperties properties={noteProperties.get(node.file??'')}/></div>}
         {node.type === 'link' && <a href={node.url} target="_blank" rel="noreferrer">{node.url}</a>}
         {node.type === 'group' && <strong className="canvas-group-label">{node.label || 'Группа'}</strong>}
         {selected.has(node.id) && !locks.ids.has(node.id) && <div className="canvas-resize-handle" onPointerDown={(event) => resizePointerDown(event, node)} />}
       </div>)}
     </div>
-    {native.active && imageNodes.size > 0 && <svg className="canvas-preview-masks" aria-hidden="true"><defs>{imageMasks.map(({ node, above }) => <mask key={node.id} id={`clip-${maskPrefix}-${nodeOrder.get(node.id)}`} maskUnits="userSpaceOnUse" x="0" y="0" width={node.width} height={node.height}><rect width={node.width} height={node.height} fill="white" />{above.length > 64 ? <rect width={node.width} height={node.height} fill="black" /> : above.map((higher) => <CanvasOccluder key={higher.id} node={higher} origin={node}/>)}</mask>)}</defs></svg>}
-    {attachmentPath && <AttachmentDetails path={attachmentPath} onClose={() => setAttachmentPath(null)} />}
+    {attachmentPath && <AttachmentDetails root={root} path={attachmentPath} onClose={() => setAttachmentPath(null)} />}
     {styleTarget&&<CanvasStyleDialog nodes={styleTarget.nodes} onClose={()=>setStyleTarget(null)} onApply={patch=>{if(serializeCanvas(documentRef.current)!==styleTarget.source)throw Error('Доска изменилась. Закройте стиль и откройте его заново.');if(!canvasSelectionEditable(documentRef.current,styleTarget.ids))throw Error('Объекты заблокированы');commit(patchCanvasSelection(documentRef.current,styleTarget.ids,patch))}}/>}
     {edgeTarget&&<CanvasEdgeDialog edge={edgeTarget.edge} nodes={parsed.nodes} locked={locks.ids} onClose={()=>setEdgeTarget(null)} onApply={patch=>{if(serializeCanvas(documentRef.current)!==edgeTarget.source)throw Error('Доска изменилась. Закройте связь и откройте её заново.');commit(patchCanvasEdge(documentRef.current,edgeTarget.edge.id,patch))}}/>}
     {stickyStack&&<CanvasStickyStack onClose={()=>setStickyStack(false)} onApply={lines=>{const center=screenToWorld({x:viewportSize.width/2,y:viewportSize.height/2}),newNodes=lines.map((text,i)=>({...primitiveNode(nextId('sticky'),'sticky',{x:center.x+(i%3-1)*272,y:center.y+Math.floor(i/3)*272}),text})),document=documentRef.current;commit(insertCanvasNodes(document,newNodes));setSelected(new Set(newNodes.map(node=>node.id)))}}/>}
     {context && <CommandMenu x={context.x} y={context.y} registry={boardRegistry.current!} ids={context.create?CANVAS_CREATE_COMMANDS.map(c=>c.id):context.arrange?CANVAS_COMMANDS.filter(c=>!c.id.startsWith('canvas-add-')&&!c.id.startsWith('canvas-edge-')&&c.id!=='canvas-style').map(c=>c.id):context.edgeId?['canvas-edge-style','canvas-edge-reverse','canvas-edge-delete',null,'undo']: ['open','duplicate','copy','paste','delete',null,'canvas-group','canvas-ungroup','canvas-lock','canvas-front','canvas-back','canvas-style',null,'new-text','fit','undo']} onClose={(restore=true)=>{setContext(null);if(restore)viewport.current?.focus()}} onExecute={id=>{boardRegistry.current?.execute(id);setContext(null);viewport.current?.focus()}} />}
     {(operationError||locks.error)&&<div className="canvas-operation-error" role="alert">{operationError||locks.error}<button aria-label="Закрыть сообщение доски" onClick={()=>setOperationError('')}>×</button></div>}
+    {native.active&&native.imageErrors>0&&<div className="canvas-raster-notice" role="status">Некоторые превью недоступны; оригиналы сохранены.<button onClick={native.retryImages}>Повторить превью</button></div>}
+    {native.active&&Boolean(native.stats?.rasterLimited)&&<div className="canvas-raster-notice">Часть превью появится при приближении: одновременно до 64 разных изображений.</div>}
     {attachments.progress && <div className="canvas-import-status" onPointerDown={(event) => event.stopPropagation()}><span>{attachments.progress.name}</span><progress value={attachments.progress.copied} max={Math.max(1, attachments.progress.total)} /><button onClick={attachments.cancel}>Отменить</button></div>}
     {attachments.error && <div className="canvas-import-status" role="alert"><span>{attachments.error}</span><button onClick={attachments.dismissError}>Закрыть</button></div>}
     {attachments.dragOver && <div className="canvas-drop-hint">Добавить файлы на холст<span>Оригиналы будут скопированы в Attachments</span></div>}

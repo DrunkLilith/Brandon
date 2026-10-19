@@ -8,11 +8,15 @@ use glyphon::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    ops::Range,
     sync::{Arc, Mutex},
     time::Instant,
 };
 use tauri::{State, WebviewWindow};
 use wgpu::util::DeviceExt;
+#[path = "canvas_raster_gpu.rs"]
+mod raster;
+use super::{VaultState, attachment_commands::AttachmentState, current_vault};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +36,29 @@ pub struct Node {
     pub border: Option<String>,
     #[serde(default)]
     pub style: Option<NodeStyle>,
+    #[serde(default)]
+    image: Option<RasterRef>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RasterRef {
+    path: String,
+    bounds: Rect,
+}
+impl RasterRef {
+    fn valid_for(&self, node: &Node) -> bool {
+        let b = self.bounds;
+        node.kind == "file"
+            && !self.path.is_empty()
+            && self.path.len() <= 4096
+            && [b.x, b.y, b.width, b.height].iter().all(|v| v.is_finite())
+            && b.x >= 0.
+            && b.y >= 0.
+            && b.width > 0.
+            && b.height > 0.
+            && b.x + b.width <= node.width + 0.01
+            && b.y + b.height <= node.height + 0.01
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -199,11 +226,62 @@ pub struct Stats {
     pub visible_nodes: usize,
     pub visible_edges: usize,
     pub edge_labels: usize,
+    pub draw_batches: usize,
+    pub translucent_batches: usize,
+    pub raster_images: usize,
+    pub raster_bytes: usize,
+    pub raster_limited: usize,
+    pub missing_images: Vec<String>,
+    pub raster_paths: Vec<String>,
     pub frame_cpu_ms: f64,
     pub scene_update_ms: f64,
     pub frames: u64,
     pub text_buffers: usize,
     pub surface_recoveries: u64,
+}
+
+#[derive(Debug, PartialEq)]
+struct DrawBatch {
+    shapes: Range<u32>,
+    nodes: Range<usize>,
+    edges: bool,
+    translucent: bool,
+}
+/// Interleave glyphs only at translucent cuts. Opaque scenes keep one batch.
+fn composition_batches(prelude: u32, spans: &[(u32, u32, bool)], split: bool) -> Vec<DrawBatch> {
+    let mut batches = Vec::new();
+    let mut current = DrawBatch {
+        shapes: 0..prelude,
+        nodes: 0..0,
+        edges: true,
+        translucent: false,
+    };
+    for (index, &(start, end, alpha)) in spans.iter().enumerate() {
+        if split && alpha {
+            if !current.shapes.is_empty() || !current.nodes.is_empty() {
+                batches.push(current);
+            }
+            batches.push(DrawBatch {
+                shapes: start..end,
+                nodes: index..index + 1,
+                edges: false,
+                translucent: true,
+            });
+            current = DrawBatch {
+                shapes: end..end,
+                nodes: index + 1..index + 1,
+                edges: false,
+                translucent: false,
+            };
+        } else {
+            current.shapes.end = end;
+            current.nodes.end = index + 1;
+        }
+    }
+    if !current.shapes.is_empty() || !current.nodes.is_empty() {
+        batches.push(current);
+    }
+    batches
 }
 
 #[derive(Default)]
@@ -364,6 +442,8 @@ fn instance_alpha(
 }
 
 struct Renderer {
+    session_id: String,
+    root: String,
     surface: wgpu::Surface<'static>,
     instance: wgpu::Instance,
     device: wgpu::Device,
@@ -378,7 +458,8 @@ struct Renderer {
     fonts: FontSystem,
     swash: SwashCache,
     atlas: TextAtlas,
-    text_renderer: TextRenderer,
+    text_renderers: Vec<TextRenderer>,
+    rasters: raster::RasterGpu,
     text_viewport: Viewport,
     nodes: HashMap<String, Node>,
     order: Vec<String>,
@@ -392,7 +473,7 @@ struct Renderer {
 }
 
 impl Renderer {
-    async fn new(window: WebviewWindow) -> Result<Self, String> {
+    async fn new(window: WebviewWindow, session_id: String, root: String) -> Result<Self, String> {
         let window = Arc::new(window);
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -487,7 +568,11 @@ impl Renderer {
             Some(depth_state(false)),
         );
         let depth = depth_view(&device, &config);
+        let rasters = raster::RasterGpu::new(&device, format, &bind_layout);
         Ok(Self {
+            session_id,
+            root,
+            rasters,
             surface,
             instance,
             device,
@@ -502,7 +587,7 @@ impl Renderer {
             fonts: FontSystem::new(),
             swash: SwashCache::new(),
             atlas,
-            text_renderer,
+            text_renderers: vec![text_renderer],
             text_viewport,
             nodes: HashMap::new(),
             order: Vec::new(),
@@ -560,6 +645,7 @@ impl Renderer {
             self.buffers.clear();
             self.edges.clear();
             self.edge_buffers.clear();
+            self.rasters.reset();
         }
         for id in delta.removed {
             self.nodes.remove(&id);
@@ -567,6 +653,13 @@ impl Renderer {
             self.order.retain(|item| item != &id);
         }
         for node in delta.nodes {
+            if node
+                .image
+                .as_ref()
+                .is_some_and(|image| !image.valid_for(&node))
+            {
+                return Err("Invalid raster reference".into());
+            }
             if ![node.x, node.y, node.width, node.height]
                 .iter()
                 .all(|value| value.is_finite() && value.abs() <= 10_000_000.)
@@ -781,18 +874,25 @@ impl Renderer {
             }
             edge_count += 1;
         }
+        let prelude = (shapes.len() / 16) as u32;
+        let mut spans = Vec::new();
         let ids: Vec<&String> = self
             .order
             .iter()
             .filter(|id| visible.contains(*id))
             .collect();
+        self.rasters
+            .visible(&self.nodes, &ids, zoom >= 0.5 && !frame.overlay_nodes);
         for id in &ids {
             let Some(node) = self.nodes.get(*id) else {
                 continue;
             };
             if frame.overlay_nodes {
+                let at = (shapes.len() / 16) as u32;
+                spans.push((at, at, false));
                 continue;
             }
+            let shape_start = (shapes.len() / 16) as u32;
             let position = screen(node.x, node.y);
             instance_alpha(
                 &mut shapes,
@@ -839,6 +939,25 @@ impl Renderer {
                 ],
                 opacity(node.fill.as_deref()),
             );
+            if zoom >= 0.5
+                && let Some(image) = &node.image
+            {
+                let r = image.bounds;
+                let p = screen(node.x + r.x, node.y + r.y);
+                instance(
+                    &mut shapes,
+                    [p[0], p[1], r.width * scale, r.height * scale],
+                    0x202024,
+                    0x202024,
+                    [
+                        4. * scale,
+                        0.,
+                        0.,
+                        layer_depth(*self.layers.get(*id).unwrap_or(&0), self.order.len())
+                            - 0.00000025,
+                    ],
+                );
+            }
             if selected.contains(id.as_str()) && !locked.contains(id.as_str()) {
                 instance(
                     &mut shapes,
@@ -859,6 +978,12 @@ impl Renderer {
                     ],
                 );
             }
+            let alpha = opacity(node.fill.as_deref());
+            spans.push((
+                shape_start,
+                (shapes.len() / 16) as u32,
+                alpha > 0. && alpha < 1. || node.image.is_some() && alpha < 1.,
+            ));
             if zoom < 0.5
                 || node.width < 30.
                 || node.height < 30.
@@ -895,9 +1020,61 @@ impl Renderer {
                 height: size.height,
             },
         );
-        let mut text_areas: Vec<TextArea<'_>> = ids
-            .iter()
-            .filter_map(|id| {
+        let batches = composition_batches(prelude, &spans, zoom >= 0.5 && !frame.overlay_nodes);
+        self.text_renderers.truncate(batches.len());
+        while self.text_renderers.len() < batches.len() {
+            self.text_renderers.push(TextRenderer::new(
+                &mut self.atlas,
+                &self.device,
+                Default::default(),
+                Some(depth_state(false)),
+            ));
+        }
+        let total_layers = self.order.len();
+        self.rasters.prepare(
+            &self.device,
+            &self.queue,
+            raster::RasterFrame {
+                batches: &batches,
+                ids: &ids,
+                nodes: &self.nodes,
+                layers: &self.layers,
+                scale,
+                screen: &screen,
+            },
+        );
+        for (batch_index, batch) in batches.iter().enumerate() {
+            let mut text_areas = Vec::new();
+            // Edge labels precede transparent text nodes even in an opaque batch.
+            if batch.edges {
+                for edge in &self.edges {
+                    if !visible_edge_ids.contains(&edge.id) {
+                        continue;
+                    }
+                    let Some(buffer) = self.edge_buffers.get(&edge.id) else {
+                        continue;
+                    };
+                    let r = edge.label_rect;
+                    let p = screen(r.x + 8., r.y + 4.);
+                    text_areas.push(TextArea {
+                        buffer,
+                        left: p[0],
+                        top: p[1],
+                        scale,
+                        bounds: TextBounds {
+                            left: (vp.x * ratio).max(p[0]) as i32,
+                            top: (vp.y * ratio).max(p[1]) as i32,
+                            right: ((vp.x + vp.width) * ratio).min(p[0] + (r.width - 16.) * scale)
+                                as i32,
+                            bottom: ((vp.y + vp.height) * ratio).min(p[1] + (r.height - 8.) * scale)
+                                as i32,
+                        },
+                        default_color: Color::rgb(222, 214, 232),
+                        custom_glyphs: &[],
+                    });
+                }
+            }
+            text_areas.extend(ids[batch.nodes.clone()].iter().filter_map(|id| {
                 if zoom < 0.5
                     || frame.overlay_text
                     || frame.overlay_nodes
@@ -942,50 +1119,26 @@ impl Renderer {
                     ),
                     custom_glyphs: &[],
                 })
-            })
-            .collect();
-        for edge in &self.edges {
-            if !visible_edge_ids.contains(&edge.id) {
-                continue;
-            }
-            let Some(buffer) = self.edge_buffers.get(&edge.id) else {
-                continue;
-            };
-            let r = edge.label_rect;
-            let p = screen(r.x + 8., r.y + 4.);
-            text_areas.push(TextArea {
-                buffer,
-                left: p[0],
-                top: p[1],
-                scale,
-                bounds: TextBounds {
-                    left: (vp.x * ratio).max(p[0]) as i32,
-                    top: (vp.y * ratio).max(p[1]) as i32,
-                    right: ((vp.x + vp.width) * ratio).min(p[0] + (r.width - 16.) * scale) as i32,
-                    bottom: ((vp.y + vp.height) * ratio).min(p[1] + (r.height - 8.) * scale) as i32,
-                },
-                default_color: Color::rgb(222, 214, 232),
-                custom_glyphs: &[],
-            });
+            }));
+            self.text_renderers[batch_index]
+                .prepare_with_depth(
+                    &self.device,
+                    &self.queue,
+                    &mut self.fonts,
+                    &mut self.atlas,
+                    &self.text_viewport,
+                    text_areas,
+                    &mut self.swash,
+                    |metadata| {
+                        if metadata == usize::MAX {
+                            0.978
+                        } else {
+                            layer_depth(metadata, total_layers) - 0.000001
+                        }
+                    },
+                )
+                .map_err(|error| error.to_string())?;
         }
-        self.text_renderer
-            .prepare_with_depth(
-                &self.device,
-                &self.queue,
-                &mut self.fonts,
-                &mut self.atlas,
-                &self.text_viewport,
-                text_areas,
-                &mut self.swash,
-                |metadata| {
-                    if metadata == usize::MAX {
-                        0.978
-                    } else {
-                        layer_depth(metadata, self.order.len()) - 0.000001
-                    }
-                },
-            )
-            .map_err(|error| error.to_string())?;
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -1063,13 +1216,17 @@ impl Renderer {
             let bottom = ((vp.y + vp.height) * ratio).clamp(top as f32, size.height as f32) as u32;
             if right > left && bottom > top {
                 pass.set_scissor_rect(left, top, right - left, bottom - top);
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.instances.slice(..));
-                pass.draw(0..6, 0..(shapes.len() / 16) as u32);
-                self.text_renderer
-                    .render(&self.atlas, &self.text_viewport, &mut pass)
-                    .map_err(|error| error.to_string())?;
+                for (batch_index, batch) in batches.iter().enumerate() {
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.instances.slice(..));
+                    pass.draw(0..6, batch.shapes.clone());
+                    self.rasters
+                        .render(batch_index, &self.bind_group, &mut pass);
+                    self.text_renderers[batch_index]
+                        .render(&self.atlas, &self.text_viewport, &mut pass)
+                        .map_err(|error| error.to_string())?;
+                }
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -1085,6 +1242,13 @@ impl Renderer {
         self.stats.visible_nodes = ids.len();
         self.stats.visible_edges = edge_count;
         self.stats.edge_labels = visible_edge_ids.len();
+        self.stats.draw_batches = batches.len();
+        self.stats.translucent_batches = batches.iter().filter(|batch| batch.translucent).count();
+        self.stats.raster_images = self.rasters.rendered;
+        self.stats.raster_bytes = self.rasters.bytes;
+        self.stats.missing_images = self.rasters.missing();
+        self.stats.raster_paths = self.rasters.paths();
+        self.stats.raster_limited = self.rasters.limited;
         self.stats.frames += 1;
         self.stats.text_buffers = self.buffers.len();
         self.stats.frame_cpu_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -1095,14 +1259,30 @@ impl Renderer {
 #[tauri::command]
 pub async fn canvas_gpu_start(
     window: WebviewWindow,
+    root: String,
+    session_id: String,
+    vault_state: State<'_, VaultState>,
     state: State<'_, GpuCanvasState>,
 ) -> Result<Stats, String> {
+    if window.label() != "main"
+        || session_id.is_empty()
+        || session_id.len() > 128
+        || current_vault(&vault_state)?.root().to_string_lossy() != root
+    {
+        return Err("Stale canvas scope".into());
+    }
     let inner = Arc::clone(&state.inner);
     let target = window.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut current = inner.lock().map_err(|error| error.to_string())?;
-        if current.is_none() {
-            *current = Some(tauri::async_runtime::block_on(Renderer::new(target))?);
+        if current
+            .as_ref()
+            .is_none_or(|renderer| renderer.session_id != session_id || renderer.root != root)
+        {
+            current.take();
+            *current = Some(tauri::async_runtime::block_on(Renderer::new(
+                target, session_id, root,
+            ))?);
         }
         Ok::<_, String>(
             current
@@ -1122,17 +1302,18 @@ pub async fn canvas_gpu_start(
 
 #[tauri::command]
 pub async fn canvas_gpu_scene(
+    session_id: String,
     delta: SceneDelta,
     state: State<'_, GpuCanvasState>,
 ) -> Result<(), String> {
     let inner = Arc::clone(&state.inner);
     tauri::async_runtime::spawn_blocking(move || {
-        inner
-            .lock()
-            .map_err(|error| error.to_string())?
+        let mut locked = inner.lock().map_err(|error| error.to_string())?;
+        let renderer = locked
             .as_mut()
-            .ok_or("Renderer is not running")?
-            .update(delta)
+            .filter(|renderer| renderer.session_id == session_id)
+            .ok_or("Stale renderer session")?;
+        renderer.update(delta)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1140,17 +1321,18 @@ pub async fn canvas_gpu_scene(
 
 #[tauri::command]
 pub async fn canvas_gpu_frame(
+    session_id: String,
     frame: Frame,
     state: State<'_, GpuCanvasState>,
 ) -> Result<Stats, String> {
     let inner = Arc::clone(&state.inner);
     tauri::async_runtime::spawn_blocking(move || {
-        inner
-            .lock()
-            .map_err(|error| error.to_string())?
+        let mut locked = inner.lock().map_err(|error| error.to_string())?;
+        let renderer = locked
             .as_mut()
-            .ok_or("Renderer is not running")?
-            .render(frame)
+            .filter(|renderer| renderer.session_id == session_id)
+            .ok_or("Stale renderer session")?;
+        renderer.render(frame)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1159,23 +1341,231 @@ pub async fn canvas_gpu_frame(
 #[tauri::command]
 pub async fn canvas_gpu_stop(
     window: WebviewWindow,
+    session_id: Option<String>,
     state: State<'_, GpuCanvasState>,
 ) -> Result<(), String> {
-    window
-        .set_background_color(Some(tauri::window::Color(30, 30, 30, 255)))
-        .map_err(|error| error.to_string())?;
     let inner = Arc::clone(&state.inner);
-    tauri::async_runtime::spawn_blocking(move || {
-        inner.lock().map_err(|error| error.to_string())?.take();
-        Ok::<_, String>(())
+    let stopped = tauri::async_runtime::spawn_blocking(move || {
+        let mut locked = inner.lock().map_err(|error| error.to_string())?;
+        if locked.as_ref().is_some_and(|renderer| {
+            session_id
+                .as_ref()
+                .is_none_or(|id| &renderer.session_id == id)
+        }) {
+            locked.take();
+            return Ok::<_, String>(true);
+        }
+        Ok(false)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    if stopped {
+        window
+            .set_background_color(Some(tauri::window::Color(30, 30, 30, 255)))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RasterRequest {
+    root: String,
+    session_id: String,
+    relative_path: String,
+    force: bool,
+}
+#[tauri::command]
+pub async fn canvas_gpu_image(
+    window: WebviewWindow,
+    request: RasterRequest,
+    vault_state: State<'_, VaultState>,
+    jobs: State<'_, AttachmentState>,
+    state: State<'_, GpuCanvasState>,
+) -> Result<String, String> {
+    let RasterRequest {
+        root,
+        session_id,
+        relative_path,
+        force,
+    } = request;
+    let vault = current_vault(&vault_state)?;
+    if window.label() != "main" || vault.root().to_string_lossy() != root {
+        return Err("Stale canvas scope".into());
+    }
+    {
+        let mut locked = state.inner.lock().map_err(|_| "Renderer unavailable")?;
+        let renderer = locked
+            .as_mut()
+            .filter(|r| {
+                r.session_id == session_id && r.root == root && r.rasters.wanted(&relative_path)
+            })
+            .ok_or("Stale or invisible raster reference")?;
+        if force {
+            renderer.rasters.invalidate(&relative_path);
+        } else if renderer.rasters.loaded(&relative_path) {
+            return Ok("cached".into());
+        }
+    }
+    let Ok(permit) = Arc::clone(&jobs.previews).try_acquire_owned() else {
+        return Ok("busy".into());
+    };
+    let path = relative_path.clone();
+    let raster = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        vault
+            .attachment_raster(&path)
+            .map_err(|_| "Превью недоступно; оригинал сохранён".to_owned())
+    })
+    .await
+    .map_err(|_| "Preview worker unavailable")??;
+    let current = vault_state.vault.read().map_err(|_| "Vault unavailable")?;
+    if current
+        .as_ref()
+        .is_none_or(|vault| vault.root().to_string_lossy() != root)
+    {
+        return Err("Stale canvas scope".into());
+    }
+    let mut locked = state.inner.lock().map_err(|_| "Renderer unavailable")?;
+    let renderer = locked
+        .as_mut()
+        .filter(|r| {
+            r.session_id == session_id && r.root == root && r.rasters.wanted(&relative_path)
+        })
+        .ok_or("Stale or invisible raster reference")?;
+    renderer
+        .rasters
+        .upload(&renderer.device, &renderer.queue, relative_path, raster)?;
+    Ok("loaded".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raster_reference_cannot_escape_card_bounds_or_attach_to_a_non_file_node() {
+        let mut node: Node = serde_json::from_value(
+            serde_json::json!({"id":"image","kind":"file","x":0,"y":0,"width":300,"height":230}),
+        )
+        .unwrap();
+        let valid = RasterRef {
+            path: "Attachments/Photo.png".into(),
+            bounds: Rect {
+                x: 8.,
+                y: 8.,
+                width: 284.,
+                height: 180.,
+            },
+        };
+        assert!(valid.valid_for(&node));
+        node.kind = "text".into();
+        assert!(!valid.valid_for(&node));
+        node.kind = "file".into();
+        for bounds in [
+            Rect {
+                x: -1.,
+                ..valid.bounds
+            },
+            Rect {
+                width: 1000.,
+                ..valid.bounds
+            },
+            Rect {
+                height: 0.,
+                ..valid.bounds
+            },
+        ] {
+            assert!(
+                !RasterRef {
+                    bounds,
+                    ..valid.clone()
+                }
+                .valid_for(&node)
+            );
+        }
+    }
+    #[test]
+    fn opaque_composition_keeps_one_batch_and_source_order() {
+        assert_eq!(
+            composition_batches(1, &[(1, 2, false), (2, 3, false), (3, 4, false)], true),
+            vec![DrawBatch {
+                shapes: 0..4,
+                nodes: 0..3,
+                edges: true,
+                translucent: false
+            }]
+        );
+    }
+    #[test]
+    fn translucent_cuts_interleave_lower_glyphs_fill_own_label_and_upper_glyphs() {
+        let spans = [(1, 2, false), (2, 3, true), (3, 4, true), (4, 5, false)];
+        assert_eq!(
+            composition_batches(1, &spans, true),
+            vec![
+                DrawBatch {
+                    shapes: 0..2,
+                    nodes: 0..1,
+                    edges: true,
+                    translucent: false
+                },
+                DrawBatch {
+                    shapes: 2..3,
+                    nodes: 1..2,
+                    edges: false,
+                    translucent: true
+                },
+                DrawBatch {
+                    shapes: 3..4,
+                    nodes: 2..3,
+                    edges: false,
+                    translucent: true
+                },
+                DrawBatch {
+                    shapes: 4..5,
+                    nodes: 3..4,
+                    edges: false,
+                    translucent: false
+                }
+            ]
+        );
+        assert_eq!(
+            composition_batches(1, &spans, false),
+            vec![DrawBatch {
+                shapes: 0..5,
+                nodes: 0..4,
+                edges: true,
+                translucent: false
+            }]
+        );
+    }
+    #[test]
+    fn translucent_first_last_and_bounded_dom_overlay_do_not_duplicate_or_drop_ranges() {
+        let batches = composition_batches(3, &[(3, 4, true), (4, 5, false), (5, 6, true)], true);
+        assert_eq!(
+            batches
+                .iter()
+                .flat_map(|b| b.shapes.clone())
+                .collect::<Vec<_>>(),
+            (0..6).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            batches
+                .iter()
+                .flat_map(|b| b.nodes.clone())
+                .collect::<Vec<_>>(),
+            (0..3).collect::<Vec<_>>()
+        );
+        assert_eq!(batches.iter().filter(|b| b.edges).count(), 1);
+        assert_eq!(
+            composition_batches(3, &[(3, 3, false), (3, 3, false)], false),
+            vec![DrawBatch {
+                shapes: 0..3,
+                nodes: 0..2,
+                edges: true,
+                translucent: false
+            }]
+        );
+    }
     #[test]
     fn shared_connector_geometry_fixtures_are_consumed_without_a_second_anchor_resolver() {
         let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
@@ -1311,6 +1701,7 @@ mod tests {
                 fill: None,
                 border: None,
                 style: None,
+                image: None,
             },
             Node {
                 id: "group".into(),
@@ -1323,6 +1714,7 @@ mod tests {
                 fill: None,
                 border: None,
                 style: None,
+                image: None,
             },
         ]
         .into_iter()

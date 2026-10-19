@@ -9,6 +9,9 @@ export const CANVAS_PRIMITIVES:ReadonlyArray<{id:CanvasPrimitive;label:string;sy
   {id:'divider',label:'Разделитель',symbol:'—'},
 ]
 export type PrimitiveAppearance=ReturnType<typeof canvasAppearance>
+export function canvasGroupHeaderHit(node:CanvasNode,point:{x:number;y:number}){return node.type==='group'&&point.y<=node.y+Math.min(64,node.height)}
+/** Narrow-phase hits in paint order; transparent group bodies do not trap children. */
+export function canvasTopHit(hits:CanvasNode[],point:{x:number;y:number}){let group:CanvasNode|undefined;for(let i=hits.length-1;i>=0;i--){const node=hits[i];if(node.type==='group'&&!canvasGroupHeaderHit(node,point)){group??=node;continue}return node}return group}
 export function canvasAppearance(node:CanvasNode){
   const extension=canvasExtension(node),primitive=canvasPrimitive(node),base=canvasColors(node)
   const [horizontal,top,bottom]=primitive==='diamond'?[.25,.25,.25]:primitive==='triangle'?[.25,.5,.15]:primitive==='ellipse'?[.16,.16,.16]:[0,0,0]

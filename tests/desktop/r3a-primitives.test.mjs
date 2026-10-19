@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {test} from 'node:test'
-import {CANVAS_PRIMITIVES,primitiveNode,canvasAppearance,canvasNodeHit,canvasShapePath} from '../../apps/desktop/src/canvas-primitives.ts'
+import {CANVAS_PRIMITIVES,primitiveNode,canvasAppearance,canvasNodeHit,canvasShapePath,canvasTopHit} from '../../apps/desktop/src/canvas-primitives.ts'
 import {parseCanvasDocument} from '../../apps/desktop/src/canvas-document.ts'
 import {insertCanvasNodes,patchCanvasSelection} from '../../apps/desktop/src/canvas-operations.ts'
 test('every primitive has a valid portable text/color/geometry fallback and versioned namespace',()=>{
@@ -50,4 +50,7 @@ test('explicit paint reset removes only that override and retains future extensi
   const document={nodes:[node],edges:[]},next=patchCanvasSelection(document,new Set(['x']),{extension:{fillColor:undefined}})
   const roundtrip=parseCanvasDocument(JSON.stringify(next));assert.equal(roundtrip.error,null);assert.equal(roundtrip.document.nodes[0].brandon.fillColor,undefined);assert.equal(roundtrip.document.nodes[0].brandon.strokeColor,'#445566');assert.deepEqual(roundtrip.document.nodes[0].brandon.future,{keep:9});assert.equal(node.brandon.fillColor,'#112233')
   assert.equal(canvasAppearance(node).centerText,true);assert.equal(canvasAppearance(node).textAlign,'center')
+})
+test('transparent foreground groups preserve child image/text picking, retain header priority and empty-body selection',()=>{
+  const child={id:'photo',type:'file',file:'Photo.png',x:10,y:10,width:200,height:190},group={id:'g',type:'group',x:0,y:0,width:300,height:300},point={x:50,y:140};assert.equal(canvasTopHit([child,group],point).id,'photo');assert.equal(canvasTopHit([child,group],{x:50,y:20}).id,'g');assert.equal(canvasTopHit([group],point).id,'g');assert.equal(canvasTopHit([group,child],point).id,'photo')
 })

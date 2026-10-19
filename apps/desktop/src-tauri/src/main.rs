@@ -43,9 +43,14 @@ mod canvas_gpu {
     }
     #[tauri::command]
     pub fn canvas_gpu_stop() {}
+    #[tauri::command]
+    pub fn canvas_gpu_image() -> Result<String, String> {
+        Err("Native images are currently available on Windows".into())
+    }
 }
 use canvas_gpu::{
-    GpuCanvasState, canvas_gpu_frame, canvas_gpu_scene, canvas_gpu_start, canvas_gpu_stop,
+    GpuCanvasState, canvas_gpu_frame, canvas_gpu_image, canvas_gpu_scene, canvas_gpu_start,
+    canvas_gpu_stop,
 };
 
 use knowledge_vault::{
@@ -488,6 +493,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             canvas_gpu_supported,
+            canvas_gpu_image,
             attachment_info,
             attachment_thumbnail,
             import_attachment,

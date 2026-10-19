@@ -40,6 +40,12 @@ pub struct AttachmentImport {
     pub attachment: AttachmentInfo,
     pub copied: bool,
 }
+/// Disposable bounded pixels for a native renderer, never an authoritative asset.
+pub struct AttachmentRaster {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
 
 fn io_error(context: &'static str) -> impl FnOnce(io::Error) -> VaultError {
     move |source| VaultError::Io { context, source }
@@ -343,6 +349,24 @@ impl Vault {
     }
 
     fn raster_preview(&self, relative: &str, width: u32, height: u32) -> Result<Vec<u8>> {
+        let image = self.raster_image(relative, width, height)?;
+        let mut result = Cursor::new(Vec::new());
+        image
+            .write_to(&mut result, image::ImageFormat::Png)
+            .map_err(|_| VaultError::InvalidPath("Не удалось подготовить превью"))?;
+        Ok(result.into_inner())
+    }
+
+    pub fn attachment_raster(&self, relative: &str) -> Result<AttachmentRaster> {
+        let image = self.raster_image(relative, 640, 400)?.to_rgba8();
+        Ok(AttachmentRaster {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.into_raw(),
+        })
+    }
+
+    fn raster_image(&self, relative: &str, width: u32, height: u32) -> Result<image::DynamicImage> {
         let path = self.public_attachment_path(relative)?;
         let metadata = fs::metadata(&path).map_err(io_error("Вложение недоступно"))?;
         if metadata.len() > MAX_PREVIEW_BYTES {
@@ -377,20 +401,58 @@ impl Vault {
         let image = reader.decode().map_err(|_| {
             VaultError::InvalidPath("Изображение повреждено или превышает лимиты превью")
         })?;
-        let mut result = Cursor::new(Vec::new());
         let width = width.min(image.width());
         let height = height.min(image.height());
-        image
-            .thumbnail(width, height)
-            .write_to(&mut result, image::ImageFormat::Png)
-            .map_err(|_| VaultError::InvalidPath("Не удалось подготовить превью"))?;
-        Ok(result.into_inner())
+        Ok(image.thumbnail(width, height))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_raster_is_bounded_rgba_preserves_alpha_and_never_rewrites_original() {
+        let (_source, destination, vault) = setup();
+        let path = destination.path().join("alpha.png");
+        image::RgbaImage::from_pixel(1200, 700, image::Rgba([12, 34, 56, 128]))
+            .save(&path)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let raster = vault.attachment_raster("alpha.png").unwrap();
+        assert!(raster.width <= 640 && raster.height <= 400);
+        assert_eq!(
+            raster.rgba.len(),
+            raster.width as usize * raster.height as usize * 4
+        );
+        assert_eq!(&raster.rgba[..4], &[12, 34, 56, 128]);
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+    #[test]
+    fn native_raster_refuses_private_outside_active_and_corrupt_inputs() {
+        let (_source, destination, vault) = setup();
+        fs::write(
+            destination.path().join("unsafe.svg"),
+            b"<svg onload='bad()'/>",
+        )
+        .unwrap();
+        fs::write(
+            destination.path().join("broken.png"),
+            b"\x89PNG\r\n\x1a\ninvalid",
+        )
+        .unwrap();
+        fs::create_dir(destination.path().join(".private")).unwrap();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+            .save(destination.path().join(".private/picture.png"))
+            .unwrap();
+        for path in [
+            "../picture.png",
+            "unsafe.svg",
+            "broken.png",
+            ".private/picture.png",
+        ] {
+            assert!(vault.attachment_raster(path).is_err(), "{path}");
+        }
+    }
     fn setup() -> (tempfile::TempDir, tempfile::TempDir, Vault) {
         let source = tempfile::Builder::new()
             .prefix("brandon-attachment-source-")

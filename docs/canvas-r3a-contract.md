@@ -343,3 +343,104 @@ and acceptance of arbitrary larger translucent image/group/text layering.
 The new connector tests do not establish arbitrary mixed-media pixel parity,
 complex elbow/curve routing, or new cross-editor lossless guarantees. Pen and
 R3B frames remain subsequent work. The full master-plan goal stays active.
+
+## Mixed-layer implementation contract
+
+Alpha geometry and text must be interleaved in source paint order. A group fill
+must tint lower glyphs, not discard them through a depth proxy; upper glyphs
+remain above it. Opaque native scenes and far overview keep a single batch.
+Small rich-text scenes (at most 200 objects, zoom at least 0.5) use one bounded
+DOM node compositor, with native grid/connectors underneath. Larger native
+scenes use ordered geometry/glyph batches; no DOM substitution is claimed there.
+
+Raster previews retain the standard file reference. Native texture/session IDs,
+fit bounds, cache entries and draw spans are disposable renderer DTOs, never
+stored in Canvas. Rust resolves public vault attachments and bounded decoding;
+no pixels or filesystem reads are delegated to JavaScript for the native path.
+The native image path is scoped to the current vault, renderer session and
+visible referenced paths, rechecked after background decoding. Two preview
+workers, at most 64 visible distinct raster paths, 128 cached textures and a
+64 MiB decoded-pixel cache budget are explicit limits (not total GPU memory).
+Watcher invalidation, stale-session refusal and image failures must be tested.
+The implementation boundary above is exercised by the acceptance below; it is
+not a claim of pixel identity across operating systems or arbitrary media.
+
+## Mixed-layer/raster checkpoint, 19 October 2026
+
+Implemented over connector commit
+`99fe67ea57013e16108bfa5c477d0d118622d504`:
+
+- Geometry and glyph batches now interleave at translucent source-order cuts.
+  A foreground group tints existing lower glyphs instead of erasing them via
+  depth. Upper text stays above it; edge-label glyphs precede node content.
+  Opaque native scenes and far overview keep one batch. Glyphon does not write
+  depth for transparent glyph texels. Small rich scenes explicitly share one
+  bounded DOM compositor for node geometry/text, not an invisible native proxy.
+- Genuine native raster textures use the same card/stage/footer geometry as
+  fallback previews. Rust validates/resolves/decodes bounded RGBA and uploads
+  directly to wgpu; native previews do not transfer PNG/RGBA bytes through JS.
+  Aspect-contain, alpha and rounded stage clipping are retained. No legacy
+  large-board DOM photo overlay or SVG occlusion mask remains. Large boards
+  also wait for native startup instead of decoding duplicate DOM thumbnails.
+- Texture and worker budgets are explicit above. Two successive sets of 64
+  visible distinct textures in one session evict inactive pixels under the
+  64 MiB decoded-pixel budget; the 65th path shows a preview-limit notice.
+  This is not a measurement of total VRAM or a dense-alpha throughput promise.
+- File/folder metadata deltas and exact raw image changes refresh only matching
+  previews, including live fallback cards. A broken image keeps originals,
+  reports failure and avoids infinite retry; repairing its file or removing
+  its reference clears the corresponding error. Same-size edits are covered
+  by raw path invalidation. Routine directory metadata noise is not treated
+  as a whole-image-cache reset.
+- Native requests are bound to vault + random renderer-session owner + current
+  visible file references. Scope is checked before and after worker decoding.
+  Old image/scene commands cannot mutate a newly opened renderer; cleanup of an
+  old owner cannot destroy the new one. Root-scoped DOM previews reject a
+  foreign vault. Traversal/private/unreferenced raster paths fail closed.
+- Common narrow-phase picking lets group bodies pass through to real children,
+  retains header priority and selects the group on empty body. DOM groups have
+  matching pointer behavior. A real Windows click selected the foreground
+  text first; a separate unobstructed photo point opened the full local image
+  through the group. The same action is asserted in native and fallback suites.
+
+Acceptance: `tests/desktop/r3a-layers-smoke.mjs`, 17 Windows/Tauri cases,
+including source-byte equality, 307-node text/photo scenes with zero DOM
+substitutes, 365-node raster-budget scene, external image edits, failed-reference
+removal, far/near cache reuse, scope refusal and reopening. Actual Windows
+computer-use inspection also verified tinted photo/text/ellipse, an alpha photo
+above its group, captions and the loaded original-image viewer. These are
+bounded representative acceptance fixtures, not arbitrary rich-text pixel
+identity or macOS coverage. Canonical task/note/sticky/shape workflow remains
+required before closing R3A; pen, frames and full master-plan work remain active.
+
+Final validation for this **mixed-layer/raster slice**, not all R3A:
+
+- **146 Rust tests**, **107 frontend contracts**, strict Clippy/fmt,
+  lint/typecheck and native production build passed. The initial format check
+  found unformatted new Rust tests; formatting was applied and the gate rerun.
+- **197 Windows/Tauri UI cases** on the final build: layers 17, connectors 26,
+  primitives 18, layout 23, render 10, R1A 25, cards 6, capture 11, DQL 7,
+  properties 10, tasks/backup 14, R2A 11 and owned-child R1B lifecycle/drafts 19.
+  Source/Undo assertions were retained. An initial primitive harness run caught
+  a busy secondary save: a disabled Save button is not evidence of completion.
+  The helper now also awaits the visible saving state; subsequent full runs
+  passed. A layer navigation probe similarly waits for the real note mount
+  before asserting a new renderer owner, not merely the outgoing Canvas title.
+- RTX 3090/DX12/DPR 1, ordinary synthetic 10k/20k repeat, far-zoom DOM cards 0:
+  input-ack p95 **22.4/25.0 ms**, native CPU p95 **7.47/9.96 ms**, same
+  70-iteration/10-warmup method above. Not GPU time, FPS or a dense-alpha,
+  dense-label or 20k-photo guarantee. Correctness uses separate bounded mixed
+  scenes and two 64-texture working sets, not a mislabeled large-media benchmark.
+- Logs: `target/qa/r3a-layers-{build,rust,clippy,contracts,lint,typecheck,fmt}.log`,
+  `target/qa/r3a-layers-final-{layers,edges,primitives,layout,render,r1a,cards,capture,dql,properties,tasks,r2a,r1b}.log`
+  and `target/qa/canvas-render.json`. Final mixed fixture:
+  `C:/Users/ADMIN/AppData/Local/Temp/brandon-r3a-layers-rT1gAL`.
+
+Final EXE `target/release/knowledge-desktop.exe`, SHA-256
+`221b13ea98ebf18a5885c85ceb7467c2b49284afb1f19dd241e967c537f07970`.
+NSIS was not regenerated; nothing installed or pushed. macOS/server gate were
+not run. QA software WebView was per-process only; native wgpu stayed enabled
+and no system/RTSS setting was changed. The final ordinary launch restored
+Alpha and was visually checked; its WebView child had neither software-GPU
+override nor remote-debugging-port flag. One successful launch is not a cure
+for the previously recorded intermittent injected-RTSS host issue.

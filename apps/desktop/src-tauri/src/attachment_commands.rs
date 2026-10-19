@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 
 pub struct AttachmentState {
     imports: Mutex<ImportRegistry>,
-    previews: Arc<Semaphore>,
+    pub(crate) previews: Arc<Semaphore>,
 }
 #[derive(Default)]
 struct ImportRegistry {
@@ -123,31 +123,45 @@ pub fn cancel_attachment_import(
 #[tauri::command]
 pub async fn attachment_info(
     relative_path: String,
+    root: Option<String>,
     state: State<'_, VaultState>,
 ) -> Result<AttachmentInfo, String> {
     let vault = current_vault(&state)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let expected = vault.root().to_string_lossy().to_string();
+    if root.as_ref().is_some_and(|root| root != &expected) {
+        return Err("Vault изменился".into());
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
         vault
             .attachment_info(&relative_path)
             .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    if current_vault(&state)?.root().to_string_lossy() != expected {
+        return Err("Vault изменился".into());
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn attachment_thumbnail(
     relative_path: String,
+    root: Option<String>,
     large: Option<bool>,
     state: State<'_, VaultState>,
     jobs: State<'_, AttachmentState>,
 ) -> Result<tauri::ipc::Response, String> {
     let vault = current_vault(&state)?;
+    let expected = vault.root().to_string_lossy().to_string();
+    if root.as_ref().is_some_and(|root| root != &expected) {
+        return Err("Vault изменился".into());
+    }
     let permit = Arc::clone(&jobs.previews)
         .acquire_owned()
         .await
         .map_err(|_| "Превью недоступно")?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         (if large == Some(true) {
             vault.attachment_preview(&relative_path)
@@ -158,5 +172,9 @@ pub async fn attachment_thumbnail(
         .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    if current_vault(&state)?.root().to_string_lossy() != expected {
+        return Err("Vault изменился".into());
+    }
+    Ok(result)
 }

@@ -136,18 +136,18 @@ function SmartTable({ children, source, startLine, endLine, onChange }: {
   </div>
 }
 
-function NoteEmbed({destination,index,resourcePath,onOpen}:{destination:string;index:VaultIndex|null;resourcePath:string;onOpen:(path:string,kind?:'wiki'|'markdown')=>void}) {
+function NoteEmbed({root,destination,index,resourcePath,onOpen}:{root:string;destination:string;index:VaultIndex|null;resourcePath:string;onOpen:(path:string,kind?:'wiki'|'markdown')=>void}) {
   const [text,setText]=useState('Загружаю локальную заметку…')
-  useEffect(()=>{let alive=true;const resolved=resolveNoteTarget(destination,resourcePath,index?.documents??[]);if(resolved.status!=='resolved'){setText('Вложенная заметка не найдена или неоднозначна');return}void invoke<NoteDocument>('read_note',{relativePath:resolved.path}).then(document=>{if(!alive)return;const line=anchorLine(document.content,resolved);setText(line===null?'Указанный якорь не найден':document.content.split('\n').slice(Math.max(0,line-1),line+35).join('\n').slice(0,4000))}).catch(()=>{if(alive)setText('Вложенная заметка недоступна')});return()=>{alive=false}},[destination,index,resourcePath])
-  if(isRasterPath(destination))return <span className="note-embed"><AttachmentImage path={destination.replace(/^\//,'')}/></span>
+  useEffect(()=>{let alive=true;const resolved=resolveNoteTarget(destination,resourcePath,index?.documents??[]);if(resolved.status!=='resolved'){setText('Вложенная заметка не найдена или неоднозначна');return}void invoke<NoteDocument>('read_note',{relativePath:resolved.path}).then(document=>{if(!alive)return;const line=anchorLine(document.content,resolved);setText(line===null?'Указанный якорь не найден':document.content.split('\n').slice(Math.max(0,line-1),line+35).join('\n').slice(0,4000))}).catch(()=>{if(alive)setText('Вложенная заметка недоступна')});return()=>{alive=false}},[root,destination,index,resourcePath])
+  if(isRasterPath(destination))return <span className="note-embed"><AttachmentImage root={root} path={destination.replace(/^\//,'')}/></span>
   return <span className="note-embed"><button onClick={()=>onOpen(destination,'wiki')}>↗ {destination}</button><span>{text}</span></span>
 }
 
-export function MarkdownPreview({ source, index, resourcePath='', onOpen, onChange, focusLine }: { source: string; index: VaultIndex | null; resourcePath?:string; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
+export function MarkdownPreview({ root,source, index, resourcePath='', onOpen, onChange, focusLine }: { root:string;source: string; index: VaultIndex | null; resourcePath?:string; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
   const renderedSource = withWikiLinks(withoutFrontmatter(source) || '*Пустая заметка*')
   const structure = useMemo(() => sourceStructure(source), [source])
-  const current = useRef({ source, onOpen, onChange, focusLine, structure,index,resourcePath })
-  current.current = { source, onOpen, onChange, focusLine, structure,index,resourcePath }
+  const current = useRef({ root,source, onOpen, onChange, focusLine, structure,index,resourcePath })
+  current.current = { root,source, onOpen, onChange, focusLine, structure,index,resourcePath }
   // Stable renderer types keep anchors, table editors and hover targets mounted
   // when the parent updates a notice, metadata, or an anchor highlight.
   const components = useMemo<Components>(() => {
@@ -177,7 +177,7 @@ export function MarkdownPreview({ source, index, resourcePath='', onOpen, onChan
       return <CodePreview code={code} language={language} />
     },
     a: ({ href, children }) => {
-      if(href?.startsWith('#brandon-embed=')){let destination='';try{destination=decodeURIComponent(href.slice('#brandon-embed='.length))}catch{/* invalid URI stays unresolved */}return <NoteEmbed destination={destination} index={current.current.index} resourcePath={current.current.resourcePath} onOpen={current.current.onOpen}/>}
+      if(href?.startsWith('#brandon-embed=')){let destination='';try{destination=decodeURIComponent(href.slice('#brandon-embed='.length))}catch{/* invalid URI stays unresolved */}return <NoteEmbed root={current.current.root} destination={destination} index={current.current.index} resourcePath={current.current.resourcePath} onOpen={current.current.onOpen}/>}
       const wiki = href?.startsWith('#brandon-wiki=')
       let destination = href ?? ''
       if (wiki) { try { destination = decodeURIComponent(destination.slice('#brandon-wiki='.length)) } catch { destination = '' } }

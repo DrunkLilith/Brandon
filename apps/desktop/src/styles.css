@@ -597,6 +597,7 @@ kbd { padding: 1px 4px; border-color: #444; border-radius: 3px; color: #858585; 
 .canvas-node.selected { border-color: #aaa1ea; box-shadow: 0 0 0 2px #8d84d64d, 0 9px 28px #0007; }
 .canvas-node.is-locked { cursor: not-allowed; }
 .canvas-node.is-locked textarea { cursor: default; }
+.canvas-node.type-group { pointer-events: none; }.canvas-node.type-group .canvas-group-label,.canvas-node.type-group .canvas-node-grip,.canvas-node.type-group .canvas-resize-handle { pointer-events: auto; }
 .canvas-node.primitive-node { border: 0 !important; border-radius: 0; background: transparent !important; box-shadow: none !important; overflow: visible !important; pointer-events: none; }
 .canvas-node.primitive-node .canvas-node-grip { display: none; }
 .canvas-primitive-shape { position: absolute; width: 100%; height: 100%; inset: 0; overflow: hidden; pointer-events: none; }
@@ -1370,6 +1371,10 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .canvas-image-preview { display: block; min-height: 0; width: 100%; height: 100%; object-fit: contain; flex: 1; border-radius: 4px; background: #202024; }
 .has-image-preview .canvas-file-card strong { flex: none; align-self: auto; font-size: 12px; }
 .has-image-preview .canvas-file-card small { display: none; }
+.canvas-node.has-image-preview .canvas-node-grip { display: none; }
+.canvas-node.has-image-preview .canvas-file-card.canvas-raster-card { position: relative; width: 100%; height: 100%; padding: 0; display: block; background: transparent; }
+.canvas-raster-stage { position: absolute; overflow: hidden; border-radius: 4px; background: #202024; }.canvas-raster-caption { position: absolute; display: block; margin: 0; overflow: hidden; white-space: pre; font-family: "Segoe UI",sans-serif; }
+.canvas-raster-notice { position: absolute; left: 16px; bottom: 20px; z-index: 12; max-width: calc(100% - 220px); padding: 9px 12px; border: 1px solid #645146; border-radius: 8px; background: #302820ed; color: #d8c7b3; font-size: 12px; }.canvas-raster-notice button { margin-left: 12px; }
 .canvas-preview-placeholder { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12px; color: #aaa; }
 .canvas-preview-placeholder svg { width: 18px; }
 .canvas-preview-masks { position: absolute; width: 0; height: 0; pointer-events: none; }

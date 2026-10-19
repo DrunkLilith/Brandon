@@ -599,6 +599,8 @@ Frames, presentation navigation, локальный каталог собств�
 
 **Выход:** создать проект из шаблона, редактировать одну задачу из двух представлений, показать frames как slides, экспортировать выбранный frame и получить понятный compatibility report.
 
+**Основание R3B, 19 октября 2026, поверх `40b3c0f`:** до включения UI writer зафиксирован [контракт фреймов](canvas-r3b-contract.md), выполнен pinned аудит Advanced Canvas 7.1.0 / `4b8630c` (GPL-3.0, без копирования/исполнения кода плагина). Реализованы group-backed frame schema, 9 presets, wrap без копий источников, отдельная presentation sequence со stale slots, notes/title/reorder и общие bounds/fit. **11 новых / 130 всего frontend tests** PASS; это чистые операции и parser, не поставленный режим презентации. UI, native/fallback clipping, templates, linked formats и export остаются в R3B. Финальный видимый ink gate ждёт разблокировки сеанса.
+
 ### R4. Resource policy и read-only MCP
 
 Поставить grants UI, Rust enforcement, session broker и bounded tools. Сначала local stdio и contract tests, затем проверка реального подключения Codex и Claude Code. Изменения и web отсутствуют в исходном grant; attachment metadata не подразумевает binary export.

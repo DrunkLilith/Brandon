@@ -1,6 +1,7 @@
 import type { CanvasDocument, CanvasNode } from './canvas-view'
 import {validTaskFallback} from './canvas-tasks.ts'
 import {validateCanvasInk,validateInkBudget} from './canvas-ink.ts'
+import {validateCanvasFrame,validateCanvasPresentation,validateFrameBudget} from './canvas-frames.ts'
 
 // JSON.parse would silently round a foreign 64-bit ID or a high-precision
 // decimal, then stringify would persist the changed value on an unrelated move.
@@ -27,6 +28,7 @@ function validateExtension(value:unknown,edge=false){
   if(!edge&&extension.locked!==undefined&&typeof extension.locked!=='boolean')throw Error('Некорректная блокировка Brandon')
   if(!edge&&extension.taskId!==undefined&&!(typeof extension.taskId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(extension.taskId)))throw Error('Некорректная ссылка Brandon.taskId')
   if(!edge&&extension.ink!==undefined){validateCanvasInk(extension.ink);if(extension.primitive!==undefined||extension.taskId!==undefined)throw Error('Штрих не может одновременно быть фигурой или задачей')}
+  if(!edge&&extension.frame!==undefined){validateCanvasFrame(extension.frame);if(extension.primitive!==undefined||extension.taskId!==undefined||extension.ink!==undefined)throw Error('Фрейм не может одновременно быть фигурой, задачей или штрихом')}
   if(!edge)for(const key of ['fillColor','strokeColor','textColor'])if(extension[key]!==undefined&&!(key==='fillColor'&&extension[key]==='transparent')&&!(typeof extension[key]==='string'&&/^#[\da-f]{6}$/i.test(extension[key] as string)))throw Error(`Некорректный цвет Brandon.${key}`)
 }
 
@@ -36,6 +38,7 @@ export function parseCanvasDocument(source: string): { document: CanvasDocument;
     const value: unknown = JSON.parse(source)
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Ожидается объект JSON Canvas')
     const document = value as CanvasDocument
+    validateCanvasPresentation(document.brandon)
     if (!Array.isArray(document.nodes) || !Array.isArray(document.edges)) throw new Error('Нужны массивы nodes и edges')
     const ids = new Set<string>()
     for (const node of document.nodes) {
@@ -45,11 +48,13 @@ export function parseCanvasDocument(source: string): { document: CanvasDocument;
       if (![node.x, node.y, node.width, node.height].every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= 10_000_000) || node.width <= 0 || node.height <= 0) throw new Error('Некорректные координаты или размер карточки')
       for (const key of ['text', 'file', 'url', 'label', 'color'] as const) if (node[key] !== undefined && typeof node[key] !== 'string') throw new Error(`Поле ${key} должно быть строкой`)
       validateExtension(node.brandon)
+      if(node.type!=='group'&&node.brandon&&typeof node.brandon==='object'&&'frame' in node.brandon&&(node.brandon as {frame?:unknown}).frame!==undefined)throw Error('Фрейм Brandon требует group fallback')
       if(node.type!=='text'&&node.brandon&&typeof node.brandon==='object'&&'ink' in node.brandon&&(node.brandon as {ink?:unknown}).ink!==undefined)throw Error('Штрих Brandon требует текстовый fallback')
       if(node.brandon&&typeof node.brandon==='object'&&'taskId' in node.brandon&&(node.brandon as {taskId?:unknown}).taskId!==undefined&&(node.type!=='file'||!validTaskFallback(node.file)))throw Error('Задача Brandon требует относительный Markdown file fallback')
       if(node.type!=='text'&&node.brandon&&typeof node.brandon==='object'&&'primitive' in node.brandon&&(node.brandon as {primitive?:unknown}).primitive!==undefined)throw Error('Фигура Brandon требует текстовый fallback')
     }
     validateInkBudget(document)
+    validateFrameBudget(document)
     const edgeIds = new Set<string>()
     for (const edge of document.edges) {
       if (!edge || typeof edge.id !== 'string' || !edge.id || edgeIds.has(edge.id) || typeof edge.fromNode !== 'string' || typeof edge.toNode !== 'string') throw new Error('Некорректная связь или повторяющийся ID')

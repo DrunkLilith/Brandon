@@ -33,6 +33,8 @@ import {
 import { MarkdownPreview } from './markdown-preview'
 import { PlannerView } from './planner-view'
 import { QuickInsertPalette, type QuickInsert } from './quick-insert-palette'
+import {QuickCaptureDialog,type CaptureLibrary,type CaptureApplied} from './quick-capture'
+import {sameCapturePath} from './capture-policy'
 import { RightSidebar } from './right-sidebar'
 import type {
   NoteDocument, SaveOutcome, SearchHit, TaskChange, TaskPatch, TaskMetadata, VaultEntry,
@@ -169,6 +171,9 @@ export function App() {
   const visualEditing = settings.editorMode === 'visual'
   const setVisualEditing = useCallback((visual: boolean) => setSettings((current) => ({ ...current, editorMode: visual ? 'visual' : 'source' })), [])
   const [quickInsertOpen, setQuickInsertOpen] = useState(false)
+  const [captureDialogId,setCaptureDialogId]=useState<string|null>(null)
+  const [captureLibrary,setCaptureLibrary]=useState<CaptureLibrary|null>(null),[captureLoadError,setCaptureLoadError]=useState('')
+  useEffect(()=>{let alive=true;setCaptureDialogId(null);setCaptureLibrary(null);setCaptureLoadError('');if(vault?.root)void invoke<CaptureLibrary>('load_captures',{root:vault.root}).then(value=>{if(alive)setCaptureLibrary(value)}).catch(error=>{if(alive)setCaptureLoadError(String(error))});return()=>{alive=false}},[vault?.root])
   const searchRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLInputElement>(null)
   const editorRef = useRef<MarkdownEditorHandle>(null)
@@ -1079,6 +1084,8 @@ export function App() {
       { id: 'new-folder', label: 'Новая папка', enabled: hasVault, run: () => setDialog({ kind: 'folder', value: '', parent: selectedFolder }) },
       { id: 'daily-note', label: 'Открыть сегодняшнюю заметку', enabled: hasVault, run: openDailyNote },
       { id: 'insert-template', label: 'Вставить шаблон', detail: 'Templates', enabled: hasNote, run: () => setTemplatePicker(true) },
+      {id:'capture-manager',label:'QuickAdd: быстрые записи и импорт',defaultShortcut:'Mod+Shift+KeyQ',enabled:hasVault,run:()=>setCaptureDialogId('')},
+      ...(captureLibrary?.choices??[]).filter(choice=>choice.command&&!choice.error).map(choice=>({id:`capture:${choice.id}`,label:`QuickAdd: ${choice.name}`,detail:choice.target,enabled:hasVault,run:()=>setCaptureDialogId(choice.id)})),
       { id: 'quick-insert', label: 'Открыть палитру быстрых вставок', defaultShortcut: 'Mod+Slash', enabled: hasNote, run: () => setQuickInsertOpen(true) },
       { id: 'new-canvas', label: 'Создать новый холст', detail: 'JSON Canvas · .canvas', enabled: hasVault, run: () => setDialog({ kind: 'canvas', value: '', parent: selectedFolder }) },
       { id: 'new-base', label: 'Создать новую базу', detail: 'Obsidian Bases · .base', enabled: hasVault, run: () => setDialog({ kind: 'base', value: '', parent: selectedFolder }) },
@@ -1105,7 +1112,7 @@ export function App() {
       ] as const).map(([action, label, shortcut]) => ({ id: `editor-${action}`, label, defaultShortcut: shortcut, enabled: editable||layout!=='none', run: () => (focusedPane.current==='side'?secondary.current?.editor():editorRef.current)?.execute(action as EditorAction) })),
       { id: 'editor-open-link', label: 'Открыть ссылку под курсором', defaultShortcut: 'Mod+Enter', enabled: editable||layout!=='none', run: openCursorLink },
     ]
-  }, [vault, note, workspaceView, viewMode, saveNote, newTab, closeTab, reopenTab, cycleTab, history, navigateHistory, selectedFolder, openDailyNote, openPlanner, openGraph, setVisualEditing, changeUiZoom, openVault, openNoteLink, showNotice,layout,splitWorkspace,pinned,activeTab,addBookmark,sidebarQuery,crashDrafts.length,changeDocumentMode,openCursorLink,openHistory])
+  }, [captureLibrary, vault, note, workspaceView, viewMode, saveNote, newTab, closeTab, reopenTab, cycleTab, history, navigateHistory, selectedFolder, openDailyNote, openPlanner, openGraph, setVisualEditing, changeUiZoom, openVault, openNoteLink, showNotice,layout,splitWorkspace,pinned,activeTab,addBookmark,sidebarQuery,crashDrafts.length,changeDocumentMode,openCursorLink,openHistory])
   const registry = useMemo(() => createCommandRegistry(commands, settings.hotkeys), [commands, settings.hotkeys])
   registryRef.current = registry
   const commandActions = useMemo<PaletteAction[]>(() => commands.filter((command) => command.enabled !== false).map((command) => ({ id: command.id, label: command.label, detail: command.detail, shortcut: registry.shortcut(command.id), run: () => runCommand(command.id) })), [commands, registry, runCommand])
@@ -1136,6 +1143,7 @@ export function App() {
         <button className="rail-button" aria-label="Создать новый холст" data-tooltip="Создать новый холст" disabled={!vault} onClick={() => runCommand('new-canvas')}><CanvasIcon /></button>
         <button className={`rail-button ${workspaceView === 'planner' ? 'active' : ''}`} aria-label="Задачи и календарь" data-tooltip="Задачи и календарь" disabled={!vault} onClick={() => runCommand('planner')}><CalendarIcon /></button>
         <button className="rail-button" aria-label="Вставить шаблон" data-tooltip="Вставить шаблон" disabled={!note || workspaceView !== 'note'} onClick={() => runCommand('insert-template')}><TemplateIcon /></button>
+        <button className="rail-button" aria-label="QuickAdd: быстрые записи" data-tooltip="QuickAdd: быстрые записи" disabled={!vault} onClick={()=>runCommand('capture-manager')}><PlusIcon /></button>
         <button className="rail-button" aria-label="Создать новую базу" data-tooltip="Создать новую базу" disabled={!vault} onClick={() => runCommand('new-base')}><DatabaseIcon /></button>
         <span className="rail-spacer" />
         <button className="rail-button" aria-label="Открыть палитру команд" data-tooltip="Открыть палитру команд" onClick={() => runCommand('palette')}><span className="command-glyph">›_</span></button>
@@ -1208,6 +1216,15 @@ export function App() {
     {palette && <CommandPalette mode={palette} files={vault?.files ?? []} actions={commandActions} onClose={() => setPalette(null)} onOpen={(path) => void loadNote(path)} />}
     {templatePicker && <TemplatePicker templates={templateFiles} onClose={() => setTemplatePicker(false)} onInsert={(path) => void insertTemplate(path)} onCreate={() => void createTemplateStarter()} />}
     {quickInsertOpen && <QuickInsertPalette onClose={() => setQuickInsertOpen(false)} onInsert={insertQuick} />}
+    {captureDialogId!==null&&vault&&<QuickCaptureDialog key={vault.root} root={vault.root} library={captureLibrary} loadError={captureLoadError} initialId={captureDialogId} onLibrary={setCaptureLibrary} onReload={async()=>{try{const value=await invoke<CaptureLibrary>('load_captures',{root:vault.root});if(loadedRoot.current===vault.root){setCaptureLibrary(value);setCaptureLoadError('')}}catch(error){if(loadedRoot.current===vault.root){setCaptureLibrary(null);setCaptureLoadError(String(error))}}}} onClose={()=>setCaptureDialogId(null)} onGuard={path=>{
+      if(loadedRoot.current!==vault.root)throw new Error('Хранилище сменилось; capture отменён')
+      if(path&&((sameCapturePath(noteRef.current?.path,path)&&(contentRef.current!==persistedRef.current||Boolean(savePromise.current)||Boolean(conflictRef.current)||Boolean(missingSourceRef.current)))||secondary.current?.captureBlocked(path)||crashDrafts.some(draft=>sameCapturePath(draft.path,path))))throw new Error('У этого файла есть несохранённый текст, конфликт или аварийный черновик. Сохраните или восстановите его и создайте предпросмотр заново. Ваш ввод capture оставлен в форме.')
+    }} onApplied={async(result:CaptureApplied)=>{
+      const root=vault.root;await loadIndex();await loadIndex();if(loadedRoot.current!==root)return
+      if(noteRef.current?.path===result.path&&contentRef.current===persistedRef.current&&!savePromise.current&&!conflictRef.current&&!missingSourceRef.current){const disk=await invoke<NoteDocument>('read_note',{relativePath:result.path});if(loadedRoot.current===root&&noteRef.current?.path===result.path&&contentRef.current===persistedRef.current&&!savePromise.current)applyDocument(disk,'note',false)}
+      await secondary.current?.refresh([result.path],[])
+      if(result.openFile&&loadedRoot.current===root&&await loadNote(result.path))setCaptureDialogId(null)
+    }}/>}
     {contextMenu && <EntryContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onRename={() => setDialog({ kind: 'rename', entry: contextMenu.entry, value: contextMenu.entry.name.replace(/\.(md|canvas|base)$/i, ''), parent: contextMenu.entry.parent })} onMove={() => setDialog({ kind: 'move', entry: contextMenu.entry, value: '', parent: contextMenu.entry.parent })} onReveal={() => void invoke('reveal_entry', { relativePath: contextMenu.entry.path })} onTrash={() => void trashEntry(contextMenu.entry)} />}
     {conflict && <ConflictDialog disk={conflict} mine={content} onLoad={() => { acknowledgeDraft(conflict.path,content);applyDocument(conflict, viewForPath(conflict.path)); conflictRef.current = null; setConflict(null) }} onOverwrite={() => void saveNote(false, conflict.fingerprint)} onClose={() => setConflict(null)} />}
     {notice && <div role="status" className={`notice ${notice.kind}`}><span /><div>{notice.message}{notice.details && <details><summary>Какие документы проверить</summary><ul>{notice.details.map((detail, index) => <li key={index}>{detail}</li>)}</ul></details>}</div>{notice.details && <button aria-label="Закрыть уведомление" onClick={() => setNotice(null)}>×</button>}</div>}

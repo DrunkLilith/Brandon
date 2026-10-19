@@ -1637,3 +1637,22 @@ kbd { padding: 2px 6px; font: 500 11px var(--font-mono); }
 .markdown-body .dql-list li { height:44px;box-sizing:border-box;display:flex;align-items:center;gap:12px;margin:0;border-bottom:1px solid var(--line); }
 .dql-list span { color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .dql-empty { padding:16px; }
+.capture-dialog { min-width:0;font-size:13px;line-height:1.6; }
+.capture-dialog p,.capture-dialog small { color:var(--muted); }
+.capture-dialog h3 { margin:12px 0 8px;font-size:15px; }
+.capture-dialog section { margin-top:16px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2); }
+.capture-dialog label { display:grid;gap:6px;margin:10px 0;min-width:0; }
+.capture-dialog textarea,.capture-dialog select,.capture-dialog input { width:100%;padding:9px 11px;color:var(--text);background:var(--surface);border:1px solid #51465e;border-radius:6px;font:inherit; }
+.capture-dialog textarea { resize:vertical;max-height:330px;min-height:64px; }
+.capture-import textarea,.capture-comparison textarea { font:12px/1.6 var(--font-mono);white-space:pre;overflow:auto; }
+.capture-library,.capture-actions { display:flex;align-items:center;flex-wrap:wrap;gap:10px; }
+.capture-library label { flex:1;min-width:220px; }
+.capture-candidates article { display:flex;align-items:center;justify-content:space-between;gap:15px;padding:10px 0;border-bottom:1px solid var(--line); }
+.capture-candidates article > div { display:grid;gap:4px;min-width:0;overflow-wrap:anywhere; }
+.capture-comparison { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px; }
+.capture-dialog .capture-error { color:#ffb9a9;overflow-wrap:anywhere; }
+.capture-dialog .capture-success { color:#acdfba; }
+.capture-dialog button:disabled { opacity:.45;cursor:default; }
+.capture-dialog .capture-apply { background:#604a7e;border-color:#87729e;margin-right:10px; }
+.capture-dialog footer { align-items:center;justify-content:space-between;gap:16px; }
+@media(max-width:750px) { .capture-comparison { grid-template-columns:minmax(0,1fr); } }

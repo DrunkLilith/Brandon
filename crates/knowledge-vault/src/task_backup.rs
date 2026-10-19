@@ -18,7 +18,7 @@ const MAX_TOTAL: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_FILES: usize = 50000;
 const MAX_MANIFEST: u64 = 32 * 1024 * 1024;
 const MAX_MTIME: u64 = 253402300799999;
-const PRIVATE_FILES: [&str; 1] = ["task-views.v1.json"];
+const PRIVATE_FILES: [&str; 2] = ["task-views.v1.json", "captures.v1.json"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

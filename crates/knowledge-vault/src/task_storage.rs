@@ -175,7 +175,18 @@ pub(crate) fn checked_directory(path: &Path) -> Result<()> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(path).map_err(io_error)?;
+            if let Err(error) = fs::create_dir(path) {
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(io_error(error));
+                }
+                // Metadata bootstrap and a capture-library read may create the
+                // private directory concurrently. Accept the winner only after
+                // the same no-link/type validation, never blindly follow it.
+                let meta = fs::symlink_metadata(path).map_err(io_error)?;
+                if !meta.is_dir() || attachments::is_link(&meta) {
+                    return Err(invalid("Каталог задач заменён ссылкой или другим объектом"));
+                }
+            }
         }
         Err(error) => return Err(io_error(error)),
     }

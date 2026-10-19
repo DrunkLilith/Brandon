@@ -102,23 +102,34 @@ fn put(db: &mut Connection, root: &str, draft: &Draft) -> Result<(), String> {
     if count >= 100 || bytes + payload.len() as i64 > 64 * 1024 * 1024 {
         return Err("Журнал черновиков заполнен; сохраните восстановленные копии".into());
     }
+    remember_version(&tx, root, &draft.path, &draft.base_content, draft.updated)?;
+    tx.execute("INSERT INTO drafts(root,path,pane,version,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(root,path,pane) DO UPDATE SET version=excluded.version,payload=excluded.payload",params![root,draft.path,draft.pane,draft.version,payload]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn remember_version(
+    tx: &rusqlite::Transaction<'_>,
+    root: &str,
+    path: &str,
+    content: &str,
+    updated: i64,
+) -> Result<(), String> {
     let previous: Option<String> = tx
         .query_row(
             "SELECT content FROM versions WHERE root=?1 AND path=?2 ORDER BY id DESC LIMIT 1",
-            params![root, draft.path],
+            params![root, path],
             |r| r.get(0),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if previous.as_deref() != Some(&draft.base_content) {
+    if previous.as_deref() != Some(content) {
         tx.execute(
             "INSERT INTO versions(root,path,updated,content) VALUES(?1,?2,?3,?4)",
-            params![root, draft.path, draft.updated, draft.base_content],
+            params![root, path, updated, content],
         )
         .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM versions WHERE root=?1 AND path=?2 AND id NOT IN (SELECT id FROM versions WHERE root=?1 AND path=?2 ORDER BY id DESC LIMIT 20)",params![root,draft.path]).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM versions WHERE root=?1 AND path=?2 AND id NOT IN (SELECT id FROM versions WHERE root=?1 AND path=?2 ORDER BY id DESC LIMIT 20)",params![root,path]).map_err(|e| e.to_string())?;
     }
-    tx.execute("INSERT INTO drafts(root,path,pane,version,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(root,path,pane) DO UPDATE SET version=excluded.version,payload=excluded.payload",params![root,draft.path,draft.pane,draft.version,payload]).map_err(|e| e.to_string())?;
     loop {
         let size: i64 = tx
             .query_row(
@@ -136,6 +147,29 @@ fn put(db: &mut Connection, root: &str, draft: &Draft) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+// Capture writes preserve the same bounded source history without creating or
+// acknowledging any main/side crash draft as an implementation side effect.
+pub fn capture_checkpoint(
+    app: &AppHandle,
+    journal: &State<'_, WorkspaceState>,
+    root: &str,
+    path: &str,
+    content: &str,
+) -> Result<(), String> {
+    if !safe_path(path) || content.len() > 8 * 1024 * 1024 {
+        return Err("Некорректная версия capture".into());
+    }
+    let _guard = journal.0.lock().map_err(|e| e.to_string())?;
+    let mut db = database(app)?;
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    let updated = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as i64;
+    remember_version(&tx, root, path, content, updated)?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -261,6 +295,41 @@ pub fn document_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_history_does_not_acknowledge_or_replace_a_crash_draft() {
+        let mut db = connect(Path::new(":memory:")).unwrap();
+        let draft = Draft {
+            path: "Note.md".into(),
+            pane: "side".into(),
+            version: "durable".into(),
+            content: "UNSAVED SIDE".into(),
+            base_content: "base".into(),
+            fingerprint: "fp".into(),
+            updated: 1,
+        };
+        put(&mut db, "root", &draft).unwrap();
+        let before: String = db
+            .query_row("SELECT payload FROM drafts", [], |row| row.get(0))
+            .unwrap();
+        let tx = db.transaction().unwrap();
+        remember_version(&tx, "root", "Note.md", "capture-before", 2).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            db.query_row("SELECT payload FROM drafts", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM versions WHERE content='capture-before'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
     #[test]
     fn draft_transaction_isolated_by_vault_and_conditional_clear() {
         let mut db = connect(Path::new(":memory:")).expect("db");

@@ -8,7 +8,9 @@ import {connect} from './cdp-test-client.mjs'
 const executable=resolve('target/release/knowledge-desktop.exe')
 let running
 try{const targets=await fetch('http://127.0.0.1:9222/json').then(r=>r.json());if(targets.some(t=>t.title==='Brandon'))throw new Error('Close the clean QA window before this lifecycle test')}catch(error){if(error.message.startsWith('Close the'))throw error}
-const launch=()=>{running=spawn(executable,[],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:'--remote-debugging-port=9222'},stdio:'ignore',windowsHide:true});return running}
+// Test-only opt-in for diagnosing an injected overlay; production flags stay unchanged.
+const browserArguments=(process.env.BRANDON_QA_SOFTWARE_WEBVIEW==='1'?'--disable-gpu ':'')+'--remote-debugging-port=9222'
+const launch=()=>{running=spawn(executable,[],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:browserArguments},stdio:'ignore',windowsHide:true});return running}
 launch()
 let client=await connect()
 const evaluate=e=>client.evaluate(e),click=s=>client.click(s),key=(...a)=>client.key(...a),send=(...a)=>client.send(...a),waitFor=e=>client.waitFor(e),delay=n=>client.delay(n)
@@ -116,8 +118,10 @@ try{
   pass('Inline local note embeds resolve and display a bounded current source excerpt')
   await file('Alpha.md');await click(`${primary} .view-switcher button[title="Редактор"]`)
   await key('k','KeyK',2);await waitFor("Boolean(document.querySelector('input[aria-label=\"Поиск по vault\"]'))")
+  await waitFor("document.activeElement?.getAttribute('aria-label')==='Поиск по vault'")
   await send('Input.insertText',{text:'Second paragraph'})
-  await key('p','KeyP',2);await send('Input.insertText',{text:'Добавить поиск в закладки'});await key('Enter','Enter')
+  await waitFor("document.querySelector('input[aria-label=\"Поиск по vault\"]').value==='Second paragraph'")
+  await key('p','KeyP',2);await waitFor("document.querySelector('.palette input')===document.activeElement");await send('Input.insertText',{text:'Добавить поиск в закладки'});await waitFor("document.querySelector('.palette-results button strong')?.textContent==='Добавить поиск в закладки'");await key('Enter','Enter')
   await waitFor("Array.from(document.querySelectorAll('.bookmark-row')).some(row=>row.textContent.includes('Second paragraph'))")
   pass('A saved search bookmark retains its query separately from document targets')
   await click('button[aria-label="Убрать из закладок"]');await waitFor("document.querySelectorAll('.bookmark-row').length===1")

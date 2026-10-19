@@ -1,6 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod attachment_commands;
+mod capture_commands;
+use capture_commands::{
+    apply_capture, import_capture, inspect_capture_import, load_captures, preview_capture,
+    read_capture_import,
+};
 mod metadata_commands;
 mod search_commands;
 mod task_commands;
@@ -521,6 +526,12 @@ fn main() {
             backup_tasks,
             inspect_task_backup,
             restore_task_backup,
+            load_captures,
+            inspect_capture_import,
+            read_capture_import,
+            import_capture,
+            preview_capture,
+            apply_capture,
             update_task,
             search_vault,
             reconcile_search_index,

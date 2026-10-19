@@ -1,7 +1,12 @@
 //! Local-first filesystem boundary for portable knowledge vaults.
 
 mod attachments;
+mod captures;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
+pub use captures::{
+    CaptureApplied, CaptureChoice, CaptureInput, CaptureLibrary, CapturePreview,
+    inspect_capture_import, read_capture_import,
+};
 pub use knowledge_markdown::{
     PropertyInspection, PropertyPatch, inspect_properties, parse_yaml_mapping, patch_property,
 };

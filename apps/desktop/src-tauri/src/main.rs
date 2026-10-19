@@ -13,6 +13,7 @@ use capture_commands::{
     apply_capture, import_capture, inspect_capture_import, load_captures, preview_capture,
     read_capture_import,
 };
+mod linked_resource_commands;
 mod metadata_commands;
 mod search_commands;
 mod task_commands;
@@ -503,6 +504,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            workspace_commands::promote_linked_draft,
+            linked_resource_commands::read_linked_resource,
+            linked_resource_commands::create_task_format,
+            linked_resource_commands::save_linked_resource,
             canvas_export_prepare,
             canvas_export_preview,
             canvas_export_cancel,

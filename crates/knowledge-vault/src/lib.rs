@@ -2,6 +2,7 @@
 
 mod attachments;
 mod captures;
+mod linked_resources;
 pub use attachments::{
     AttachmentExportRaster, AttachmentImport, AttachmentInfo, AttachmentKind, AttachmentRaster,
 };

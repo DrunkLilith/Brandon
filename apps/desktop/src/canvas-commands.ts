@@ -21,6 +21,7 @@ export const CANVAS_COMMANDS=[
   {id:'canvas-grid',label:'Разложить сеткой'},
   {id:'canvas-style',label:'Стиль выбранных объектов'},
   {id:'canvas-task-details',label:'Поля выбранной задачи'},
+  {id:'canvas-linked-resource',label:'Открыть связанный Document / Table / Kanban / Timeline'},
   {id:'canvas-edge-style',label:'Стиль выбранной связи'},
   {id:'canvas-edge-reverse',label:'Развернуть выбранную связь'},
   {id:'canvas-edge-delete',label:'Удалить выбранную связь'},

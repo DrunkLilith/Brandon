@@ -82,7 +82,10 @@ fn safe_path(path: &str) -> bool {
 
 fn validate(draft: &Draft) -> Result<(), String> {
     if !safe_path(&draft.path)
-        || !matches!(draft.pane.as_str(), "main" | "side")
+        || !matches!(
+            draft.pane.as_str(),
+            "main" | "side" | "linked-main" | "linked-side"
+        )
         || draft.version.is_empty()
         || draft.version.len() > 80
         || draft.fingerprint.len() > 256
@@ -292,9 +295,116 @@ pub fn document_versions(
         .map_err(|e| e.to_string())
 }
 
+fn promote(
+    db: &mut Connection,
+    root: &str,
+    path: &str,
+    pane: &str,
+    version: &str,
+) -> Result<Draft, String> {
+    let destination = match pane {
+        "linked-main" => "main",
+        "linked-side" => "side",
+        _ => return Err("Это не черновик связанного документа".into()),
+    };
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    let payload: String = tx
+        .query_row(
+            "SELECT payload FROM drafts WHERE root=?1 AND path=?2 AND pane=?3 AND version=?4",
+            params![root, path, pane, version],
+            |r| r.get(0),
+        )
+        .map_err(|_| "Черновик изменился или больше недоступен")?;
+    let mut draft: Draft = serde_json::from_str(&payload).map_err(|_| "Черновик повреждён")?;
+    validate(&draft)?;
+    if draft.path != path || draft.pane != pane || draft.version != version {
+        return Err("Содержимое журнала не совпадает с ключом черновика".into());
+    }
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM drafts WHERE root=?1 AND path=?2 AND pane=?3)",
+            params![root, path, destination],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists {
+        return Err("В целевой панели уже есть черновик этого файла. Сначала восстановите или явно отбросьте его; ни одна копия не заменена.".into());
+    }
+    draft.pane = destination.into();
+    draft.version = uuid::Uuid::now_v7().to_string();
+    let payload = serde_json::to_string(&draft).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO drafts(root,path,pane,version,payload) VALUES(?1,?2,?3,?4,?5)",
+        params![root, path, destination, draft.version, payload],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM drafts WHERE root=?1 AND path=?2 AND pane=?3 AND version=?4",
+        params![root, path, pane, version],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(draft)
+}
+#[tauri::command]
+pub fn promote_linked_draft(
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    journal: State<'_, WorkspaceState>,
+    root: String,
+    path: String,
+    pane: String,
+    version: String,
+) -> Result<Draft, String> {
+    let _guard = journal.0.lock().map_err(|e| e.to_string())?;
+    check_root(&state, &root)?;
+    promote(&mut database(&app)?, &root, &path, &pane, &version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn linked_drafts_never_replace_pane_drafts_and_promotion_is_atomic() {
+        let mut db = connect(Path::new(":memory:")).unwrap();
+        let mut draft = Draft {
+            path: "a.md".into(),
+            pane: "main".into(),
+            version: "normal".into(),
+            content: "normal draft".into(),
+            base_content: "base".into(),
+            fingerprint: "fp".into(),
+            updated: 1,
+        };
+        put(&mut db, "root", &draft).unwrap();
+        draft.pane = "linked-main".into();
+        draft.version = "linked".into();
+        draft.content = "linked draft".into();
+        put(&mut db, "root", &draft).unwrap();
+        assert!(promote(&mut db, "root", "a.md", "linked-main", "linked").is_err());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM drafts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        db.execute("DELETE FROM drafts WHERE pane='main'", [])
+            .unwrap();
+        assert!(promote(&mut db, "root", "a.md", "linked-main", "wrong-version").is_err());
+        let restored = promote(&mut db, "root", "a.md", "linked-main", "linked").unwrap();
+        assert_eq!(restored.pane, "main");
+        assert_eq!(restored.content, "linked draft");
+        assert_ne!(restored.version, "linked");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM drafts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT pane FROM drafts", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "main"
+        );
+    }
     #[test]
     fn capture_history_does_not_acknowledge_or_replace_a_crash_draft() {
         let mut db = connect(Path::new(":memory:")).unwrap();
@@ -373,6 +483,74 @@ mod tests {
             assert!(!safe_path(path));
         }
         assert!(safe_path("Папка/Заметка.md"));
+    }
+    #[test]
+    fn four_draft_slots_coexist_and_side_promotion_is_root_scoped() {
+        let mut db = connect(Path::new(":memory:")).unwrap();
+        for pane in ["main", "side", "linked-main", "linked-side"] {
+            let draft = Draft {
+                path: "a.md".into(),
+                pane: pane.into(),
+                version: pane.into(),
+                content: pane.into(),
+                base_content: "base".into(),
+                fingerprint: "fp".into(),
+                updated: 1,
+            };
+            put(&mut db, "root", &draft).unwrap();
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM drafts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            4
+        );
+        assert!(promote(&mut db, "other-root", "a.md", "linked-side", "linked-side").is_err());
+        assert!(promote(&mut db, "root", "a.md", "linked-side", "linked-side").is_err());
+        db.execute("DELETE FROM drafts WHERE pane='side'", [])
+            .unwrap();
+        let next = promote(&mut db, "root", "a.md", "linked-side", "linked-side").unwrap();
+        assert_eq!(next.pane, "side");
+        assert_eq!(next.content, "linked-side");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM drafts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            db.query_row("SELECT payload FROM drafts WHERE pane='main'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .map(|s| serde_json::from_str::<Draft>(&s).unwrap().content)
+            .unwrap(),
+            "main"
+        );
+    }
+    #[test]
+    fn a_tampered_linked_payload_is_not_promoted_under_another_key() {
+        let mut db = connect(Path::new(":memory:")).unwrap();
+        let draft = Draft {
+            path: "a.md".into(),
+            pane: "linked-main".into(),
+            version: "v1".into(),
+            content: "draft".into(),
+            base_content: "base".into(),
+            fingerprint: "fp".into(),
+            updated: 1,
+        };
+        put(&mut db, "root", &draft).unwrap();
+        let mut foreign = draft.clone();
+        foreign.path = "other.md".into();
+        db.execute(
+            "UPDATE drafts SET payload=?1",
+            [serde_json::to_string(&foreign).unwrap()],
+        )
+        .unwrap();
+        assert!(promote(&mut db, "root", "a.md", "linked-main", "v1").is_err());
+        assert_eq!(
+            db.query_row("SELECT pane FROM drafts", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "linked-main"
+        );
     }
     #[test]
     fn version_history_is_bounded() {

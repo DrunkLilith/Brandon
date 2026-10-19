@@ -10,7 +10,9 @@ export function isDocumentBookmark(bookmark: Bookmark, path: string): boolean {
   return bookmark.path === path && !bookmark.heading && !bookmark.block && !bookmark.query
 }
 export type WorkspaceSession = { version: 1; main: PaneState; side: PaneState; split: 'none' | 'vertical' | 'horizontal'; ratio: number; sidebarOpen: boolean; rightOpen: boolean; bookmarks: Bookmark[] }
-export type CrashDraft = { path: string; pane: 'main' | 'side'; version: string; content: string; baseContent: string; fingerprint: string; updated: number }
+export type DraftPane='main'|'side'|'linked-main'|'linked-side'
+export type CrashDraft = { path: string; pane: DraftPane; version: string; content: string; baseContent: string; fingerprint: string; updated: number }
+export const draftPaneLabel=(pane:DraftPane)=>({'main':'Основная панель','side':'Вторая панель','linked-main':'Связанный документ · основная панель','linked-side':'Связанный документ · вторая панель'})[pane]
 export type WorkspaceData = { session: unknown; drafts: CrashDraft[] }
 export const emptyPane = (): PaneState => ({ tabs: [], active: null, pinned: [], views: {} })
 export const emptySession = (): WorkspaceSession => ({ version: 1, main: emptyPane(), side: emptyPane(), split: 'none', ratio: .5, sidebarOpen: true, rightOpen: false, bookmarks: [] })
@@ -59,7 +61,7 @@ export function workspaceWrite(command: string, args: Record<string, unknown>): 
 }
 export async function flushWorkspaceWrites() { await writes }
 
-export function useCrashDraft(root: string | undefined, pane: 'main' | 'side', path: string | undefined, content: string, baseContent: string, fingerprint: string | undefined, enabled: boolean, onError: (message: string) => void) {
+export function useCrashDraft(root: string | undefined, pane: DraftPane, path: string | undefined, content: string, baseContent: string, fingerprint: string | undefined, enabled: boolean, onError: (message: string) => void) {
   const last = useRef<{root:string;path:string;version:string;content:string} | null>(null)
   const transfers=useRef(new Map<string,{root:string;path:string;version:string}>())
   const report = useRef(onError); report.current = onError

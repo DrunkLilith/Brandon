@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { BaseView } from './base-view'
+import {createTaskFormat,type TaskFormatLayout} from './working-formats'
 import { PropertiesEditor } from './properties'
 import { CanvasView } from './canvas-view'
 import {CANVAS_COMMANDS,dispatchCanvasCommand} from './canvas-commands'
@@ -46,7 +47,7 @@ type Notice = { kind: 'error' | 'success' | 'warning'; message: string; details?
 type SidebarMode = 'files' | 'search' | 'tags' | 'bookmarks'
 type PaletteMode = 'commands' | 'notes' | null
 type WorkspaceView = 'note' | 'graph' | 'canvas' | 'base' | 'planner'
-type EntryDialog = { kind: 'note' | 'folder' | 'canvas' | 'base' | 'rename' | 'move' | 'recover'; entry?: VaultEntry; value: string; parent: string }
+type EntryDialog = { kind: 'note' | 'folder' | 'canvas' | 'base' | 'task-format' | 'rename' | 'move' | 'recover'; entry?: VaultEntry; value: string; parent: string; project?:string;layout?:TaskFormatLayout }
 type ContextMenu = { entry: VaultEntry; x: number; y: number }
 
 const GRAPH_TAB = 'brandon://graph'
@@ -769,14 +770,16 @@ export function App() {
         const result = await invoke<VaultMutation>('create_note', { title: dialog.value, folder: dialog.parent || null })
         setVault(result.snapshot)
         applyDocument(await invoke<NoteDocument>('read_note', { relativePath: result.path }))
-      } else if (dialog.kind === 'canvas' || dialog.kind === 'base') {
-        const extension = dialog.kind
-        const contents = dialog.kind === 'canvas'
+      } else if (dialog.kind === 'canvas' || dialog.kind === 'base' || dialog.kind==='task-format') {
+        const extension = dialog.kind==='task-format'?'base':dialog.kind
+        const contents = dialog.kind==='task-format'?createTaskFormat(dialog.project??'',dialog.layout??'table'):dialog.kind === 'canvas'
           ? '{\n  "nodes": [],\n  "edges": []\n}\n'
           : 'filters:\n  and: []\nviews:\n  - type: table\n    name: Таблица\n'
-        const result = await invoke<VaultMutation>('create_resource', { title: dialog.value, folder: dialog.parent || null, extension, contents })
+        const result = dialog.kind==='task-format'
+          ? await invoke<VaultMutation>('create_task_format',{root:vault?.root,title:dialog.value,folder:dialog.parent||null,contents})
+          : await invoke<VaultMutation>('create_resource', { title: dialog.value, folder: dialog.parent || null, extension, contents })
         setVault(result.snapshot)
-        applyDocument(await invoke<NoteDocument>('read_resource', { relativePath: result.path }), dialog.kind)
+        applyDocument(await invoke<NoteDocument>('read_resource', { relativePath: result.path }), extension)
       } else if (dialog.kind === 'folder') {
         const result = await invoke<VaultMutation>('create_folder', { name: dialog.value, parent: dialog.parent || null })
         setVault(result.snapshot)
@@ -1046,9 +1049,14 @@ export function App() {
   },[index,openNoteLink,showNotice])
   const restoreCrashDraft=useCallback(async(draft:CrashDraft)=>{
     if(!await flushDocument())return
+    const recoveredVersion=draft.version
+    if(draft.pane.startsWith('linked-')){
+      if(!vault)return
+      try{await flushWorkspaceWrites();draft=await invoke<CrashDraft>('promote_linked_draft',{root:vault.root,path:draft.path,pane:draft.pane,version:draft.version})}catch(reason){workspaceError(String(reason));return}
+    }
     if(draft.pane==='side'){
       if(layout==='none')setLayout('vertical')
-      window.setTimeout(()=>{void secondary.current?.recover(draft).then(()=>{setCrashDrafts(items=>items.filter(item=>item.version!==draft.version));setRecoveryOpen(false)})},50)
+      window.setTimeout(()=>{void secondary.current?.recover(draft).then(()=>{setCrashDrafts(items=>items.filter(item=>item.version!==recoveredVersion));setRecoveryOpen(false)})},50)
       return
     }
     let disk:NoteDocument
@@ -1057,7 +1065,7 @@ export function App() {
     if(disk.content===draft.content&&vault)void workspaceWrite('remove_draft',{root:vault.root,path:draft.path,pane:draft.pane,version:draft.version}).catch(workspaceError)
     if(disk.modifiedUnixMs===0)markMissingSource(draft.path)
     else if(disk.fingerprint!==draft.fingerprint){conflictRef.current=disk;setConflict(disk)}
-    setCrashDrafts(items=>items.filter(item=>item.version!==draft.version));setRecoveryOpen(false)
+    setCrashDrafts(items=>items.filter(item=>item.version!==recoveredVersion));setRecoveryOpen(false)
   },[applyDocument,flushDocument,layout,markMissingSource,vault,workspaceError])
   const discardCrashDraft=useCallback(async(draft:CrashDraft)=>{
     if(!vault)return
@@ -1096,6 +1104,7 @@ export function App() {
       { id: 'new-canvas', label: 'Создать новый холст', detail: 'JSON Canvas · .canvas', enabled: hasVault, run: () => setDialog({ kind: 'canvas', value: '', parent: selectedFolder }) },
       ...CANVAS_COMMANDS.map(command=>({...command,label:`Холст: ${command.label}`,enabled:workspaceView==='canvas'||layout!=='none'&&Boolean(sideState.active?.endsWith('.canvas')),run:()=>{const pane=focusedPane.current==='side'?'.secondary-pane':'.content-shell[data-pane="main"]';if(!dispatchCanvasCommand(document.querySelector(`${pane} .canvas-view`),command.id))showNotice({kind:'warning',message:'Выберите подходящие объекты на активной доске.'})}})),
       { id: 'new-base', label: 'Создать новую базу', detail: 'Obsidian Bases · .base', enabled: hasVault, run: () => setDialog({ kind: 'base', value: '', parent: selectedFolder }) },
+      { id: 'new-task-format', label: 'Создать связанные форматы задач', detail: 'Таблица · Kanban · Timeline, один TaskId', enabled: hasVault, run: () => setDialog({kind:'task-format',value:'Задачи проекта',parent:selectedFolder,project:'',layout:'table'}) },
       { id: 'planner', label: 'Открыть задачи и календарь', defaultShortcut: 'Mod+Shift+KeyA', enabled: hasVault, run: openPlanner },
       { id: 'graph', label: 'Открыть граф связей', defaultShortcut: 'Mod+KeyG', enabled: hasVault, run: openGraph },
       { id: 'open-note', label: 'Быстрый переход к заметке', defaultShortcut: 'Mod+KeyO', enabled: hasVault, run: () => setPalette('notes') },
@@ -1194,7 +1203,7 @@ export function App() {
             <button className="source-recovery-check" disabled={saving} onClick={() => void checkRecoverySource()}>Проверить источник</button>
             <button className="source-recovery-discard" disabled={saving} onClick={() => setDiscardDraftOpen(true)}>Отбросить черновик…</button>
           </div>}
-          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView key={vault.root} root={vault.root} tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView sourcePath={note.path} onUpdateTask={updateCanvasTask} busyTaskId={busyTaskId} root={vault.root} key={`${vault.root}:${note.path}`} initialCamera={viewsRef.current[note.path]?.camera} onCameraChange={camera=>{viewsRef.current[note.path]={...viewsRef.current[note.path],camera};setViewRevision(v=>v+1)}} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} hotkeys={settings.hotkeys} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView key={note.path} root={vault.root} index={index} source={content} onChange={setContent} onSaved={loadIndex} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
+          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView key={vault.root} root={vault.root} tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView sourcePath={note.path} onUpdateTask={updateCanvasTask} busyTaskId={busyTaskId} root={vault.root} key={`${vault.root}:${note.path}`} initialCamera={viewsRef.current[note.path]?.camera} onCameraChange={camera=>{viewsRef.current[note.path]={...viewsRef.current[note.path],camera};setViewRevision(v=>v+1)}} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} hotkeys={settings.hotkeys} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView onUpdateTask={updateCanvasTask} busyTaskId={busyTaskId} key={note.path} root={vault.root} index={index} source={content} onChange={setContent} onSaved={loadIndex} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
             <div className="writing-toolbar">
               <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-visual')}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-source')}>Markdown</button></div></div>
               <button className="quick-insert-button" onClick={() => runCommand('quick-insert')}><PlusIcon /><span>Быстрая вставка</span><kbd>{registry.shortcut('quick-insert')}</kbd></button>
@@ -1250,13 +1259,13 @@ function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; quer
 }
 
 function EntryDialogView({ dialog, folders, inputRef, onChange, onClose, onSubmit }: { dialog: EntryDialog; folders: VaultEntry[]; inputRef: React.RefObject<HTMLInputElement | null>; onChange: (dialog: EntryDialog) => void; onClose: () => void; onSubmit: () => void }) {
-  const labels = { note: ['Новая заметка', 'Название заметки'], folder: ['Новая папка', 'Название папки'], canvas: ['Новый холст', 'Название холста'], base: ['Новая база', 'Название базы'], rename: ['Переименовать', 'Новое название'], move: ['Переместить', 'Куда переместить'], recover: ['Сохранить копию черновика', 'Название копии'] } as const
+  const labels = { note: ['Новая заметка', 'Название заметки'], folder: ['Новая папка', 'Название папки'], canvas: ['Новый холст', 'Название холста'], base: ['Новая база', 'Название базы'], 'task-format':['Связанные форматы задач','Название файла .base'],rename: ['Переименовать', 'Новое название'], move: ['Переместить', 'Куда переместить'], recover: ['Сохранить копию черновика', 'Название копии'] } as const
   const needsName = dialog.kind !== 'move'
   const description = dialog.kind === 'rename' || dialog.kind === 'move'
     ? 'Ссылки [[wiki]] и файловые карточки Canvas обновятся автоматически. Если документ недоступен или изменён извне, появится предупреждение.'
     : dialog.kind === 'recover' ? 'Будет создан отдельный файл в vault. Существующие файлы не перезаписываются; при совпадении названия выберите другое.'
     : dialog.kind === 'canvas' ? 'Будет создан переносимый файл JSON Canvas.'
-      : dialog.kind === 'base' ? 'Будет создан совместимый файл Obsidian Bases.'
+      : dialog.kind === 'task-format'?'Создаётся определение Table / Kanban / Timeline, а не копии задач. Это расширение Brandon в .base; другие редакторы могут его не поддерживать. Файл можно перетащить на доску.':dialog.kind === 'base' ? 'Будет создан совместимый файл Obsidian Bases.'
         : 'Результат появится обычным объектом в вашей папке.'
   return <div className="dialog-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}>
     <form className="dialog" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
@@ -1264,6 +1273,7 @@ function EntryDialogView({ dialog, folders, inputRef, onChange, onClose, onSubmi
       {needsName && <><label>{labels[dialog.kind][1]}</label><input ref={inputRef} value={dialog.value} onChange={(event) => onChange({ ...dialog, value: event.target.value })} placeholder={dialog.kind === 'note' ? 'Без названия' : 'Название'} /></>}
       {dialog.kind !== 'rename' && <><label>Папка</label><select value={dialog.parent} onChange={(event) => onChange({ ...dialog, parent: event.target.value })}><option value="">Корень vault</option>{folders.filter((folder) => dialog.entry?.path !== folder.path && !folder.path.startsWith(`${dialog.entry?.path}/`)).map((folder) => <option key={folder.path} value={folder.path}>{folder.path}</option>)}</select></>}
       <p>{description}</p>
+      {dialog.kind==='task-format'&&<><label>Проект (точное имя, пусто — все задачи)</label><input aria-label="Проект связанных форматов" value={dialog.project??''} maxLength={512} onChange={e=>onChange({...dialog,project:e.target.value})}/><label>Первое представление</label><select aria-label="Первый связанный формат" value={dialog.layout??'table'} onChange={e=>onChange({...dialog,layout:e.target.value as TaskFormatLayout})}><option value="table">Таблица</option><option value="kanban">Kanban</option><option value="timeline">Timeline</option></select></>}
       <div><button type="button" className="secondary" onClick={onClose}>Отмена</button><button type="submit" className="primary" disabled={needsName && !dialog.value.trim()}>{dialog.kind === 'move' ? 'Переместить' : dialog.kind === 'rename' ? 'Сохранить' : 'Создать'}</button></div>
     </form>
   </div>

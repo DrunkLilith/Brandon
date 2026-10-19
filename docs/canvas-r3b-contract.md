@@ -252,3 +252,103 @@ acceptance remain unverified. No new Tauri release-build claim for this source
 checkpoint; no install, push, publication, paid action or user-data deletion.
 R3B is incomplete; templates/linked formats and all later master-plan packages
 remain required. This checkpoint does not complete or pause the overall goal.
+
+## Linked working formats v1 (contract before writers)
+
+Document is a reference to an existing public Markdown file. Peek/edit reads at
+most 2 MiB through scoped Rust I/O and saves only with an inspected fingerprint;
+external replacement produces a conflict, not an overwrite. No document body
+is copied into Canvas. Opening a linked resource does not recursively open its
+links, run scripts, download media or authorize any external access.
+
+Task formats use a public `.base` file with explicit
+`brandon:{version:1,format:"task-view",filter:{...}}` and `views` records with
+unique `id`, `name`, `type` (`brandon-task-table`, `brandon-task-kanban`,
+`brandon-task-timeline`), optional shared-service `sort`, and timeline
+`windowDays` (7, 14, 30 or 60). This is a documented Brandon extension, not
+standard Obsidian Bases task compatibility. Unknown known versions/types refuse
+execution/editing; unknown v1 fields survive and are reported, never evaluated.
+The existing note/property `.base` subset keeps its distinct note source.
+
+All layouts query the same task metadata and mutate managed TaskIds through
+revision-checked TaskService. Ordinary Markdown checkboxes remain visibly
+read-only. Local search/layout navigation never rewrites a definition. Row DOM
+is bounded rather than silently limiting task results. Source JSON/YAML and
+unknown fields are preserved on inspection; explicit source edits use CAS.
+
+Timeline separates scheduled date/time, durationMinutes and due. Dates/times are
+the existing local civil/date-only strings, not converted to UTC or interpreted
+as recurring/time-zone-aware instants. Moving shifts scheduled by calendar days
+while preserving an optional clock and never changes due. A date-only bar denotes
+its scheduled day, not an invented midnight appointment; duration edits are
+explicit. Timed resize changes duration only, snapped to 15 minutes, bounded to
+1..525600 minutes. Due is a separate marker/field. Unscheduled and out-of-window
+tasks stay discoverable, with keyboard/form alternatives to pointer gestures.
+No recurrence, implicit deadline move or task-row copies are introduced.
+
+Linked source drafts use distinct machine-local journal slots `linked-main` and
+`linked-side`, never the main/side document's draft key. Recovery atomically
+promotes the inspected draft to its editor pane and refuses an existing target
+draft rather than replacing it. Save/explicit discard acknowledge only that
+linked version. Closing with unsaved source text requires save or explicit
+discard; shutdown keeps the durable crash draft. This extends the existing
+workspace journal without a second vault-side document copy.
+
+## Linked formats implementation checkpoint — 19 October 2026
+
+Source implementation over `477b8dca7e4ee36632b7e77bef0395e5d7bda1a9`:
+
+- Palette action **Create linked task formats** creates a root-scoped,
+  create-only `.base` definition, with an optional exact project filter and
+  Table/Kanban/Timeline tabs. It creates no task-row copies. Ordinary note Bases
+  remain a separate renderer/source; future task-format versions/types refuse
+  execution instead of falling back to a note table. Unknown fields survive;
+  warning details cap at 128 entries plus an explicit remainder count.
+- The three layouts use shared Query Service + the existing revision-checked
+  task updater in either pane and in a board-linked peek. Table status controls,
+  Kanban pointer handles/status menus, detail fields, independent date fields,
+  and Timeline move/resize are implemented. Row virtualization is reused; no
+  result-limit masquerades as complete task results. Date-only and unscheduled/
+  out-of-window rows stay visible and distinguishable. Malformed imported dates
+  display an explicit source-repair notice, not a fabricated interval.
+- A standard file card for Markdown or `.base` has a **Show / edit here** action
+  and shared command. Document peek renders inert Markdown (no automatic URL,
+  image or recursive embed fetch), with an explicit 32768-character preview cap
+  and full bounded source editor. The source API requires the main window,
+  current root, public `.md`/`.base` path, <=2 MiB UTF-8 and an inspected
+  fingerprint for saving. External replacement preserves the draft and refuses
+  the stale write. Node/group locks or a changed/deleted link disable mutations.
+- Linked draft keys are isolated from main/side documents. New recovery
+  promotion is one local SQLite transaction, checks root/path/pane/version and
+  refuses an existing destination draft. Both originals survive on refusal.
+  Recovery labels distinguish linked slots. Older builds may not understand the
+  new machine-local pane values; no backward-downgrade recovery claim is made.
+
+Executed source gates: **198 Rust cases** (desktop/vault/Markdown/core/crypto),
+**148 frontend contracts**, strict Clippy, ESLint, typecheck, fmt and production
+frontend build PASS. The existing frontend chunk-size warning is retained, not
+suppressed. New checks cover shared query/source immutability, unknown/prototype
+types, bounded warnings, 3000-row logical results/virtual ranges, civil/leap/DST
+boundary arithmetic, clock/date-only preservation, duration-only resize,
+independent due markers, bounded public text reads/CAS conflicts and isolated
+draft recovery. The count includes existing regressions, not only new tests.
+
+Evidence: `target/qa/r3b-linked-{all-rust,all-frontend,clippy,web-build}.log`.
+`tests/desktop/r3b-working-formats-smoke.mjs` is authored and syntax-checked,
+**not executed**. Its 8 acceptance groups cover shared task identity across
+layouts, an actual pointer move, date-only behavior, a board Document edit and
+durable draft, external-source conflict, board-linked task mutation and future
+schema refusal. It has no app launcher and requires explicit opt-in plus an
+owner-approved available QA session. Source tests are not relabelled as these
+UI groups, real 3000-row DOM acceptance, screenshots or native performance.
+
+No new dependency or license exception was introduced in this slice. The
+previous PNG candidate still fails the license gate on arrayref 0.3.9 and awaits
+the owner's choice. No release/installer/license-clean claim. No Tauri release
+build or live app acceptance claimed for this checkpoint. The existing launch/
+password-screen stop was not retried or bypassed. The accepted running EXE was
+independently read-only checked: PID 20472 still alive, SHA-256 unchanged at
+`d13c80a7e281256f67cc18e7fc3b7d9479e62e3f03fa5557e4eb72edd0451448`.
+No push/install/publication/paid action. R3B still needs the local/project template
+catalogue and live frame/format/export gates; R4 onward and the full master plan
+remain required.

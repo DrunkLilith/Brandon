@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import type { CrashDraft } from './workspace-state'
+import {draftPaneLabel} from './workspace-state'
 
 export function WorkspaceDialog({title,onClose,children}: {title:string;onClose:()=>void;children:ReactNode}) {
   const ref=useRef<HTMLDivElement>(null)
@@ -20,7 +21,7 @@ export function TextComparison({left,right,leftLabel='На диске',rightLabe
 export function RecoveryCenter({drafts,onRestore,onDiscard,onClose}:{drafts:CrashDraft[];onRestore:(draft:CrashDraft)=>void;onDiscard:(draft:CrashDraft)=>void;onClose:()=>void}) {
   const [selected,setSelected]=useState(drafts[0]?.version)
   const current=drafts.find(d=>d.version===selected)??drafts[0]
-  return <WorkspaceDialog title="Восстановление черновиков" onClose={onClose}><p>Найдены несохранённые версии после предыдущей сессии. Открытие черновика не перезаписывает оригинал. Если файл изменился, потребуется разрешить конфликт или сохранить копию.</p><div className="recovery-list">{drafts.map(d=><button key={d.version} className={d.version===current?.version?'active':''} onClick={()=>setSelected(d.version)}><strong>{d.path}</strong><small>{d.pane==='main'?'Основная панель':'Вторая панель'} · {new Date(d.updated).toLocaleString('ru')}</small></button>)}</div>{current?<><TextComparison left={current.baseContent} right={current.content} leftLabel="Исходная версия"/><footer><button onClick={()=>{if(window.confirm('Убрать только эту аварийную копию? Файл на диске не изменится.'))onDiscard(current)}}>Отбросить копию…</button><button className="primary" onClick={()=>onRestore(current)}>Восстановить в редактор</button></footer></>:<p>Невосстановленных черновиков нет.</p>}</WorkspaceDialog>
+  return <WorkspaceDialog title="Восстановление черновиков" onClose={onClose}><p>Найдены несохранённые версии после предыдущей сессии. Открытие черновика не перезаписывает оригинал. Если файл изменился, потребуется разрешить конфликт или сохранить копию.</p><div className="recovery-list">{drafts.map(d=><button key={d.version} className={d.version===current?.version?'active':''} onClick={()=>setSelected(d.version)}><strong>{d.path}</strong><small>{draftPaneLabel(d.pane)} · {new Date(d.updated).toLocaleString('ru')}</small></button>)}</div>{current?<><TextComparison left={current.baseContent} right={current.content} leftLabel="Исходная версия"/><footer><button onClick={()=>{if(window.confirm('Убрать только эту аварийную копию? Файл на диске не изменится.'))onDiscard(current)}}>Отбросить копию…</button><button className="primary" onClick={()=>onRestore(current)}>Восстановить в редактор</button></footer></>:<p>Невосстановленных черновиков нет.</p>}</WorkspaceDialog>
 }
 
 export function VersionHistory({root,path,onRestore,onClose}:{root:string;path:string;onRestore:(text:string)=>void;onClose:()=>void}) {

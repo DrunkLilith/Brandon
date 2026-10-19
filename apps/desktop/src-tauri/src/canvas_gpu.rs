@@ -17,6 +17,8 @@ use wgpu::util::DeviceExt;
 #[path = "canvas_raster_gpu.rs"]
 mod raster;
 use super::{VaultState, attachment_commands::AttachmentState, current_vault};
+#[path = "canvas_ink_gpu.rs"]
+mod ink;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +40,8 @@ pub struct Node {
     pub style: Option<NodeStyle>,
     #[serde(default)]
     image: Option<RasterRef>,
+    #[serde(default)]
+    ink: Option<ink::PreparedInk>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -231,6 +235,9 @@ pub struct Stats {
     pub raster_images: usize,
     pub raster_bytes: usize,
     pub raster_limited: usize,
+    pub ink_strokes: usize,
+    pub ink_segments: usize,
+    pub ink_mask_bytes: u64,
     pub missing_images: Vec<String>,
     pub raster_paths: Vec<String>,
     pub frame_cpu_ms: f64,
@@ -460,6 +467,7 @@ struct Renderer {
     atlas: TextAtlas,
     text_renderers: Vec<TextRenderer>,
     rasters: raster::RasterGpu,
+    inks: ink::InkGpu,
     text_viewport: Viewport,
     nodes: HashMap<String, Node>,
     order: Vec<String>,
@@ -569,6 +577,7 @@ impl Renderer {
         );
         let depth = depth_view(&device, &config);
         let rasters = raster::RasterGpu::new(&device, format, &bind_layout);
+        let inks = ink::InkGpu::new(&device, format, &bind_layout);
         Ok(Self {
             session_id,
             root,
@@ -588,6 +597,7 @@ impl Renderer {
             swash: SwashCache::new(),
             atlas,
             text_renderers: vec![text_renderer],
+            inks,
             text_viewport,
             nodes: HashMap::new(),
             order: Vec::new(),
@@ -607,6 +617,7 @@ impl Renderer {
 
     fn update(&mut self, delta: SceneDelta) -> Result<(), String> {
         let start = Instant::now();
+        ink::validate_scene(&self.nodes, &delta)?;
         if delta.nodes.len() > 100_000 {
             return Err("Canvas prototype limit: 100,000 objects".into());
         }
@@ -683,6 +694,7 @@ impl Renderer {
                     || old.width != node.width
                     || old.height != node.height
                     || old.style != node.style
+                    || old.ink != node.ink
             }) {
                 self.buffers.remove(&node.id);
             }
@@ -894,51 +906,61 @@ impl Renderer {
             }
             let shape_start = (shapes.len() / 16) as u32;
             let position = screen(node.x, node.y);
-            instance_alpha(
-                &mut shapes,
-                [
-                    position[0],
-                    position[1],
-                    node.width * scale,
-                    node.height * scale,
-                ],
-                rgb(
-                    node.fill.as_deref(),
-                    if node.kind == "group" {
-                        0x222128
-                    } else {
-                        0x28282b
-                    },
-                ),
-                if selected.contains(id.as_str()) {
-                    0xaca1ee
-                } else {
-                    rgb(node.border.as_deref(), 0x4a484f)
-                },
-                [
-                    node.style
-                        .as_ref()
-                        .map_or(8. * scale.min(2.), |s| s.radius * scale),
-                    node.style.as_ref().map_or(0., |s| s.shape as f32),
+            if node.ink.is_none() || selected.contains(id.as_str()) {
+                instance_alpha(
+                    &mut shapes,
+                    [
+                        position[0],
+                        position[1],
+                        node.width * scale,
+                        node.height * scale,
+                    ],
+                    rgb(
+                        node.fill.as_deref(),
+                        if node.kind == "group" {
+                            0x222128
+                        } else {
+                            0x28282b
+                        },
+                    ),
                     if selected.contains(id.as_str()) {
-                        (2. * ratio).max(
-                            node.style
-                                .as_ref()
-                                .map_or(ratio, |s| s.stroke_width * scale),
-                        )
+                        0xaca1ee
                     } else {
-                        node.style.as_ref().map_or(ratio, |s| {
-                            if s.shape == 6 {
-                                0.
-                            } else {
-                                s.stroke_width * scale
-                            }
-                        })
+                        rgb(node.border.as_deref(), 0x4a484f)
                     },
-                    layer_depth(*self.layers.get(*id).unwrap_or(&0), self.order.len()),
-                ],
-                opacity(node.fill.as_deref()),
-            );
+                    [
+                        node.style
+                            .as_ref()
+                            .map_or(8. * scale.min(2.), |s| s.radius * scale),
+                        if node.ink.is_some() {
+                            6.
+                        } else {
+                            node.style.as_ref().map_or(0., |s| s.shape as f32)
+                        },
+                        if selected.contains(id.as_str()) {
+                            (2. * ratio).max(
+                                node.style
+                                    .as_ref()
+                                    .map_or(ratio, |s| s.stroke_width * scale),
+                            )
+                        } else {
+                            node.style.as_ref().map_or(ratio, |s| {
+                                if s.shape == 6 {
+                                    0.
+                                } else {
+                                    s.stroke_width * scale
+                                }
+                            })
+                        },
+                        layer_depth(*self.layers.get(*id).unwrap_or(&0), self.order.len()),
+                    ],
+                    if node.ink.is_some() {
+                        0.
+                    } else {
+                        opacity(node.fill.as_deref())
+                    },
+                );
+            }
             if zoom >= 0.5
                 && let Some(image) = &node.image
             {
@@ -984,7 +1006,8 @@ impl Renderer {
                 (shapes.len() / 16) as u32,
                 alpha > 0. && alpha < 1. || node.image.is_some() && alpha < 1.,
             ));
-            if zoom < 0.5
+            if node.ink.is_some()
+                || zoom < 0.5
                 || node.width < 30.
                 || node.height < 30.
                 || node.style.as_ref().is_some_and(|s| s.shape == 7)
@@ -1020,7 +1043,15 @@ impl Renderer {
                 height: size.height,
             },
         );
-        let batches = composition_batches(prelude, &spans, zoom >= 0.5 && !frame.overlay_nodes);
+        let batches = composition_batches(
+            prelude,
+            &spans,
+            (zoom >= 0.5
+                || ids
+                    .iter()
+                    .any(|id| self.nodes.get(*id).is_some_and(|node| node.ink.is_some())))
+                && !frame.overlay_nodes,
+        );
         self.text_renderers.truncate(batches.len());
         while self.text_renderers.len() < batches.len() {
             self.text_renderers.push(TextRenderer::new(
@@ -1043,6 +1074,20 @@ impl Renderer {
                 screen: &screen,
             },
         );
+        self.inks.prepare(
+            &self.device,
+            &self.queue,
+            ink::InkFrame {
+                batches: &batches,
+                ids: &ids,
+                nodes: &self.nodes,
+                layers: &self.layers,
+                scale,
+                screen: &screen,
+                size: [size.width, size.height],
+                enabled: !frame.overlay_nodes,
+            },
+        )?;
         for (batch_index, batch) in batches.iter().enumerate() {
             let mut text_areas = Vec::new();
             // Edge labels precede transparent text nodes even in an opaque batch.
@@ -1181,39 +1226,18 @@ impl Renderer {
         );
         let view = texture.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Canvas frame"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.118,
-                            g: 0.118,
-                            b: 0.118,
-                            a: 1.,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let left = (vp.x * ratio).clamp(0., size.width as f32) as u32;
-            let top = (vp.y * ratio).clamp(0., size.height as f32) as u32;
-            let right = ((vp.x + vp.width) * ratio).clamp(left as f32, size.width as f32) as u32;
-            let bottom = ((vp.y + vp.height) * ratio).clamp(top as f32, size.height as f32) as u32;
+        let left = (vp.x * ratio).clamp(0., size.width as f32) as u32;
+        let top = (vp.y * ratio).clamp(0., size.height as f32) as u32;
+        let right = ((vp.x + vp.width) * ratio).clamp(left as f32, size.width as f32) as u32;
+        let bottom = ((vp.y + vp.height) * ratio).clamp(top as f32, size.height as f32) as u32;
+        let target = ink::CanvasTarget {
+            color: &view,
+            depth: &self.depth,
+            uniform: &self.bind_group,
+            scissor: [left, top, right - left, bottom - top],
+        };
+        if self.inks.count == 0 || right <= left || bottom <= top {
+            let mut pass = ink::color_pass(&mut encoder, &target, true);
             if right > left && bottom > top {
                 pass.set_scissor_rect(left, top, right - left, bottom - top);
                 for (batch_index, batch) in batches.iter().enumerate() {
@@ -1227,6 +1251,25 @@ impl Renderer {
                         .render(&self.atlas, &self.text_viewport, &mut pass)
                         .map_err(|error| error.to_string())?;
                 }
+            }
+        } else {
+            for (batch_index, batch) in batches.iter().enumerate() {
+                {
+                    let mut pass = ink::color_pass(&mut encoder, &target, batch_index == 0);
+                    pass.set_scissor_rect(left, top, right - left, bottom - top);
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, &self.bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.instances.slice(..));
+                    pass.draw(0..6, batch.shapes.clone());
+                }
+                self.inks.encode_batch(batch_index, &mut encoder, &target);
+                let mut pass = ink::color_pass(&mut encoder, &target, false);
+                pass.set_scissor_rect(left, top, right - left, bottom - top);
+                self.rasters
+                    .render(batch_index, &self.bind_group, &mut pass);
+                self.text_renderers[batch_index]
+                    .render(&self.atlas, &self.text_viewport, &mut pass)
+                    .map_err(|error| error.to_string())?;
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -1249,6 +1292,9 @@ impl Renderer {
         self.stats.missing_images = self.rasters.missing();
         self.stats.raster_paths = self.rasters.paths();
         self.stats.raster_limited = self.rasters.limited;
+        self.stats.ink_strokes = self.inks.count;
+        self.stats.ink_segments = self.inks.segment_count;
+        self.stats.ink_mask_bytes = self.inks.mask_bytes();
         self.stats.frames += 1;
         self.stats.text_buffers = self.buffers.len();
         self.stats.frame_cpu_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -1702,6 +1748,7 @@ mod tests {
                 border: None,
                 style: None,
                 image: None,
+                ink: None,
             },
             Node {
                 id: "group".into(),
@@ -1715,6 +1762,7 @@ mod tests {
                 border: None,
                 style: None,
                 image: None,
+                ink: None,
             },
         ]
         .into_iter()

@@ -15,12 +15,15 @@ import { MarkdownPreview } from './markdown-preview'
 import { displayProperty } from './properties'
 import type {CanvasDocument,CanvasNode,CanvasPrimitive} from './canvas-model'
 import {canvasExtension,canvasPrimitive} from './canvas-model'
-import {CANVAS_COMMANDS,CANVAS_CREATE_COMMANDS} from './canvas-commands'
+import {CANVAS_COMMANDS,CANVAS_CREATE_COMMANDS,CANVAS_INK_COMMANDS} from './canvas-commands'
 import {canvasAppearance,canvasNodeHit,primitiveNode,canvasTopHit,canvasGroupHeaderHit as groupHeaderHit} from './canvas-primitives'
 import {canvasRasterLayout} from './canvas-raster'
 import {canvasTaskBinding,canvasTaskId,canvasTaskLabel,taskReferenceNode} from './canvas-tasks'
 import {CanvasTaskPicker,CanvasTaskCard,CanvasTaskDialog,type CanvasTaskUpdater} from './canvas-task-ui'
 import type {TaskMetadata,TaskPatch} from './types'
+import {canvasInk} from './canvas-ink'
+import {CanvasInkView} from './canvas-ink-view'
+import {useCanvasInk} from './use-canvas-ink'
 import {CanvasPrimitiveView} from './canvas-primitive-view'
 import {CanvasStyleDialog} from './canvas-style-dialog'
 import {CanvasStickyStack} from './canvas-sticky-stack'
@@ -35,14 +38,14 @@ type Camera = { x: number; y: number; zoom: number }
 type Point = { x: number; y: number }
 type SelectionBox = { start: Point; end: Point; additive: boolean }
 type DragState =
-  | { type: 'pan'; start: Point; camera: Camera }
+  | { type: 'pan'; start: Point; camera: Camera;pointerId:number }
   | { type: 'select'; selection: SelectionBox; base: Set<string> }
   | { type: 'nodes'; before: string; start: Point; base:CanvasDocument; ids:Set<string> }
   | { type: 'resize'; before: string; start: Point; id: string; width: number; height: number }
 
 const MIN_ZOOM = .05
 const MAX_ZOOM = 3
-function editableCanvasText(node:CanvasNode|null|undefined):node is CanvasNode{return node?.type==='text'&&canvasPrimitive(node)!=='divider'}
+function editableCanvasText(node:CanvasNode|null|undefined):node is CanvasNode{return node?.type==='text'&&!canvasInk(node)&&canvasPrimitive(node)!=='divider'}
 function CanvasRasterContent({node,root}:{node:CanvasNode;root:string}){const layout=canvasRasterLayout(node);return <><div className="canvas-raster-stage" style={{left:layout.image.x,top:layout.image.y,width:layout.image.width,height:layout.image.height}}><AttachmentImage root={root} path={node.file!}/></div><strong className="canvas-raster-caption" style={{left:layout.footer.x,top:layout.footer.y,width:layout.footer.width,height:layout.footer.height,fontSize:layout.fontSize,lineHeight:'1.55'}}>{node.file?.split('/').at(-1)}</strong></>}
 function CanvasFileProperties({properties}:{properties:Record<string,unknown>|undefined}){
   if(!properties)return null
@@ -126,7 +129,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 })
   const [editingId, setEditingId] = useState<string | null>(null)
   const [attachmentPath, setAttachmentPath] = useState<string | null>(null)
-  const [context, setContext] = useState<{x:number;y:number;id:string|null;edgeId?:string;arrange?:boolean;create?:boolean} | null>(null)
+  const [context, setContext] = useState<{x:number;y:number;id:string|null;edgeId?:string;arrange?:boolean;create?:boolean;inkTool?:boolean} | null>(null)
   const [styleTarget,setStyleTarget]=useState<{source:string;ids:Set<string>;nodes:CanvasNode[]}|null>(null)
   const [stickyStack,setStickyStack]=useState(false)
   const [edgeTarget,setEdgeTarget]=useState<{source:string;edge:CanvasEdge}|null>(null)
@@ -297,6 +300,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     x: (point.x - viewportSize.width / 2 - camera.x) / camera.zoom,
     y: (point.y - viewportSize.height / 2 - camera.y) / camera.zoom,
   })
+  const ink=useCanvasInk({document:stored,locked:locks.ids,disabled:Boolean(validation.error||locks.error),zoom:camera.zoom,toWorld:(x,y)=>screenToWorld(localPoint(x,y)),onPreview:setGestureDocument,onCommit:(next,id)=>{commit(next);if(id)setSelected(new Set([id]))},onError:setOperationError})
   const hitNode=(point:Point)=>canvasTopHit(spatial.query({x:point.x-12/camera.zoom,y:point.y-12/camera.zoom,width:24/camera.zoom,height:24/camera.zoom}).filter(node=>canvasNodeHit(node,point,6/camera.zoom)||selected.has(node.id)&&!locks.ids.has(node.id)&&Math.abs(point.x-node.x-node.width)*camera.zoom<12&&Math.abs(point.y-node.y-node.height)*camera.zoom<12),point)
   const hitEdge=(point:Point)=>edgeIndex.query({x:point.x-8/camera.zoom,y:point.y-8/camera.zoom,width:16/camera.zoom,height:16/camera.zoom}).filter(edge=>canvasEdgeHit(edge,point,Math.max(6/camera.zoom,edge.strokeWidth/2))).at(-1)
   const selectEdge=(id:string)=>{setSelected(new Set());setSelectedEdge(id);setEditingId(null);viewport.current?.focus()}
@@ -358,6 +362,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   }
 
   const undo = () => {
+    if(ink.isActive()){ink.cancel();return}
     const previous = undoStack.current.pop()
     if (!previous) return
     redoStack.current.push(serializeCanvas(documentRef.current))
@@ -365,6 +370,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     nudgeHistory()
   }
   const redo = () => {
+    if(ink.isActive()){ink.cancel();return}
     const next = redoStack.current.pop()
     if (!next) return
     undoStack.current.push(serializeCanvas(documentRef.current))
@@ -426,7 +432,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     if (tool === 'pan' || spacePanning || event.button === 1 || event.altKey) {
       event.preventDefault()
       event.currentTarget.setPointerCapture(event.pointerId)
-      drag.current = { type: 'pan', start: point, camera }
+      drag.current = { type: 'pan', start: point, camera,pointerId:event.pointerId }
       return
     }
     if (event.button !== 0) return
@@ -451,6 +457,16 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     drag.current = { type: 'select', selection, base: new Set(selected) }
     setSelectionBox(selection)
     if (!additive) setSelected(new Set())
+  }
+  const capturePointerDown=(event:PointerEvent<HTMLDivElement>)=>{
+    const stop=()=>{event.preventDefault();event.stopPropagation();viewport.current?.focus()}
+    if(ink.isActive()&&ink.down(event)){stop();return}
+    if(ink.isUi(event.target))return
+    if(event.button!==2&&(tool==='pan'||spacePanning||event.button===1||event.altKey||event.pointerType==='touch')){
+      if(drag.current?.type==='pan'&&drag.current.pointerId!==event.pointerId){stop();return}
+      ink.cancel();cancelPointer();stop();event.currentTarget.setPointerCapture(event.pointerId);suppressNodeClick.current=true;drag.current={type:'pan',start:localPoint(event.clientX,event.clientY),camera,pointerId:event.pointerId};return
+    }
+    if(ink.down(event)){drag.current=null;setSelectionBox(null);stop()}
   }
   const nodePointerDown = (event: PointerEvent<HTMLDivElement>, id: string) => {
     if ((event.target as HTMLElement).closest('textarea, input, select, button, a, .canvas-resize-handle')) return
@@ -490,6 +506,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     if (!current) return
     const point = localPoint(event.clientX, event.clientY)
     if (current.type === 'pan') {
+      if(current.pointerId!==event.pointerId)return
       setCamera({ ...current.camera, x: current.camera.x + point.x - current.start.x, y: current.camera.y + point.y - current.start.y })
       return
     }
@@ -518,9 +535,10 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     } : node), edges: document.edges }
     documentRef.current = next; setGestureDocument(next)
   }
-  const finishPointer = () => {
+  const finishPointer = (event?:{pointerId:number}) => {
     const current = drag.current
     if (!current) return
+    if(current.type==='pan'&&event&&current.pointerId!==event.pointerId)return
     if (current.type === 'nodes' || current.type === 'resize') finishGesture(current.before)
     drag.current = null
     setSelectionBox(null)
@@ -536,6 +554,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     let raf = 0
     let queued: { x: number; y: number; dx: number; dy: number; zoom: boolean }[] = []
     const wheel = (event: globalThis.WheelEvent) => {
+      if(ink.isActive()){event.preventDefault();return}
       if (event.target instanceof Element && event.target.closest('.canvas-toolbar, .canvas-note-picker, .canvas-minimap, .command-menu, .canvas-selection-actions, .canvas-operation-error, .dialog-backdrop, .image-viewer-backdrop')) return
       if (!event.ctrlKey && event.target instanceof HTMLTextAreaElement && event.target.scrollHeight > event.target.clientHeight) return
       event.preventDefault()
@@ -559,7 +578,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   }, [])
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if(event.key==='ContextMenu'||event.key==='F10'&&event.shiftKey){event.preventDefault();const rect=viewport.current!.getBoundingClientRect();setContext({x:rect.left+rect.width/2,y:rect.top+Math.min(180,rect.height/2),id:[...selected][0]??null,edgeId:selectedEdge??undefined});return}
-    if (event.key === 'Escape') { setAttachmentPath(null); setEditingId(null); setLinking(null); setSelected(new Set());setSelectedEdge(null); viewport.current?.focus(); return }
+    if (event.key === 'Escape') { ink.cancel();ink.setMode(null);cancelPointer();setAttachmentPath(null); setEditingId(null); setLinking(null); setSelected(new Set());setSelectedEdge(null); viewport.current?.focus(); return }
     if ((event.target as HTMLElement).closest('textarea, input, [contenteditable="true"]')) return
     if(event.key==='Enter'&&selectedEdge){event.preventDefault();boardRegistry.current?.execute('canvas-edge-style');return}
     if(event.key==='Enter'&&selected.size===1&&canvasTaskId(nodes.get([...selected][0]))){event.preventDefault();setTaskNodeId([...selected][0]);return}
@@ -581,7 +600,8 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   const ancestorLockedSelection=selectionRoots.some(node=>locks.ids.has(node.id)&&!canvasExtension(node)?.locked)
   const arrange=(id:string)=>{
     const document=documentRef.current
-    if(id==='canvas-task-details')setTaskNodeId([...selected][0]??null)
+    if(id.startsWith('canvas-tool-')){cancelPointer();ink.cancel();setEditingId(null);setLinking(null);setNotePicker(false);setSelected(new Set());setSelectedEdge(null);setTool('select');ink.setMode(id.slice('canvas-tool-'.length)as 'pen'|'highlighter'|'eraser')}
+    else if(id==='canvas-task-details')setTaskNodeId([...selected][0]??null)
     else if(id==='canvas-add-task')setTaskPicker(true)
     else if(id==='canvas-edge-style')openEdgeStyle()
     else if(id==='canvas-edge-reverse'&&selectedEdge)commit(reverseCanvasEdge(document,selectedEdge))
@@ -612,7 +632,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     {id:'redo',label:'Повторить',defaultShortcut:'Mod+Shift+KeyZ',enabled:Boolean(redoStack.current.length),run:redo},
     {id:'redo-alt',label:'Повторить',defaultShortcut:'Mod+KeyY',enabled:Boolean(redoStack.current.length),run:redo},
     {id:'select-all',label:'Выделить всё',defaultShortcut:'Mod+KeyA',run:()=>setSelected(new Set(parsed.nodes.map(n=>n.id)))},
-    ...CANVAS_COMMANDS.map(command=>({...command,label:command.id==='canvas-lock'?(ancestorLockedSelection?'В заблокированной группе':unlockedSelection?'Заблокировать':'Разблокировать'):command.label,enabled:command.id==='canvas-task-details'?selected.size===1&&Boolean(canvasTaskId(nodes.get([...selected][0]))):command.id.startsWith('canvas-edge-')?edgeEditable:command.id.startsWith('canvas-add-')?true:command.id==='canvas-style'?editable:command.id==='canvas-lock'?Boolean(selected.size)&&!locks.error&&!ancestorLockedSelection:editable&&(command.id==='canvas-group'?selected.size>=2:command.id==='canvas-ungroup'?[...selected].some(id=>nodes.get(id)?.type==='group'):command.id==='canvas-front'||command.id==='canvas-back'?true:rootCount>=(command.id.includes('distribute')?3:2)),run:attempt(()=>arrange(command.id))})),
+    ...CANVAS_COMMANDS.map(command=>({...command,label:command.id==='canvas-lock'?(ancestorLockedSelection?'В заблокированной группе':unlockedSelection?'Заблокировать':'Разблокировать'):command.label,enabled:command.id==='canvas-task-details'?selected.size===1&&Boolean(canvasTaskId(nodes.get([...selected][0]))):command.id.startsWith('canvas-tool-')?true:command.id.startsWith('canvas-edge-')?edgeEditable:command.id.startsWith('canvas-add-')?true:command.id==='canvas-style'?editable:command.id==='canvas-lock'?Boolean(selected.size)&&!locks.error&&!ancestorLockedSelection:editable&&(command.id==='canvas-group'?selected.size>=2:command.id==='canvas-ungroup'?[...selected].some(id=>nodes.get(id)?.type==='group'):command.id==='canvas-front'||command.id==='canvas-back'?true:rootCount>=(command.id.includes('distribute')?3:2)),run:attempt(()=>arrange(command.id))})),
   ],hotkeys)
 
   const contentBounds = useMemo(() => boundsFor(parsed.nodes), [parsed.nodes])
@@ -639,18 +659,22 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
 
   return <div
     ref={viewport}
-    className={`canvas-view tool-${spacePanning ? 'pan' : tool} ${native.active ? 'native-renderer' : ''} ${attachments.dragOver ? 'attachment-drag-over' : ''}`}
+    className={`canvas-view tool-${spacePanning ? 'pan' : ink.mode??tool} ${native.active ? 'native-renderer' : ''} ${attachments.dragOver ? 'attachment-drag-over' : ''}`}
     data-renderer={native.active ? 'wgpu' : overview ? 'overview' : 'dom'}
     data-dom-geometry={native.active&&domGeometry?'true':undefined}
     data-zoom={camera.zoom}
     data-visible-nodes={visibleNodes.length}
     data-total-nodes={parsed.nodes.length}
+    data-ink-tool={ink.mode??undefined}
     data-selected-edge={selectedEdge??undefined}
     data-native-edge-labels={native.stats?.edgeLabels}
     data-native-draw-batches={native.stats?.drawBatches}
     data-native-translucent-batches={native.stats?.translucentBatches}
     data-native-raster-images={native.stats?.rasterImages}
     data-native-raster-bytes={native.stats?.rasterBytes}
+    data-native-ink-strokes={native.stats?.inkStrokes}
+    data-native-ink-segments={native.stats?.inkSegments}
+    data-native-ink-mask-bytes={native.stats?.inkMaskBytes}
     data-search-focused-node={focusTarget?.nodeId && selected.has(focusTarget.nodeId) ? focusTarget.nodeId : undefined}
     data-frame-cpu-ms={native.stats?.frameCpuMs}
     data-native-frames={native.stats?.frames}
@@ -660,10 +684,16 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     tabIndex={0}
     onKeyDown={keyDown}
     onPointerDown={pointerDown}
+    onPointerDownCapture={capturePointerDown}
+    onPointerMoveCapture={event=>{if(spacePanning&&ink.isActive())ink.cancel();if(ink.move(event)){event.preventDefault();event.stopPropagation()}}}
+    onPointerUpCapture={event=>{if(ink.up(event)){event.preventDefault();event.stopPropagation()}}}
+    onClickCapture={event=>{if(ink.consumeClick(event.target)){event.preventDefault();event.stopPropagation()}}}
     onPointerMove={pointerMove}
     onPointerUp={finishPointer}
-    onPointerCancel={cancelPointer}
+    onPointerCancel={event=>{if(ink.owns(event.pointerId))ink.cancel();else if(drag.current?.type!=='pan'||drag.current.pointerId===event.pointerId)cancelPointer()}}
+    onLostPointerCapture={event=>{if(ink.owns(event.pointerId))ink.cancel()}}
     onContextMenu={(event) => {
+      if(ink.isActive())ink.cancel()
       if ((event.target as HTMLElement).closest('textarea,input,.command-menu,.image-viewer')) return
       event.preventDefault();event.stopPropagation();finishPointer()
       const element=(event.target as HTMLElement).closest<HTMLElement>('[data-node-id]')
@@ -696,10 +726,11 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     }}
   >
     <div className={`canvas-toolbar ${viewportSize.width<1100?'compact':''}`}>
-      <div className="canvas-tool-toggle"><button className={tool === 'select' ? 'active' : ''} onClick={() => setTool('select')}>Выбор</button><button className={tool === 'pan' ? 'active' : ''} onClick={() => setTool('pan')}>Рука</button></div>
+      <div className="canvas-tool-toggle"><button className={tool === 'select'&&!ink.mode ? 'active' : ''} onClick={() => {ink.cancel();ink.setMode(null);setTool('select')}}>Выбор</button><button className={tool === 'pan' ? 'active' : ''} onClick={() => {ink.cancel();ink.setMode(null);setTool('pan')}}>Рука</button></div>
       <i />
       <button onClick={attempt(addText)}><PlusIcon />Карточка</button>
       <button aria-label="Добавить фигуру или стикер" aria-expanded={Boolean(context?.create)} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();setContext(current=>current?.create?null:{x:rect.left,y:rect.bottom+8,id:null,create:true})}}>Фигуры</button>
+      <button className={ink.mode?'active':''} aria-label="Инструменты рисования" aria-expanded={Boolean(context?.inkTool)} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();setContext(current=>current?.inkTool?null:{x:rect.left,y:rect.bottom+8,id:null,inkTool:true})}}>✎ {ink.mode==='pen'?'Перо':ink.mode==='highlighter'?'Маркер':ink.mode==='eraser'?'Ластик':'Рисовать'}</button>
       <button aria-label="Упорядочить объекты" aria-expanded={Boolean(context?.arrange)} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();setContext(current=>current?.arrange?null:{x:rect.left,y:rect.bottom+8,id:[...selected][0]??null,arrange:true})}}>Упорядочить</button>
       <button aria-label={selectedEdge?'Стиль выбранной связи':'Стиль выбранных объектов'} disabled={selectedEdge?!edgeEditable:!editable} onClick={()=>boardRegistry.current?.execute(selectedEdge?'canvas-edge-style':'canvas-style')}>Стиль</button>
       <button onClick={() => setNotePicker((current) => !current)}><FileIcon />Заметка</button>
@@ -713,17 +744,18 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
       <button className="canvas-zoom" title="Уменьшить" onClick={() => zoomFromCenter(1 / 1.16)}>−</button>
       <button className="canvas-zoom-value" title="Масштаб 100%" onClick={() => setCamera((current) => ({ ...current, x: current.x / current.zoom, y: current.y / current.zoom, zoom: 1 }))}>{Math.round(camera.zoom * 100)}%</button>
       <button className="canvas-zoom" title="Увеличить" onClick={() => zoomFromCenter(1.16)}>+</button></div>
-      {extended&&<span className="canvas-compatibility" title="Расширение Brandon v1: текст и геометрия читаются другими редакторами, но блокировка и стили могут не учитываться.">Расширенный Canvas</span>}
+      {extended&&<span className="canvas-compatibility" title="Расширение Brandon v1: текст и геометрия читаются другими редакторами, но блокировка и стили могут не учитываться. Штрих покажется текстовой карточкой, задача — ссылкой на Markdown.">Расширенный Canvas</span>}
     </div>
+    {ink.mode&&<div className="canvas-ink-options" data-tool={ink.mode}><strong>{ink.mode==='pen'?'Перо':ink.mode==='highlighter'?'Маркер':'Ластик штрихов'}</strong>{ink.mode!=='eraser'&&<label>Цвет<input aria-label="Цвет кисти" type="color" value={ink.color} onChange={event=>ink.setColor(event.target.value)}/></label>}<label>Размер<select aria-label={ink.mode==='eraser'?'Размер ластика':'Размер кисти'} value={ink.mode==='eraser'?ink.eraserSize:ink.size} onChange={event=>ink.mode==='eraser'?ink.setEraserSize(Number(event.target.value)):ink.setSize(Number(event.target.value))}>{(ink.mode==='eraser'?[8,16,24,32,64]:[1,2,4,8,16,32,64]).map(size=><option key={size} value={size}>{size}</option>)}</select></label>{ink.mode==='pen'&&<label><input type="checkbox" aria-label="Учитывать нажатие пера" checked={ink.pressure} onChange={event=>ink.setPressure(event.target.checked)}/>Нажатие пера</label>}<small>{ink.mode==='eraser'?'Удаляются только целые штрихи. Один проход — один Undo.':'Мышь — постоянная толщина; перо — по нажатию. Палец перемещает холст.'} · Esc — выбор</small></div>}
     {notePicker && <div className="canvas-note-picker"><strong>Добавить заметку</strong>{index?.documents.slice(0, 80).map((document) => <button key={document.path} onClick={attempt(() => addFile(document.path))}><FileIcon /><span>{document.title}</span><small>{document.path}</small></button>)}{!index?.documents.length && <p>В vault пока нет заметок.</p>}</div>}
     {overview && <CanvasOverview nodes={visibleNodes} edges={visibleEdges} camera={camera} size={viewportSize} selected={selected} selectedEdge={selectedEdge} linking={linking} />}
     <div className="canvas-world" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
       {!native.active && !overview && <CanvasEdgeView edges={visibleEdges} selected={selectedEdge} zoom={camera.zoom}/>}
       {domNodes.map((node) => <div
         key={node.id}
-        className={`canvas-node type-${node.type} ${canvasPrimitive(node)?'primitive-node':''} ${canvasAppearance(node).styled?'is-styled':''} ${node.color?'is-colored':''} ${locks.ids.has(node.id)?'is-locked':''} ${native.active ? 'native-editing' : ''} ${richCards ? 'rich-card' : ''} ${imageNodes.has(node.id) ? 'has-image-preview' : ''} ${linking === node.id ? 'link-source' : ''} ${selected.has(node.id) ? 'selected' : ''}`}
+        className={`canvas-node type-${node.type} ${canvasInk(node)?'ink-node':''} ${canvasPrimitive(node)?'primitive-node':''} ${canvasAppearance(node).styled?'is-styled':''} ${node.color?'is-colored':''} ${locks.ids.has(node.id)?'is-locked':''} ${native.active ? 'native-editing' : ''} ${richCards ? 'rich-card' : ''} ${imageNodes.has(node.id) ? 'has-image-preview' : ''} ${linking === node.id ? 'link-source' : ''} ${selected.has(node.id) ? 'selected' : ''}`}
         data-node-id={node.id}
-        style={{ left: node.x, top: node.y, width: node.width, height: node.height, color:canvasAppearance(node).text,fontSize:canvasAppearance(node).fontSize,textAlign:canvasAppearance(node).textAlign,backgroundColor:canvasPrimitive(node)?'transparent':native.active&&!domGeometry&&node.type==='group'?'transparent':canvasAppearance(node).fill, borderColor: selected.has(node.id) ? '#aca1ee' : canvasAppearance(node).border }}
+        style={{ left: node.x, top: node.y, width: node.width, height: node.height, color:canvasAppearance(node).text,fontSize:canvasAppearance(node).fontSize,textAlign:canvasAppearance(node).textAlign,backgroundColor:canvasInk(node)||canvasPrimitive(node)?'transparent':native.active&&!domGeometry&&node.type==='group'?'transparent':canvasAppearance(node).fill, borderColor: selected.has(node.id) ? '#aca1ee' : canvasAppearance(node).border }}
         onPointerDown={(event) => nodePointerDown(event, node.id)}
         onDoubleClick={event=>{const p=screenToWorld(localPoint(event.clientX,event.clientY)),edge=node.type==='group'&&!groupHeaderHit(node,p)?hitEdge(p):undefined;if(edge&&canvasEdgeEditable(documentRef.current,edge.id)){selectEdge(edge.id);openEdgeStyle(edge.id);return}if(editableCanvasText(node)&&!locks.ids.has(node.id))setEditingId(node.id)}}
         onClick={(event) => {
@@ -736,7 +768,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
         }}
       >
         <div className="canvas-node-grip"><span>{locks.ids.has(node.id)?'🔒 ':''}{node.type === 'text' ? 'Текст' : node.type === 'file' ? 'Заметка' : node.type === 'group' ? 'Группа' : 'Ссылка'}</span><button title="Удалить карточку" disabled={locks.ids.has(node.id)} onClick={(event) => { event.stopPropagation();attempt(()=>commit(deleteCanvasSelection(documentRef.current,new Set([node.id]))))() }}>×</button></div>
-        {node.type === 'text' && (canvasPrimitive(node)?<CanvasPrimitiveView node={node} native={native.active&&!domGeometry} selected={selected.has(node.id)} editing={editingId===node.id} locked={locks.ids.has(node.id)} zoom={camera.zoom} onChange={text=>updateNode(node.id,{text})}/>:editingId!==node.id?(richCards?<div className="canvas-rich-text"><MarkdownPreview root={root} source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">{locks.ids.has(node.id)?'Заблокировано':'Двойной клик — редактировать'}</small></div>:<div className="canvas-plain-text">{node.text}</div>):<textarea readOnly={locks.ids.has(node.id)} autoFocus value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
+        {node.type === 'text' && (canvasInk(node)?<CanvasInkView node={node}/>:canvasPrimitive(node)?<CanvasPrimitiveView node={node} native={native.active&&!domGeometry} selected={selected.has(node.id)} editing={editingId===node.id} locked={locks.ids.has(node.id)} zoom={camera.zoom} onChange={text=>updateNode(node.id,{text})}/>:editingId!==node.id?(richCards?<div className="canvas-rich-text"><MarkdownPreview root={root} source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">{locks.ids.has(node.id)?'Заблокировано':'Двойной клик — редактировать'}</small></div>:<div className="canvas-plain-text">{node.text}</div>):<textarea readOnly={locks.ids.has(node.id)} autoFocus value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
         {node.type === 'file' && (canvasTaskId(node)?<CanvasTaskCard binding={canvasTaskBinding(node,taskMap,Boolean(index))!} locked={locks.ids.has(node.id)||!onUpdateTask} busy={busyTaskId!==null} onEdit={()=>setTaskNodeId(node.id)} onToggle={()=>toggleBoundTask(node)}/>:<div className={`canvas-file-card ${imageNodes.has(node.id)?'canvas-raster-card':''}`} role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <CanvasRasterContent root={root} node={node}/> : <FileIcon />}{!imageNodes.has(node.id)&&<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong>}<small>{node.file}</small><CanvasFileProperties properties={noteProperties.get(node.file??'')}/></div>)}
         {node.type === 'link' && <a href={node.url} target="_blank" rel="noreferrer">{node.url}</a>}
         {node.type === 'group' && <strong className="canvas-group-label">{node.label || 'Группа'}</strong>}
@@ -749,7 +781,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     {styleTarget&&<CanvasStyleDialog nodes={styleTarget.nodes} onClose={()=>setStyleTarget(null)} onApply={patch=>{if(serializeCanvas(documentRef.current)!==styleTarget.source)throw Error('Доска изменилась. Закройте стиль и откройте его заново.');if(!canvasSelectionEditable(documentRef.current,styleTarget.ids))throw Error('Объекты заблокированы');commit(patchCanvasSelection(documentRef.current,styleTarget.ids,patch))}}/>}
     {edgeTarget&&<CanvasEdgeDialog edge={edgeTarget.edge} nodes={parsed.nodes} locked={locks.ids} onClose={()=>setEdgeTarget(null)} onApply={patch=>{if(serializeCanvas(documentRef.current)!==edgeTarget.source)throw Error('Доска изменилась. Закройте связь и откройте её заново.');commit(patchCanvasEdge(documentRef.current,edgeTarget.edge.id,patch))}}/>}
     {stickyStack&&<CanvasStickyStack onClose={()=>setStickyStack(false)} onApply={lines=>{const center=screenToWorld({x:viewportSize.width/2,y:viewportSize.height/2}),newNodes=lines.map((text,i)=>({...primitiveNode(nextId('sticky'),'sticky',{x:center.x+(i%3-1)*272,y:center.y+Math.floor(i/3)*272}),text})),document=documentRef.current;commit(insertCanvasNodes(document,newNodes));setSelected(new Set(newNodes.map(node=>node.id)))}}/>}
-    {context && <CommandMenu x={context.x} y={context.y} registry={boardRegistry.current!} ids={context.create?CANVAS_CREATE_COMMANDS.map(c=>c.id):context.arrange?CANVAS_COMMANDS.filter(c=>!c.id.startsWith('canvas-add-')&&!c.id.startsWith('canvas-edge-')&&c.id!=='canvas-style').map(c=>c.id):context.edgeId?['canvas-edge-style','canvas-edge-reverse','canvas-edge-delete',null,'undo']: ['open','duplicate','copy','paste','delete',null,'canvas-group','canvas-ungroup','canvas-lock','canvas-front','canvas-back','canvas-style',null,'new-text','fit','undo']} onClose={(restore=true)=>{setContext(null);if(restore)viewport.current?.focus()}} onExecute={id=>{boardRegistry.current?.execute(id);setContext(null);viewport.current?.focus()}} />}
+    {context && <CommandMenu x={context.x} y={context.y} registry={boardRegistry.current!} ids={context.inkTool?CANVAS_INK_COMMANDS.map(c=>c.id):context.create?CANVAS_CREATE_COMMANDS.map(c=>c.id):context.arrange?CANVAS_COMMANDS.filter(c=>!c.id.startsWith('canvas-tool-')&&!c.id.startsWith('canvas-add-')&&!c.id.startsWith('canvas-edge-')&&c.id!=='canvas-style').map(c=>c.id):context.edgeId?['canvas-edge-style','canvas-edge-reverse','canvas-edge-delete',null,'undo']: ['open','duplicate','copy','paste','delete',null,'canvas-group','canvas-ungroup','canvas-lock','canvas-front','canvas-back','canvas-style',null,'new-text','fit','undo']} onClose={(restore=true)=>{setContext(null);if(restore)viewport.current?.focus()}} onExecute={id=>{boardRegistry.current?.execute(id);setContext(null);viewport.current?.focus()}} />}
     {(operationError||locks.error)&&<div className="canvas-operation-error" role="alert">{operationError||locks.error}<button aria-label="Закрыть сообщение доски" onClick={()=>setOperationError('')}>×</button></div>}
     {native.active&&native.imageErrors>0&&<div className="canvas-raster-notice" role="status">Некоторые превью недоступны; оригиналы сохранены.<button onClick={native.retryImages}>Повторить превью</button></div>}
     {native.active&&Boolean(native.stats?.rasterLimited)&&<div className="canvas-raster-notice">Часть превью появится при приближении: одновременно до 64 разных изображений.</div>}
@@ -762,7 +794,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     </button>}
     {!!selected.size && <div className="canvas-selection-actions"><span>{selected.size === 1 ? '1 объект' : `${selected.size} объекта`}</span>{selected.size === 2 && <button className="primary" onClick={attempt(connectSelected)}><LinkIcon />Связать</button>}<button disabled={boardRegistry.current.get('canvas-lock')?.enabled===false} onClick={()=>boardRegistry.current?.execute('canvas-lock')}>{boardRegistry.current.get('canvas-lock')?.label}</button><button onClick={()=>boardRegistry.current?.execute('duplicate')}>Дублировать</button><button disabled={!editable} onClick={()=>boardRegistry.current?.execute('delete')}>Удалить</button></div>}
     {selectedEdge&&<div className="canvas-selection-actions canvas-edge-actions"><span>{edgeEditable?'Связь':'Связь · объект заблокирован'}</span><button disabled={!edgeEditable} onClick={()=>boardRegistry.current?.execute('canvas-edge-style')}>Стиль связи</button><button disabled={!edgeEditable} onClick={()=>boardRegistry.current?.execute('canvas-edge-reverse')}>Развернуть</button><button disabled={!edgeEditable} onClick={()=>boardRegistry.current?.execute('canvas-edge-delete')}>Удалить связь</button></div>}
-    {!parsed.nodes.length && <div className="canvas-empty"><strong>Свободное пространство</strong><p>Добавьте текстовую карточку или заметку. Собирайте идеи, связывайте их и раскладывайте без ограничений.</p><button onClick={attempt(addText)}><PlusIcon />Первая карточка</button></div>}
+    {!parsed.nodes.length&&!ink.mode && <div className="canvas-empty"><strong>Свободное пространство</strong><p>Добавьте текстовую карточку или заметку. Собирайте идеи, связывайте их и раскладывайте без ограничений.</p><button onClick={attempt(addText)}><PlusIcon />Первая карточка</button></div>}
     <span hidden>{historyVersion}</span>
   </div>
 }

@@ -541,3 +541,109 @@ owned-child lifecycle tests, Alpha was restored and an ordinary final launch
 visually checked. Its WebView child had neither software-GPU override nor
 remote debugging. Per-process QA software WebView did not disable native wgpu
 or change RTSS/system settings; the existing intermittent host caveat remains.
+
+## Ink writer contract
+
+A stroke is a standard text node, readable fallback `Штрих пера` or `Маркер`,
+standard bounds/color and `brandon.version:1, ink:{version:1, tool, size, basis,
+pressure, points}`. `tool` is pen/highlighter; size is an integer 1..64 world
+units at creation, basis the positive integer minimum creation bound. Points
+are 1..2048 integer triples `[u,v,p]`, coordinates 0..65535 within the node,
+pressure 0..1024. Creation uses at least 32-unit selection bounds so a dot can
+be moved without hitting its resize handle. Width scales with min(width,height)/basis on resize; mouse
+uses constant width, pen pressure has an explicit toggle and 25% minimum width.
+The node has no `primitive`/`taskId` ambiguity. Unknown fields survive; invalid
+known data/version or more than 100000 points/4096 strokes makes the board
+read-only, never truncated and rewritten. No SVG script/file attachment is
+created. Standard color is portable fallback; custom strokeColor overrides it.
+
+Geometry, hit testing, eraser and renderer DTOs share one prepared local shape.
+DOM/overview use one nonzero-fill path per stroke. Native uses a reusable R8
+coverage mask with max-union before compositing color once; a highlighter's
+single stroke does not darken itself at joins/self-intersections. Separate
+strokes still blend in source order. The mask is disposable GPU state, bounded
+to 64 MiB, never read back or sent as image IPC. Normal boards keep the existing
+fast path; alpha cuts preserve lower text/images and higher objects.
+
+One pointer gesture creates/removes one undoable batch on pointer-up. Preview
+is transient; Escape, pointer cancellation, window blur, source replacement or
+point-budget overflow must not publish a partial edit. Dot strokes are valid.
+The eraser removes whole intersected ink nodes, never arbitrary cards/sources;
+any locked target refuses the batch rather than partially deleting it. Group
+locks/insertion policy apply. Select/move/resize/group/copy retain ink identity
+and source points; bounding-box corners alone are not stroke hits.
+
+Primary mouse/pen draws only with a drawing tool active. Touch pans, never
+inks; touches during an active pen gesture are ignored (palm rejection).
+Pressure is pointer data, not a claim of tested physical pen hardware. Secondary
+mouse/context and space/middle-button pan remain navigation. Tool/options are
+session UI state. No stylus driver/system setting or external dependency is
+introduced. A later other-editor export must report the visual fallback loss.
+Default tool bindings use Alt+P / Alt+H / Alt+E, respecting the shared registry's
+modifier requirement; unmodified typing is not a global drawing shortcut.
+
+## Ink checkpoint — 19 October 2026
+
+Implemented over canonical-task commit `81b51c925005ecc1f86f4d9436e661a7274003c4`.
+Pen, highlighter and whole-stroke eraser share the command registry, active-pane
+routing and a bounded toolbar popover/options strip. Stored integer points,
+geometry/hit/union paths and native prepared segments follow the contract above.
+One pointer gesture is one Undo; no image attachment or duplicated canonical
+note/task data is created. The pressure toggle and brush sizes are session UI
+state. Native ink uses max-union R8 coverage then source-order color composition;
+selected bounds do not become an opaque stroke background. Ordinary no-ink
+boards retain their existing geometry fast path.
+
+Acceptance executed on the final Windows standalone EXE:
+
+- **149 Rust tests**, **119 frontend contracts**, strict Clippy, fmt, ESLint,
+  typecheck and production Tauri build: PASS. Three new Rust tests cover prepared
+  geometry, incremental scene budgets and mask allocation; seven frontend tests
+  cover the writer, geometry, common transforms, locks, commands and refusal.
+- **235 app scenarios**: 21 new ink + 17 Canvas tasks + 17 layers + 26 edges +
+  18 primitives + 23 layout + 10 renderer + 25 R1A + 6 cards + 11 capture +
+  7 DQL + 10 properties + 14 task/backup + 11 metadata + 19 owned-child
+  R1B lifecycle/drafts. All PASS. Tests act through the actual compiled Tauri
+  app, source files and native renderer; no removed Undo/source assertions.
+- Main bounded compositor and secondary fallback both exercised real pointer
+  draw/erase, one-step Undo/Redo, task-checkbox click suppression, cancellation
+  and exact persisted source. Injected CDP pen pressure reaches the PointerEvent
+  handlers and changes saved widths; injected touch pans without ink. These
+  are not physical stylus/touch-device tests. A simulated blur and synthetic
+  2050-event overflow prove cancellation without partial source publication.
+- External authoritative replacement during an unfinished stroke retains exact
+  external bytes, no conflict or phantom edit. Locked erasing/insertion refuse
+  as a whole; future ink remains a read-only error. Reopen preserves points,
+  foreign fields and unchanged canonical note/task/photo bytes. No broad
+  get-vault-index/refresh call occurs during the ink scenario.
+- Actual 309-node wgpu scene: 5 ink strokes / 11 segments, 1 native raster,
+  **0 DOM ink/cards**, 1,142,400-byte reusable mask, 8 composed batches including
+  4 alpha cuts. A pointer gesture adds the sixth native stroke, one Undo restores
+  the fixture. Far zoom retains ink and remains DOM-free. This is a correctness
+  case, not a throughput benchmark of 100000 ink points or a total VRAM measure.
+- Ordinary 10k/20k repeat on RTX 3090 / DX12 / DPR 1: input-ack p95
+  **21.9/25.4 ms**, native CPU p95 **11.74/10.86 ms**; same 70-iteration /
+  10-warmup method as prior checkpoints, no far-zoom DOM cards. Not GPU time,
+  input-to-photon/FPS or a dense-ink performance claim.
+
+New tests: `tests/desktop/r3a-ink.test.mjs`, `r3a-ink-smoke.mjs`,
+`canvas-ink-fixtures.mjs`; scripts `test:r3a`, `test:r3a:ink:ui`.
+Logs: `target/qa/r3a-ink-{build,rust,frontend,clippy,fmt,lint,typecheck,smoke}.log`,
+`target/qa/r3a-ink-final-{r3a-tasks,r3a-layers,r3a-edges,r3a-primitives,r3a-layout,canvas-render,r1a,canvas-card-ui,r2b-capture,r2b-dataview,r2b-properties,r2b-tasks,r2a,r1b}.log`,
+`target/qa/canvas-render.json`. Ink acceptance fixture:
+`C:/Users/ADMIN/AppData/Local/Temp/brandon-r3a-ink-X7ddFB`.
+
+Final EXE SHA-256:
+`d13c80a7e281256f67cc18e7fc3b7d9479e62e3f03fa5557e4eb72edd0451448`.
+Final tests used a per-process software WebView; native wgpu remained active.
+After the lifecycle suite Alpha was restored and the EXE launched normally.
+No NSIS regeneration/install/push, macOS, physical stylus or server gate.
+
+**Visual gate still pending on this final build.** An earlier ink build was
+inspected in the actual Windows window and a real Sky mouse drag created a
+persisted stroke. When attempting final computer-use inspection after all
+regressions, capture displayed a code-password screen instead of the board.
+Computer-use inputs stopped immediately; no password or security UI was touched.
+The owner was asked to unlock the session. Automated in-app acceptance above is
+complete, but it is not relabelled as a final visible-window acceptance. The
+existing host RTSS caveat and other-editor visual-fallback limitation remain.

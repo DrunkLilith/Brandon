@@ -587,7 +587,11 @@ Sticky/text/shapes, connector styles, selection/layout/lock, стили и ка�
 
 Проверки этого среза: **146 Rust + 112 frontend + 214 Windows UI cases**, все PASS на финальной native-сборке. Computer-use подтвердил составную доску, форму задачи и настоящие GPU-подписи; обычный запуск восстановил Alpha без QA flags. 10k/20k ordinary boards: input-ack p95 22.6/30.8 ms, native CPU p95 7.08/11.72 ms, RTX 3090/DX12/DPR1; это измерение, не обещание ускорения или 20k-photo/task benchmark. [Контракт, EXE hash, fixtures, logs и ограничения](canvas-r3a-contract.md#canonical-taskmixed-workflow-checkpoint-19-october-2026). NSIS/install/push/server/macOS не заявлены.
 
-Основной выходной сценарий R3A закрыт в описанном объёме. Следующий отдельный bounded slice — перо/highlighter/eraser с сохранением/Undo и renderer parity; сложные маршруты, навигация объектов/слоёв и R3B-фреймы ещё не заявлены готовыми. Весь master plan остаётся активной целью.
+Основной выходной сценарий R3A закрыт в описанном объёме. Сложные маршруты, навигация объектов/слоёв и R3B-фреймы ещё не заявлены готовыми. Весь master plan остаётся активной целью.
+
+**Перо/highlighter/eraser, поверх `81b51c9`:** bounded integer strokes в `brandon.ink` с читаемым standard text fallback, точные общие geometry/hit paths, native max-union coverage без потемнения одного маркера от самопересечений и без image IPC. Один жест — один Undo; eraser удаляет только целые штрихи. Locks, external source replacement, Escape/cancel/blur/overflow не публикуют частичную правку. Alt+P/H/E, меню и обе панели используют общие команды; pressure/touch проверены инъекцией событий, не физическим стилусом.
+
+Автоматическая приёмка финального EXE: **149 Rust + 119 frontend + 235 Windows app cases**, всё PASS; native fixture 309 узлов, 5 штрихов, 1 raster, 0 DOM cards/ink, ограниченная R8 mask. Ordinary 10k/20k input-ack p95 21.9/25.4 ms, CPU p95 11.74/10.86 ms, RTX 3090/DX12/DPR1; не dense-ink/FPS benchmark. **Визуальная приёмка именно финальной сборки остаётся открытой:** вместо окна захват показал экран код-пароля, computer-use остановлен и пользователь уведомлён. Предыдущая ink-сборка осмотрена и реальный mouse drag сохранён. После тестов восстановлена Alpha и обычный запуск. [Точные logs, EXE hash, fixture и границы](canvas-r3a-contract.md#ink-checkpoint--19-october-2026). NSIS/install/push/server/macOS не заявлены; весь план не закрыт.
 
 ### R3B. Фреймы и рабочие форматы
 

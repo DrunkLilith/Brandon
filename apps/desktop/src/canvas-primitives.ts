@@ -1,6 +1,7 @@
 import type {CanvasNode,CanvasPrimitive} from './canvas-model'
 import {canvasExtension,canvasPrimitive} from './canvas-model.ts'
 import {canvasColors} from './canvas-document.ts'
+import {canvasInk,inkHit} from './canvas-ink.ts'
 
 export const CANVAS_PRIMITIVES:ReadonlyArray<{id:CanvasPrimitive;label:string;symbol:string}>=[
   {id:'sticky',label:'Стикер',symbol:'▰'},{id:'text',label:'Текст',symbol:'T'},
@@ -35,6 +36,7 @@ export function primitiveNode(id:string,primitive:CanvasPrimitive,center:{x:numb
 }
 /** Exact interior tests; the spatial index remains a conservative broad phase. */
 export function canvasNodeHit(node:CanvasNode,point:{x:number;y:number},tolerance=0){
+  if(canvasInk(node))return inkHit(node,point,tolerance)
   const x=point.x-node.x,y=point.y-node.y,primitive=canvasPrimitive(node)
   if(x<0||x>node.width||y<0||y>node.height)return false
   const u=x/node.width,v=y/node.height

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from 'react'
 import type { CanvasNode } from './canvas-view'
 import {canvasAppearance,canvasShapePath} from './canvas-primitives'
 import type {PreparedCanvasEdge} from './canvas-edges'
+import {prepareCanvasInk,inkPath} from './canvas-ink'
 
 export type RenderEdge = PreparedCanvasEdge
 
@@ -25,6 +26,8 @@ export function CanvasOverview({ nodes, edges, camera, size, selected, selectedE
     for (const node of nodes) {
       const a=canvasAppearance(node)
       context.save();context.translate(node.x,node.y)
+      const ink=prepareCanvasInk(node,a.border)
+      if(ink){context.globalAlpha=ink.opacity;context.fillStyle=ink.color;context.fill(new Path2D(inkPath(ink)));context.globalAlpha=1;if(selected.has(node.id)){context.strokeStyle='#aca1ee';context.lineWidth=1/camera.zoom;context.strokeRect(0,0,node.width,node.height)}context.restore();continue}
       const path=new Path2D(canvasShapePath(node))
       context.fillStyle=a.fill
       if(a.primitive!=='text'&&a.primitive!=='divider')context.fill(path)

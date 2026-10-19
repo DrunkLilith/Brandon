@@ -11,11 +11,13 @@ export type CanvasEdge = {
 }
 export type CanvasDocument = { nodes: CanvasNode[]; edges: CanvasEdge[]; [key: string]: unknown }
 export type CanvasPrimitive = 'sticky' | 'text' | 'rectangle' | 'ellipse' | 'diamond' | 'triangle' | 'divider'
+export type CanvasInk={version:1;tool:'pen'|'highlighter';size:number;basis:number;pressure:boolean;points:[number,number,number][];[key:string]:unknown}
 export type NodeExtension = {
   version: 1; primitive?: CanvasPrimitive; locked?: boolean
   fontSize?: 12 | 16 | 24 | 32; textAlign?: 'left' | 'center' | 'right'; strokeWidth?: 1 | 2 | 4
   fillColor?: string; strokeColor?: string; textColor?: string
   taskId?: string
+  ink?:CanvasInk
   [key: string]: unknown
 }
 export function canvasExtension(node: CanvasNode | undefined): NodeExtension | undefined {

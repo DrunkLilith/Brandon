@@ -3,7 +3,7 @@ import {
   type KeyboardEvent, type PointerEvent,
 } from 'react'
 import { FileIcon, FitIcon, LinkIcon, PlusIcon } from './icons'
-import type { VaultIndex } from './types'
+import type { VaultIndex,ProjectTaskCreator } from './types'
 import { CanvasSpatialIndex } from './canvas-spatial'
 import { CanvasOverview } from './canvas-overview'
 import { useNativeCanvas } from './use-native-canvas'
@@ -92,7 +92,7 @@ function additiveSelection(event: { ctrlKey: boolean; metaKey: boolean; shiftKey
   return event.ctrlKey || event.metaKey || event.shiftKey
 }
 
-export function CanvasView({ root,sourcePath,pane='main',value, index, onChange, onOpen, onUpdateTask,busyTaskId=null,initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
+export function CanvasView({ root,sourcePath,pane='main',value, index, onChange, onOpen, onUpdateTask,onCreateTask,busyTaskId=null,initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
   root:string
   sourcePath:string
   pane?:'main'|'side'
@@ -101,6 +101,7 @@ export function CanvasView({ root,sourcePath,pane='main',value, index, onChange,
   onChange: (value: string) => void
   onOpen: (path: string) => void
   onUpdateTask?:CanvasTaskUpdater
+  onCreateTask?:ProjectTaskCreator
   busyTaskId?:string|null
   initialZoom?: number
   initialCamera?: Camera
@@ -857,7 +858,7 @@ export function CanvasView({ root,sourcePath,pane='main',value, index, onChange,
     {native.active&&Boolean(native.stats?.rasterLimited)&&<div className="canvas-raster-notice">Часть превью появится при приближении: одновременно до 64 разных изображений.</div>}
     {attachments.progress && <div className="canvas-import-status" onPointerDown={(event) => event.stopPropagation()}><span>{attachments.progress.name}</span><progress value={attachments.progress.copied} max={Math.max(1, attachments.progress.total)} /><button onClick={attachments.cancel}>Отменить</button></div>}
     {exportDialog&&<CanvasExportDialog root={root} sourcePath={sourcePath} source={exportDialog.source} currentSource={value} frames={exportDialog.frames} initialFrame={exportDialog.frameId} onClose={()=>setExportDialog(null)}/>}
-    {linkedResource&&<LinkedResourceDialog root={root} path={linkedResource.path} pane={pane} index={index} locked={!linkedEditable()} available={nodes.get(linkedResource.id)?.file===linkedResource.path} busyTaskId={busyTaskId} onUpdateTask={async(task,patch)=>{if(!linkedEditable()||!onUpdateTask){setOperationError('Ссылка или доступ изменились; задача не изменена');return false}return onUpdateTask(task,patch)}} onOpen={onOpen} onClose={()=>setLinkedResource(null)}/>}
+    {linkedResource&&<LinkedResourceDialog root={root} path={linkedResource.path} pane={pane} index={index} locked={!linkedEditable()} available={nodes.get(linkedResource.id)?.file===linkedResource.path} busyTaskId={busyTaskId} onUpdateTask={async(task,patch)=>{if(!linkedEditable()||!onUpdateTask){setOperationError('Ссылка или доступ изменились; задача не изменена');return false}return onUpdateTask(task,patch)}} onCreateTask={async(title,project)=>{if(!linkedEditable()||!onCreateTask)throw Error('Ссылка или доступ изменились; задача не создана');return onCreateTask(title,project)}} onOpen={onOpen} onClose={()=>setLinkedResource(null)}/>}
     {attachments.error && <div className="canvas-import-status" role="alert"><span>{attachments.error}</span><button onClick={attachments.dismissError}>Закрыть</button></div>}
     {attachments.dragOver && <div className="canvas-drop-hint">Добавить файлы на холст<span>Оригиналы будут скопированы в Attachments</span></div>}
     {selectionBox && <div className="canvas-selection-box" style={selectionStyle} />}

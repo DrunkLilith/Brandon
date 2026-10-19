@@ -3,6 +3,9 @@
 mod attachments;
 mod captures;
 mod linked_resources;
+mod project_template_render;
+mod project_template_starters;
+mod project_templates;
 pub use attachments::{
     AttachmentExportRaster, AttachmentImport, AttachmentInfo, AttachmentKind, AttachmentRaster,
 };
@@ -12,6 +15,11 @@ pub use captures::{
 };
 pub use knowledge_markdown::{
     PropertyInspection, PropertyPatch, inspect_properties, parse_yaml_mapping, patch_property,
+};
+pub use project_templates::{
+    TemplateCatalog, TemplateChoice, TemplateCreated, TemplateEdit, TemplateInput, TemplateOutput,
+    TemplatePreview, TemplateRemoved, edit_project_template, inspect_project_template,
+    read_project_template,
 };
 #[cfg(test)]
 mod canvas_export_tests;
@@ -87,7 +95,7 @@ pub type Result<T> = std::result::Result<T, VaultError>;
 pub struct Vault {
     root: PathBuf,
     metadata: Option<Arc<Mutex<metadata::MetadataCache>>>,
-    identity: Arc<()>,
+    identity: Arc<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -196,7 +204,7 @@ impl Vault {
         Ok(Self {
             root,
             metadata: None,
-            identity: Arc::new(()),
+            identity: Arc::new(uuid::Uuid::now_v7().to_string()),
         })
     }
 
@@ -866,6 +874,18 @@ impl Vault {
     }
 
     pub fn create_task_record(&self, title: &str, scheduled: Option<&str>) -> Result<TaskChange> {
+        self.create_task_record_in_project(title, scheduled, None)
+    }
+    pub fn create_task_record_in_project(
+        &self,
+        title: &str,
+        scheduled: Option<&str>,
+        project: Option<&str>,
+    ) -> Result<TaskChange> {
+        let project = project.map(str::trim).filter(|s| !s.is_empty());
+        if project.is_some_and(|s| s.len() > 512 || s.chars().any(char::is_control)) {
+            return Err(VaultError::InvalidName("Некорректный ключ проекта"));
+        }
         // Refuse a broken/future authoritative DB before creating a note.
         let connection = self.task_connection()?;
         let title = title
@@ -931,9 +951,9 @@ impl Vault {
         let relative_path = relative_display(&self.root, &path)?;
         let now = current_unix_ms();
         if let Err(error) = connection.execute(
-            "INSERT INTO tasks (id, note_path, title, completed, scheduled, due, duration_minutes, priority, created_unix_ms, updated_unix_ms)
-             VALUES (?1, ?2, ?3, 0, ?4, NULL, NULL, NULL, ?5, ?5)",
-            params![stable_id, relative_path, title, scheduled, now],
+            "INSERT INTO tasks (id, note_path, title, completed, scheduled, due, duration_minutes, priority, created_unix_ms, updated_unix_ms,project)
+             VALUES (?1, ?2, ?3, 0, ?4, NULL, NULL, NULL, ?5, ?5,?6)",
+            params![stable_id, relative_path, title, scheduled, now,project],
         ) {
             let _ = fs::remove_file(&path);
             return Err(error.into());

@@ -68,9 +68,19 @@ renamore. Full selected texts are retained in
 `apps/desktop/src-tauri/THIRD_PARTY_CANVAS_EXPORT.txt`; binary packaging and
 user-accessible notices remain a release gate, not satisfied by source links.
 
-**Open approval:** `cargo deny check licenses` rejects arrayref 0.3.9 because
+**Initial audit (historical):** `cargo deny check licenses` rejected arrayref 0.3.9 because
 BSD-2-Clause is not allowed by this project's policy. No exception or global
-allow-list change has been made. The owner was asked whether to allow only that
+allow-list change had been made at that checkpoint. The owner was asked whether to allow only that
 exact crate/version, or choose another implementation path. The local source
 checkpoint is not a release, an approval of this license, or a license-clean
 package. See `target/qa/r3b-export-licenses.log` for the observed rejection.
+
+**Owner decision — 19 October 2026:** explicitly approved only `arrayref 0.3.9`.
+`deny.toml` now permits BSD-2-Clause only for that exact crate/version; the global
+license allow-list is unchanged. The complete license and copyright notices are
+retained in `THIRD_PARTY_CANVAS_EXPORT.txt`. The project-template code also uses
+the already-resolved `renamore 0.3.2` through knowledge-vault (MIT alternative),
+without a new resolved crate version. This decision does not certify binary
+notice packaging, interactive acceptance, or a complete application release.
+The fresh pre-pause `cargo deny check licenses` run passes; local evidence is
+`target/qa/pause-licenses.log`. No broader license or release claim is implied.

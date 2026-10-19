@@ -352,3 +352,82 @@ independently read-only checked: PID 20472 still alive, SHA-256 unchanged at
 No push/install/publication/paid action. R3B still needs the local/project template
 catalogue and live frame/format/export gates; R4 onward and the full master plan
 remain required.
+
+## Local project templates v1 (contract before writers)
+
+Own starters: project workspace, research board, architecture map, Kanban,
+roadmap, retrospective, meeting notes and daily planning. No Miro assets/code or
+third-party template collection is copied. A template is bounded inert JSON:
+`format:"brandon.project-template",version:1,id,name,category,description,
+entrypoint,files:[{path,content}]`. It contains only public relative `.md`,
+`.canvas` and JSON `.base` sources. No binary attachments, executable files,
+arbitrary JS/system macros, canonical task rows/TaskIds or links outside the
+new bundle. Markdown embeds and active HTML are not template capabilities.
+Unknown v1 fields survive as data with bounded warnings; unknown known versions
+refuse instantiation without changing imported files or the existing catalogue.
+
+Only literal `{{project}}`, `{{root}}` and `{{date}}` substitutions exist. They
+are single-pass string substitutions, not expressions. JSON string values are
+escaped without reserializing untouched numbers/foreign source. Variable keys
+and unknown interpolation tokens refuse creation, rather than running code or
+silently publishing an unresolved template. All bundle-relative file references
+resolve to planned resources; generated Canvas and task views keep portable
+fallbacks and explicitly identify Brandon extensions. No tasks are cloned or
+created as hidden template side effects.
+
+Bounds: 64 custom templates / 32 MiB catalogue, 32 files per template, source
+JSON <=8 MiB, individual template content <=1 MiB and sum <=4 MiB; generated
+file <=2 MiB and sum <=8 MiB. Depth <=8 and case-insensitive file/prefix collision
+checks, Windows-safe public names, no traversal/symlink/junction paths. Root
+catalogue/version failures leave own starters usable but disable catalogue
+writes; no empty registry replacement on read failure.
+
+Preview names a root instance, selected template fingerprint, destination parent,
+project name, date and client request ID. Its plan hash binds the exact rendered
+file set and target. Apply revalidates the same plan and creates a fresh project
+directory through same-parent staging + atomic exclusive rename, never replacing
+an existing file or directory. A versioned `project.brandon.json` manifest records
+sources/hashes, project key, entrypoint, compatibility and request ID. Retry can
+return that same committed project without modifying later edits; a different
+request/name/template/scope cannot adopt or overwrite it. No cross-resource task
+DB transaction is implied: explicit task creation remains TaskService's job.
+
+Custom catalogue import/edit/remove uses fingerprint checks. Export writes one
+fresh JSON file to an explicitly chosen external directory, without replacement.
+Only inspection/preview may happen before confirmation; template/project writes
+are distinct explicit UI actions. No network, process execution or background
+model/provider action is a template capability. Later arbitrary-project capture
+or binary-asset bundling requires an explicit mapping/compatibility contract.
+
+## Paused project-template checkpoint — 19 October 2026
+
+Saved at the owner's explicit request to stop development, commit and push,
+on top of `4c9fc1ad4deb1d9f74cc59efd99b82a305b17178`. The full goal and the
+Telegram polling heartbeat are PAUSED; R3B and the master plan are not complete.
+
+Current source includes eight original project starters, a searchable local
+catalogue, own-copy/edit/import/export/archive actions, bounded source previews,
+and explicit preview/apply project creation. Rust preserves unknown raw fields,
+binds creation to the current root instance and exact plan hash, stages files,
+and publishes a fresh directory with exclusive rename. No template operation
+silently clones canonical tasks. An explicit task-create action passes the
+project key into the initial canonical task row, shared by the three layouts.
+
+Fresh pre-commit checks: **207 Rust tests** across desktop/vault/Markdown/core/
+crypto, **148 frontend tests**, strict Clippy, ESLint, TypeScript/production
+frontend build, fmt and `cargo deny check licenses` PASS. The Rust count includes
+nine template tests; the frontend count is the existing contract suite, not new
+template UI coverage. The existing frontend chunk-size warning remains visible.
+Local evidence: `target/qa/pause-{rust,frontend-tests,lint,web-build,clippy,licenses}.log`.
+
+The owner approved only arrayref 0.3.9 / BSD-2-Clause. The exact-version exception
+is now recorded without changing the global allow-list; retained notices are
+not a substitute for binary packaging and user-accessible notice delivery.
+
+Resume here, without treating this checkpoint as release acceptance: add focused
+project-task lifecycle and frontend template/interop tests, finish notice
+delivery, then complete the real frame/format/template/export UI gates when an
+owner-approved available app session exists. The previous password-screen and
+launch-policy stops were not retried or bypassed. No new native app run, Tauri
+release build, installer, server regression, native macOS run or remote CI is
+claimed by this checkpoint. Existing running release files were not overwritten.

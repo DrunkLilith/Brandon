@@ -1,7 +1,8 @@
 Canvas PNG exporter: selected third-party license notices
-Exact versions resolved by Cargo.lock. These notices do not approve a license
-exception or certify the full application distribution. arrayref approval is
-pending; the exporter is not release-accepted.
+Exact versions resolved by Cargo.lock. The owner approved only arrayref 0.3.9
+(BSD-2-Clause) on 19 October 2026; deny.toml records that exact-version exception.
+These notices do not certify the full application distribution. Binary packaging,
+user-accessible notices and live exporter acceptance remain release gates.
 
 tiny-skia 0.12.0 and tiny-skia-path 0.12.0 — BSD-3-Clause
 ========================================================================

@@ -15,6 +15,7 @@ use capture_commands::{
 };
 mod linked_resource_commands;
 mod metadata_commands;
+mod project_template_commands;
 mod search_commands;
 mod task_commands;
 mod workspace_commands;
@@ -504,6 +505,17 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            task_commands::create_task_in_project,
+            project_template_commands::project_template_catalog,
+            project_template_commands::project_template_source,
+            project_template_commands::inspect_project_template,
+            project_template_commands::edit_project_template,
+            project_template_commands::read_project_template,
+            project_template_commands::import_project_template,
+            project_template_commands::remove_project_template,
+            project_template_commands::preview_project_template,
+            project_template_commands::apply_project_template,
+            project_template_commands::export_project_template,
             workspace_commands::promote_linked_draft,
             linked_resource_commands::read_linked_resource,
             linked_resource_commands::create_task_format,

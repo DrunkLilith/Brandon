@@ -1,6 +1,23 @@
 use super::{VaultState, current_vault};
 use knowledge_vault::{ManagedTaskPatch, TaskBackupSummary, TaskChange, TaskViewsDocument, Vault};
 use tauri::State;
+#[tauri::command]
+pub fn create_task_in_project(
+    window: tauri::WebviewWindow,
+    root: String,
+    title: String,
+    project: Option<String>,
+    state: State<'_, VaultState>,
+) -> Result<TaskChange, String> {
+    let guard = state.vault.read().map_err(|_| "Vault недоступен")?;
+    let vault = guard
+        .as_ref()
+        .filter(|v| window.label() == "main" && v.root().to_string_lossy() == root)
+        .ok_or("Хранилище изменилось")?;
+    vault
+        .create_task_record_in_project(&title, None, project.as_deref())
+        .map_err(|e| e.to_string())
+}
 fn scoped(root: &str, state: &State<'_, VaultState>) -> Result<Vault, String> {
     let vault = current_vault(state)?;
     if vault.root() != std::path::Path::new(root) {

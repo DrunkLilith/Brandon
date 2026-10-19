@@ -4,13 +4,13 @@ import { FileIcon, SearchIcon } from './icons'
 import { useVirtualRows } from './virtual-rows'
 import { compileBase, compareValues, noteRow, type BaseDefinition } from './query-service'
 import { PropertyDialog, displayProperty, type PropertyInspection } from './properties'
-import type { NoteDocument, SaveOutcome, VaultIndex } from './types'
+import type { NoteDocument, SaveOutcome, VaultIndex,ProjectTaskCreator } from './types'
 import {compileTaskFormat,isWorkingFormat,type TaskFormatDefinition} from './working-formats'
 import {TaskFormatView} from './task-format-view'
 import type {CanvasTaskUpdater} from './canvas-task-ui'
 const collator=new Intl.Collator('ru',{numeric:true})
 
-export function BaseView({root,index,source,onChange,onOpen,onSaved,onUpdateTask,busyTaskId=null,locked=false,initialView}:{root:string;index:VaultIndex|null;source:string;onChange:(source:string)=>void;onOpen:(path:string)=>void;onSaved?:()=>void;onUpdateTask?:CanvasTaskUpdater;busyTaskId?:string|null;locked?:boolean;initialView?:string}){
+export function BaseView({root,index,source,onChange,onOpen,onSaved,onUpdateTask,onCreateTask,busyTaskId=null,locked=false,initialView}:{root:string;index:VaultIndex|null;source:string;onChange:(source:string)=>void;onOpen:(path:string)=>void;onSaved?:()=>void;onUpdateTask?:CanvasTaskUpdater;onCreateTask?:ProjectTaskCreator;busyTaskId?:string|null;locked?:boolean;initialView?:string}){
   const [working,setWorking]=useState(false),[taskDefinition,setTaskDefinition]=useState<TaskFormatDefinition|null>(null)
   const [query,setQuery]=useState(''),[selected,setSelected]=useState(0),[override,setOverride]=useState<{property:string;direction:'ASC'|'DESC'}|null>(null),[definition,setDefinition]=useState<BaseDefinition|null>(null),[error,setError]=useState(''),[configOpen,setConfigOpen]=useState(false),[draft,setDraft]=useState(''),[target,setTarget]=useState<{document:NoteDocument;key:string;value:unknown}|null>(null),[busy,setBusy]=useState(false)
   const generation=useRef(0)
@@ -38,7 +38,7 @@ export function BaseView({root,index,source,onChange,onOpen,onSaved,onUpdateTask
   }catch(error){setError(String(error))}finally{setBusy(false)}}
   if(working)return <div className="base-view working-base"><div className="base-toolbar"><span>Связанные представления задач</span><button disabled={locked} onClick={()=>{configBase.current=source;setDraft(source);setConfigOpen(v=>!v)}}>Настроить источник .base</button></div>{error&&<p role="alert">{error}</p>}
     {configOpen&&<div className="base-config"><label>Исходное определение .base<textarea aria-label="Определение связанных форматов" value={draft} disabled={locked||busy} onChange={e=>setDraft(e.target.value)} rows={12}/></label><p>Фильтр и виды ссылаются на одну базу задач. Состояния задач сюда не копируются.</p><button disabled={locked||busy} onClick={()=>void applyTaskDefinition()}>Применить определение</button><button disabled={busy} onClick={()=>setConfigOpen(false)}>Отмена</button></div>}
-    {taskDefinition?<TaskFormatView definition={taskDefinition} tasks={index?.tasks??[]} busyId={busyTaskId} onOpen={onOpen} onUpdate={onUpdateTask} locked={locked} initialView={initialView}/>:<p>Определение недоступно. Исходный файл не изменён; автоматической подмены заметками нет.</p>}
+    {taskDefinition?<TaskFormatView definition={taskDefinition} tasks={index?.tasks??[]} busyId={busyTaskId} onOpen={onOpen} onUpdate={onUpdateTask} onCreate={onCreateTask} locked={locked} initialView={initialView}/>:<p>Определение недоступно. Исходный файл не изменён; автоматической подмены заметками нет.</p>}
   </div>
   return <div className="base-view">
     <div className="base-toolbar"><label><SearchIcon/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Фильтр записей…"/></label><span>{rows.length} записей</span>{definition&&<select aria-label="Представление базы" value={Math.min(selected,definition.views.length-1)} onChange={event=>{setSelected(Number(event.target.value));setOverride(null)}}>{definition.views.map((item,i)=><option key={i} value={i}>{item.name}</option>)}</select>}<button className="base-config-toggle" disabled={locked} onClick={()=>{configBase.current=source;setDraft(source);setConfigOpen(value=>!value)}}>Настроить .base</button></div>

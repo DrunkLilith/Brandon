@@ -9,6 +9,7 @@ import { anchorLine,resolveNoteTarget } from './note-navigation'
 import { invoke } from '@tauri-apps/api/core'
 import type { NoteDocument } from './types'
 import { AttachmentImage,isRasterPath } from './canvas-attachments'
+import { withoutFrontmatter } from './properties'
 
 function CodePreview({ code, language }: { code: string; language: string }) {
   const [tokens, setTokens] = useState([{ text: code, className: '' }])
@@ -142,7 +143,7 @@ function NoteEmbed({destination,index,resourcePath,onOpen}:{destination:string;i
 }
 
 export function MarkdownPreview({ source, index, resourcePath='', onOpen, onChange, focusLine }: { source: string; index: VaultIndex | null; resourcePath?:string; onOpen: (path: string, kind?: 'wiki' | 'markdown') => void; onChange?: (value: string) => void; focusLine?: number }) {
-  const renderedSource = withWikiLinks(source || '*Пустая заметка*')
+  const renderedSource = withWikiLinks(withoutFrontmatter(source) || '*Пустая заметка*')
   const structure = useMemo(() => sourceStructure(source), [source])
   const current = useRef({ source, onOpen, onChange, focusLine, structure,index,resourcePath })
   current.current = { source, onOpen, onChange, focusLine, structure,index,resourcePath }

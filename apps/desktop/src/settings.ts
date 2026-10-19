@@ -6,6 +6,7 @@ export const LEGACY_VISUAL_KEY = 'brandon.visualEditing'
 export type DesktopSettings = {
   version: 1
   editorMode: 'visual' | 'source'
+  propertiesMode: 'visible' | 'hidden' | 'source'
   defaultViewMode: ViewMode
   readableLineWidth: boolean
   lineNumbers: boolean
@@ -19,7 +20,7 @@ export type DesktopSettings = {
 }
 
 export function defaultSettings(): DesktopSettings {
-  return { version: 1, editorMode: 'visual', defaultViewMode: 'edit', readableLineWidth: true, lineNumbers: false, spellcheck: true, previewModifier: 'ctrl',dailyFolder:'Daily',dailyFormat:'YYYY-MM-DD',dailyTemplate:'',templatesFolder:'', hotkeys: {} }
+  return { version: 1, editorMode: 'visual', propertiesMode:'visible', defaultViewMode: 'edit', readableLineWidth: true, lineNumbers: false, spellcheck: true, previewModifier: 'ctrl',dailyFolder:'Daily',dailyFormat:'YYYY-MM-DD',dailyTemplate:'',templatesFolder:'', hotkeys: {} }
 }
 
 export function parseSettings(raw: string | null, legacy: string | null = null): DesktopSettings {
@@ -29,6 +30,7 @@ export function parseSettings(raw: string | null, legacy: string | null = null):
     if (saved && typeof saved === 'object' && !Array.isArray(saved) && 'version' in saved && saved.version === 1) {
       const value = saved as Record<string, unknown>
       if (value.editorMode === 'visual' || value.editorMode === 'source') settings.editorMode = value.editorMode
+      if (value.propertiesMode === 'visible' || value.propertiesMode === 'hidden' || value.propertiesMode === 'source') settings.propertiesMode = value.propertiesMode
       if (value.defaultViewMode === 'edit' || value.defaultViewMode === 'split' || value.defaultViewMode === 'preview') settings.defaultViewMode = value.defaultViewMode
       if (value.previewModifier === 'ctrl' || value.previewModifier === 'none') settings.previewModifier = value.previewModifier
       for(const key of ['dailyFolder','dailyTemplate','templatesFolder'] as const) if(typeof value[key]==='string' && value[key].length<=1024 && (!value[key] || !/^[\/]|[\\:\0]/.test(value[key]) && value[key].split('/').every(part=>part&&part!=='.'&&part!=='..'))) settings[key]=value[key]

@@ -90,6 +90,7 @@ try {
     Invoke-Native 'Desktop command, settings and navigation contracts' pnpm @('--dir', 'apps/desktop', 'test:r1a')
     Invoke-Native 'Desktop workspace and session contracts' pnpm @('--dir', 'apps/desktop', 'test:r1b')
     Invoke-Native 'Desktop incremental metadata contracts' pnpm @('--dir', 'apps/desktop', 'test:r2a')
+    Invoke-Native 'Desktop bounded Base query contracts' pnpm @('--dir', 'apps/desktop', 'test:r2b')
     Invoke-Native 'Desktop frontend production build' pnpm @('--dir', 'apps/desktop', 'build')
     Invoke-Native 'Rust formatting' cargo @('fmt', '--all', '--', '--check')
     Invoke-Native 'Rust lint' cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')

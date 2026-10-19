@@ -2,6 +2,9 @@
 
 mod attachments;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
+pub use knowledge_markdown::{
+    PropertyInspection, PropertyPatch, inspect_properties, parse_yaml_mapping, patch_property,
+};
 mod metadata;
 mod search;
 pub use metadata::{MetadataDelta, MetadataStats};
@@ -30,6 +33,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VaultError {
+    #[error("{0}")]
+    UnsupportedProperty(String),
     #[error("Индексация отменена")]
     SearchCancelled,
     #[error("{context}: {source}")]
@@ -500,6 +505,34 @@ impl Vault {
             snapshot: self.save_snapshot()?,
             document: read_document(&self.root, &path)?,
         })
+    }
+
+    /// Patch a single property only against the version inspected by the UI.
+    /// Never writes a reserialized YAML document or bypasses note path policy.
+    pub fn patch_note_property(
+        &self,
+        relative_path: &str,
+        expected: &str,
+        patch: &PropertyPatch,
+    ) -> Result<SaveOutcome> {
+        let path = self.secure_existing_note(relative_path)?;
+        if fs::metadata(&path)
+            .map_err(|source| VaultError::Io {
+                context: "Не удалось проверить заметку",
+                source,
+            })?
+            .len()
+            > 16 * 1024 * 1024
+        {
+            return Err(VaultError::InvalidPath("Заметка превышает лимит 16 МиБ"));
+        }
+        let disk = read_document(&self.root, &path)?;
+        if disk.fingerprint != expected {
+            return Ok(SaveOutcome::Conflict { disk });
+        }
+        let content =
+            patch_property(&disk.content, patch).map_err(VaultError::UnsupportedProperty)?;
+        self.save_note(relative_path, &content, Some(expected))
     }
 
     pub fn create_note(&self, folder: Option<&str>, title: &str) -> Result<CreatedNote> {
@@ -1491,6 +1524,56 @@ mod tests {
                     "accepted unsafe path {path:?} with allow_empty={allow_empty}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn typed_property_patch_preserves_unrelated_yaml_and_requires_current_fingerprint() {
+        let fixture = Fixture::new();
+        let source =
+            "---\n# keep\nstatus: todo # retain\nnested:\n  object: {secret: 42}\n---\n# Body\n";
+        fs::write(fixture.0.join("Alpha.md"), source).unwrap();
+        let vault = Vault::open(&fixture.0).unwrap();
+        let before = vault.read_note("Alpha.md").unwrap();
+        let patch: super::PropertyPatch = serde_json::from_value(
+            serde_json::json!({"key":"status","kind":"text","value":"done"}),
+        )
+        .unwrap();
+        let SaveOutcome::Saved { document, .. } = vault
+            .patch_note_property("Alpha.md", &before.fingerprint, &patch)
+            .unwrap()
+        else {
+            panic!("save")
+        };
+        assert_eq!(
+            document.content,
+            source.replace("status: todo", "\"status\": \"done\"")
+        );
+        assert!(matches!(
+            vault
+                .patch_note_property("Alpha.md", &before.fingerprint, &patch)
+                .unwrap(),
+            SaveOutcome::Conflict { .. }
+        ));
+        let nested: super::PropertyPatch = serde_json::from_value(
+            serde_json::json!({"key":"nested","kind":"text","value":"erase"}),
+        )
+        .unwrap();
+        assert!(
+            vault
+                .patch_note_property("Alpha.md", &document.fingerprint, &nested)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("Alpha.md")).unwrap(),
+            document.content
+        );
+        for path in ["../Alpha.md", ".brandon/tasks.sqlite3", "Alpha.canvas"] {
+            assert!(
+                vault
+                    .patch_note_property(path, &document.fingerprint, &patch)
+                    .is_err()
+            );
         }
     }
 

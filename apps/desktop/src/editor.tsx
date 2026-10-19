@@ -11,6 +11,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { codeHighlighting, codeLanguage, codeLanguages, inlineCodeSource } from './code-language'
 import { linkAtPosition } from './note-navigation'
 import type { DesktopSettings } from './settings'
+import { frontmatterRange } from './properties'
 
 export type EditorAction = 'undo' | 'redo' | 'copy' | 'cut' | 'paste' | 'select-all' | 'bold' | 'italic' | 'strike' | 'inline-code' | 'insert-link'
 export type EditorContext = { x: number; y: number; hasSelection: boolean; canFormat: boolean; canUndo: boolean; canRedo: boolean; link: ReturnType<typeof linkAtPosition> }
@@ -419,8 +420,9 @@ function markdownTables(document: Text) {
 }
 
 function buildVisualBlockDecorations(document: Text) {
-  const codeBlocks = markdownCodeBlocks(document)
-  const tables = markdownTables(document).filter((table) => !codeBlocks.some((block) => table.from < block.to && table.to > block.from))
+  const frontmatterEnd=frontmatterRange(document.toString())?.end??0
+  const codeBlocks = markdownCodeBlocks(document).filter(block=>block.from>=frontmatterEnd)
+  const tables = markdownTables(document).filter((table) => table.from>=frontmatterEnd&&!codeBlocks.some((block) => table.from < block.to && table.to > block.from))
   return Decoration.set([
     ...codeBlocks.map((block) => Decoration.replace({
       widget: new CodeBlockWidget(block.code, block.language, block.from, block.to, block.fence), block: true,
@@ -439,10 +441,19 @@ const markdownVisualBlocks = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 })
 
+const hiddenFrontmatter=StateField.define<DecorationSet>({
+  create:state=>frontmatterDecorations(state.doc),
+  update:(value,transaction)=>transaction.docChanged?frontmatterDecorations(transaction.state.doc):value,
+  provide:field=>[EditorView.decorations.from(field),EditorView.atomicRanges.of(view=>view.state.field(field))],
+})
+function frontmatterDecorations(document:Text){const end=frontmatterRange(document.toString())?.end;return end?Decoration.set([Decoration.replace({block:true}).range(0,document.lineAt(Math.max(0,end-1)).to)]):Decoration.none}
+
 function decoratedLines(view: EditorView) {
   const decorations = []
+  const frontmatterEnd=frontmatterRange(view.state.doc.toString())?.end??0
   const inlineRanges: Array<{ from: number; to: number }> = []
   syntaxTree(view.state).iterate({ enter(node) {
+    if(node.to<=frontmatterEnd)return false
     if (node.name === 'FencedCode' || node.name === 'CodeBlock' || node.name === 'Table') return false
     if (node.name !== 'InlineCode') return
     inlineRanges.push({ from: node.from, to: node.to })
@@ -463,7 +474,7 @@ function decoratedLines(view: EditorView) {
   for (const { from, to } of view.visibleRanges) {
     for (let position = from; position <= to;) {
       const line = view.state.doc.lineAt(position)
-      if (blockLines.has(line.number)) {
+      if (line.from<frontmatterEnd||blockLines.has(line.number)) {
         position = line.to + 1
         continue
       }
@@ -569,6 +580,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   const pathsRef = useRef(notePaths)
   const visualRef = useRef(visual)
   const visualCompartment = useRef(new Compartment())
+  const propertiesCompartment = useRef(new Compartment())
   const settingsCompartment = useRef(new Compartment())
   const lastTarget = useRef<EditorView | null>(null)
   const currentSettings = useRef(settings)
@@ -769,6 +781,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         codeHighlighting,
         noteLinks,
         visualCompartment.current.of(visual ? [markdownVisualBlocks, markdownLines] : []),
+        propertiesCompartment.current.of(visual&&currentSettings.current.propertiesMode!=='source'?[hiddenFrontmatter]:[]),
         autocompletion({ override: [wikiCompletion], activateOnTyping: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap, indentWithTab]),
         editorTheme,
@@ -802,6 +815,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     visualRef.current = visual
     view.dispatch({ effects: visualCompartment.current.reconfigure(visual ? [markdownVisualBlocks, markdownLines] : []) })
   }, [visual])
+
+  useEffect(()=>{viewRef.current?.dispatch({effects:propertiesCompartment.current.reconfigure(visual&&settings.propertiesMode!=='source'?[hiddenFrontmatter]:[])})},[visual,settings.propertiesMode])
 
   useEffect(() => {
     const view = viewRef.current

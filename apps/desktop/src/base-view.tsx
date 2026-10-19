@@ -1,44 +1,39 @@
-import { useMemo, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileIcon, SearchIcon } from './icons'
 import { useVirtualRows } from './virtual-rows'
-import type { DocumentMetadata, VaultIndex } from './types'
+import { compileBase, compareValues, noteRow, type BaseDefinition } from './query-service'
+import { PropertyDialog, displayProperty, type PropertyInspection } from './properties'
+import type { NoteDocument, SaveOutcome, VaultIndex } from './types'
 const collator=new Intl.Collator('ru',{numeric:true})
 
-function displayValue(value: unknown) {
-  if (value === undefined || value === null) return '—'
-  if (Array.isArray(value)) return value.join(', ')
-  if (typeof value === 'object') return JSON.stringify(value)
-  if (typeof value === 'boolean') return value ? 'Да' : 'Нет'
-  return String(value)
-}
-
-export function BaseView({ index, onOpen }: { index: VaultIndex | null; onOpen: (path: string) => void }) {
-  const [query, setQuery] = useState('')
-  const [sort, setSort] = useState('title')
-  const [descending, setDescending] = useState(false)
-  const columns = useMemo(() => {
-    const frequency = new Map<string, number>()
-    for (const document of index?.documents ?? []) for (const key of Object.keys(document.properties)) frequency.set(key, (frequency.get(key) ?? 0) + 1)
-    return [...frequency].sort((left, right) => right[1] - left[1]).slice(0, 5).map(([key]) => key)
-  }, [index])
-  const rows = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase('ru')
-    const result = (index?.documents ?? []).filter((document) => !normalized || `${document.title} ${document.path} ${document.tags.join(' ')} ${Object.values(document.properties).map(displayValue).join(' ')}`.toLocaleLowerCase('ru').includes(normalized))
-    const value = (document: DocumentMetadata) => sort === 'title' ? document.title : sort === 'path' ? document.path : displayValue(document.properties[sort])
-    return result.sort((left, right) => collator.compare(value(left),value(right)) * (descending ? -1 : 1))
-  }, [descending, index, query, sort])
+export function BaseView({root,index,source,onChange,onOpen,onSaved}:{root:string;index:VaultIndex|null;source:string;onChange:(source:string)=>void;onOpen:(path:string)=>void;onSaved?:()=>void}){
+  const [query,setQuery]=useState(''),[selected,setSelected]=useState(0),[override,setOverride]=useState<{property:string;direction:'ASC'|'DESC'}|null>(null),[definition,setDefinition]=useState<BaseDefinition|null>(null),[error,setError]=useState(''),[configOpen,setConfigOpen]=useState(false),[draft,setDraft]=useState(''),[target,setTarget]=useState<{document:NoteDocument;key:string;value:unknown}|null>(null),[busy,setBusy]=useState(false)
+  const generation=useRef(0)
+  const currentSource=useRef(source),configBase=useRef(source),alive=useRef(true);currentSource.current=source
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[])
+  useEffect(()=>{const request=++generation.current;setDefinition(null);setError('');void invoke<unknown>('parse_structured_yaml',{contents:source}).then(value=>{if(request!==generation.current)return;setDefinition(compileBase(value))}).catch(error=>{if(request===generation.current)setError(String(error))});return()=>{generation.current++}},[source])
+  const view=definition?.views[Math.min(selected,(definition?.views.length??1)-1)],columns=view?.columns??[]
+  const sorting=useMemo(()=>override?[override]:view?.sort??[],[override,view])
+  const rows=useMemo(()=>{
+    if(!view||view.error)return []
+    const normalized=query.trim().toLocaleLowerCase('ru'),result=(index?.documents??[]).filter(document=>Boolean(view.test(noteRow(document)))&&(!normalized||`${document.title} ${document.path} ${document.tags.join(' ')} ${Object.values(document.properties).map(displayProperty).join(' ')}`.toLocaleLowerCase('ru').includes(normalized)))
+    result.sort((left,right)=>{const a=noteRow(left),b=noteRow(right);for(const item of sorting){const compared=compareValues(a.field(item.property),b.field(item.property),collator);if(compared)return compared*(item.direction==='DESC'?-1:1)}return collator.compare(left.path,right.path)})
+    return result.slice(0,view.limit)
+  },[index,query,view,sorting])
   const window=useVirtualRows(rows.length,47)
-  const toggleSort = (key: string) => {
-    if (sort === key) setDescending((value) => !value)
-    else { setSort(key); setDescending(false) }
-  }
-
+  const edit=async(path:string,key:string)=>{if(busy)return;setBusy(true);try{
+    const document=await invoke<NoteDocument>('read_note',{relativePath:path}),inspection=await invoke<PropertyInspection>('inspect_note_properties',{contents:document.content}),name=key.startsWith('note.')?key.slice(5):key
+    if(inspection.error)throw new Error(inspection.error);if(Object.hasOwn(inspection.values,name)&&!inspection.editable[name])throw new Error('Вложенное или сложное значение доступно только в исходнике заметки')
+    setTarget({document,key:name,value:inspection.values[name]})
+  }catch(error){setError(String(error))}finally{setBusy(false)}}
   return <div className="base-view">
-    <div className="base-toolbar"><label><SearchIcon /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Фильтр записей…" /></label><span>{rows.length} записей</span></div>
-    <div ref={window.ref} className="base-table-wrap" data-total-rows={rows.length}><table className="base-table"><thead><tr><Sortable label="Имя" value="title" active={sort} descending={descending} onSort={toggleSort} /><Sortable label="Путь" value="path" active={sort} descending={descending} onSort={toggleSort} />{columns.map((column) => <Sortable key={column} label={column} value={column} active={sort} descending={descending} onSort={toggleSort} />)}<th>Теги</th></tr></thead><tbody>{window.top>0&&<tr aria-hidden="true"><td colSpan={columns.length+3} style={{height:window.top,padding:0,border:0}}/></tr>}{rows.slice(window.start,window.end).map((document) => <tr key={document.path} onDoubleClick={() => onOpen(document.path)}><td><button onClick={() => onOpen(document.path)}><FileIcon /><span>{document.title}</span></button></td><td className="base-path">{document.path}</td>{columns.map((column) => <td key={column}>{displayValue(document.properties[column])}</td>)}<td>{document.tags.map((tag) => <span className="base-tag" key={tag}>#{tag}</span>)}</td></tr>)}{window.bottom>0&&<tr aria-hidden="true"><td colSpan={columns.length+3} style={{height:window.bottom,padding:0,border:0}}/></tr>}</tbody></table>{!rows.length && <div className="base-empty">Нет заметок, подходящих под фильтр.</div>}</div>
+    <div className="base-toolbar"><label><SearchIcon/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Фильтр записей…"/></label><span>{rows.length} записей</span>{definition&&<select aria-label="Представление базы" value={Math.min(selected,definition.views.length-1)} onChange={event=>{setSelected(Number(event.target.value));setOverride(null)}}>{definition.views.map((item,i)=><option key={i} value={i}>{item.name}</option>)}</select>}<button className="base-config-toggle" onClick={()=>{configBase.current=source;setDraft(source);setConfigOpen(value=>!value)}}>Настроить .base</button></div>
+    <div className="base-scope">Поднабор .base: Markdown-заметки · файлы-вложения не входят{override&&<><span> · временная сортировка</span><button onClick={()=>setOverride(null)}>Из файла</button></>}</div>
+    {(error||view?.error)&&<div className="property-error" role="alert">{error||view?.error}</div>}
+    {definition&&definition.warnings.length>0&&<details className="base-warnings"><summary>Не применены: {definition.warnings.length}. Исходник сохранён.</summary>{definition.warnings.map((warning,i)=><p key={i}>{warning}</p>)}</details>}
+    {configOpen&&<div className="base-config"><label>Исходное определение .base<textarea aria-label="Определение базы YAML" value={draft} onChange={event=>setDraft(event.target.value)} rows={12}/></label><p>order — столбцы, filters — условия, sort — сортировка, limit — максимум строк. Неизвестные разделы остаются в файле.</p><button className="base-config-apply" onClick={async()=>{try{const value=await invoke<unknown>('parse_structured_yaml',{contents:draft});compileBase(value);if(!alive.current)return;if(currentSource.current!==configBase.current)throw new Error("Определение изменилось извне. Ваш текст оставлен в форме; откройте актуальный файл перед применением.");onChange(draft);setOverride(null);setConfigOpen(false);setError('')}catch(error){setError(String(error))}}}>Применить определение</button><button onClick={()=>setConfigOpen(false)}>Отмена</button></div>}
+    <div ref={window.ref} className="base-table-wrap" data-total-rows={rows.length}><table className="base-table"><thead><tr>{columns.map((column,i)=><th key={`${column}-${i}`}><button onClick={()=>setOverride({property:column,direction:sorting[0]?.property===column&&sorting[0].direction==='ASC'?'DESC':'ASC'})}>{definition?.labels[column]??definition?.labels[column.replace(/^note\./,'')]??({'file.name':'Имя','file.path':'Путь','file.tags':'Теги'}[column]??column)}{sorting[0]?.property===column&&<span>{sorting[0].direction==='DESC'?'↓':'↑'}</span>}</button></th>)}</tr></thead><tbody>{window.top>0&&<tr aria-hidden="true"><td colSpan={columns.length} style={{height:window.top,padding:0,border:0}}/></tr>}{rows.slice(window.start,window.end).map(document=><tr key={document.path} data-path={document.path} onDoubleClick={event=>{if(!(event.target as HTMLElement).closest('.base-cell-edit'))onOpen(document.path)}}>{columns.map((column,i)=><td key={`${column}-${i}`}>{column==='file.name'?<button onClick={()=>onOpen(document.path)}><FileIcon/><span>{noteRow(document).field(column) as string}</span></button>:column.startsWith('file.')?<span className={column==='file.path'?'base-path':''}>{displayProperty(noteRow(document).field(column))}</span>:<button className="base-cell-edit" data-property={column} disabled={busy} title={`Изменить ${column}`} onClick={()=>void edit(document.path,column)}>{displayProperty(noteRow(document).field(column))}</button>}</td>)}</tr>)}{window.bottom>0&&<tr aria-hidden="true"><td colSpan={columns.length} style={{height:window.bottom,padding:0,border:0}}/></tr>}</tbody></table>{!rows.length&&<div className="base-empty">{!definition&&!error?'Читаю определение…':view?.error||error?'Представление недоступно. Проверьте определение .base.':'Нет заметок, подходящих под фильтр.'}</div>}</div>
+    {target&&<PropertyDialog name={target.key} value={target.value} onClose={()=>setTarget(null)} onApply={async patch=>{const outcome=await invoke<SaveOutcome>('patch_note_property',{root,relativePath:target.document.path,expectedFingerprint:target.document.fingerprint,patch});if(outcome.status==='conflict')throw new Error('Файл изменён извне. Правка не записана; закройте окно и откройте свойство заново.');onSaved?.()}}/>}
   </div>
-}
-
-function Sortable({ label, value, active, descending, onSort }: { label: string; value: string; active: string; descending: boolean; onSort: (value: string) => void }) {
-  return <th><button onClick={() => onSort(value)}>{label}{active === value && <span>{descending ? '↓' : '↑'}</span>}</button></th>
 }

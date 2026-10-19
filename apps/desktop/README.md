@@ -197,11 +197,29 @@ measurements are development checks, not a universal frame-rate guarantee.
 
 ## Current boundaries
 
+R2B properties/Bases checkpoint: the opened `.base` is parsed as YAML, with
+table views, global/view filters, column order/display names, multi-sort and
+limit. Only Markdown rows are included. Unsupported view types, formulas and
+expressions are explicit, never executed as JavaScript. The original definition
+is edited as text so unknown fields/comments are not silently normalized away.
+Header sorting is temporary; persistent sorting belongs in the definition.
+
+Typed top-level note properties are editable in both panes and table cells.
+Rust preserves neighboring YAML/body bytes and checks the inspected fingerprint
+and vault root before a cell write. Complex YAML remains source-only; limits are
+256 KiB YAML and 16 MiB note source. Property type is inferred, not yet a global
+vault type registry. Canvas note cards show up to four simple properties.
+`pnpm --dir apps/desktop test:r2b` runs the bounded query contracts;
+`test:r2b:ui` uses the standalone debug-enabled app with synthetic sources and
+restores the original vault/settings. The rest of R2B (task views, authoritative
+backup/restore and plugin subsets) is still in progress.
+
 - Image thumbnails and arbitrary file references are implemented. Embedded
   PDF/audio/video viewers are not complete; unsupported files get a detail peek.
 - The ordinary UI uses local FTS5 Words/Literal search, incremental source
-  updates and read-time validation. Shared incremental metadata for all other
-  views, vector search and scoped agent integrations remain planned work.
+  updates and read-time validation. R2A shared incremental metadata feeds tree,
+  graph, properties, Bases and tasks. Vector search and scoped agent integrations
+  remain planned work.
 - `scripts/local-ai` contains optional, isolated OCR/ASR experiments, not bundled
   product workers. Model caches, sample downloads and reports stay outside Git.
 - Personal notification automation and its credentials are local-only, not part

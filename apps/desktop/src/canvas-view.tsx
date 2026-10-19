@@ -12,6 +12,7 @@ import { AttachmentDetails, AttachmentImage, isRasterPath, useCanvasAttachments 
 import { CommandMenu } from './command-menu'
 import { createCommandRegistry } from './commands'
 import { MarkdownPreview } from './markdown-preview'
+import { displayProperty } from './properties'
 
 export type CanvasNode = {
   id: string
@@ -51,6 +52,10 @@ type DragState =
 
 const MIN_ZOOM = .05
 const MAX_ZOOM = 3
+function CanvasFileProperties({properties}:{properties:Record<string,unknown>|undefined}){
+  if(!properties)return null
+  return <dl className="canvas-file-properties">{Object.entries(properties).filter(([,value])=>value===null||typeof value!=='object'||Array.isArray(value)).slice(0,4).map(([key,value])=><div key={key}><dt>{key}</dt><dd>{displayProperty(value)}</dd></div>)}</dl>
+}
 const MIN_NODE_WIDTH = 150
 const MIN_NODE_HEIGHT = 80
 
@@ -103,6 +108,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
   const stored = validation.document
   const [gestureDocument, setGestureDocument] = useState<CanvasDocument | null>(null)
   const parsed = gestureDocument ?? stored
+  const noteProperties=useMemo(()=>new Map(index?.documents.map(document=>[document.path,document.properties])),[index?.documents])
   const [camera, setCamera] = useState<Camera>(initialCamera ?? { x: 0, y: 0, zoom: initialZoom })
   const cameraChanged = useRef(onCameraChange); cameraChanged.current = onCameraChange
   useEffect(() => { cameraChanged.current?.(camera) }, [camera])
@@ -631,7 +637,7 @@ export function CanvasView({ value, index, onChange, onOpen, initialZoom = 1, in
       >
         <div className="canvas-node-grip"><span>{node.type === 'text' ? 'Текст' : node.type === 'file' ? 'Заметка' : node.type === 'group' ? 'Группа' : 'Ссылка'}</span><button title="Удалить карточку" onClick={(event) => { event.stopPropagation(); const document = documentRef.current; commit({ ...document, nodes: document.nodes.filter((item) => item.id !== node.id), edges: document.edges.filter((edge) => edge.fromNode !== node.id && edge.toNode !== node.id) }); setSelected((current) => new Set([...current].filter((id) => id !== node.id))) }}>×</button></div>
         {node.type === 'text' && (richCards&&editingId!==node.id?<div className="canvas-rich-text"><MarkdownPreview source={node.text??''} index={index} onOpen={path=>onOpen(path.split('#')[0])}/><small className="canvas-card-hint">Двойной клик — редактировать</small></div>:<textarea autoFocus={editingId===node.id} value={node.text ?? ''} onFocus={() => setSelected((current) => current.has(node.id) ? current : new Set([node.id]))} onChange={(event) => updateNode(node.id, { text: event.target.value })} />)}
-        {node.type === 'file' && <div className="canvas-file-card" role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <AttachmentImage path={node.file} /> : <FileIcon />}<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong><small>{node.file}</small></div>}
+        {node.type === 'file' && <div className="canvas-file-card" role="button" tabIndex={0} onDoubleClick={() => node.file && openFile(node.file)} onKeyDown={(event) => { if (event.key === 'Enter' && node.file) { event.stopPropagation(); openFile(node.file) } }}>{imageNodes.has(node.id) && node.file ? <AttachmentImage path={node.file} /> : <FileIcon />}<strong>{node.file?.replace(/\.md$/i, '').split('/').at(-1) ?? 'Вложение'}</strong><small>{node.file}</small><CanvasFileProperties properties={noteProperties.get(node.file??'')}/></div>}
         {node.type === 'link' && <a href={node.url} target="_blank" rel="noreferrer">{node.url}</a>}
         {node.type === 'group' && <strong className="canvas-group-label">{node.label || 'Группа'}</strong>}
         {selected.has(node.id) && <div className="canvas-resize-handle" onPointerDown={(event) => resizePointerDown(event, node)} />}

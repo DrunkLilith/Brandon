@@ -1,5 +1,10 @@
 //! Portable Markdown metadata extraction for local knowledge vaults.
 
+mod properties;
+pub use properties::{
+    PropertyInspection, PropertyKind, PropertyPatch, inspect_properties, parse_yaml_mapping,
+    patch_property,
+};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
@@ -419,11 +424,15 @@ fn split_frontmatter(source: &str) -> (Option<&str>, &str) {
     }
     let delimiter_len = if source.starts_with("---\r\n") { 5 } else { 4 };
     let remainder = &source[delimiter_len..];
-    for delimiter in ["\n---\n", "\r\n---\r\n"] {
-        if let Some(end) = remainder.find(delimiter) {
-            let markdown_start = end + delimiter.len();
-            return (Some(&remainder[..end]), &remainder[markdown_start..]);
+    let mut offset = 0;
+    for line in remainder.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            return (
+                Some(&remainder[..offset]),
+                &remainder[offset + line.len()..],
+            );
         }
+        offset += line.len();
     }
     (None, source)
 }

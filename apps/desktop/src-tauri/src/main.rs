@@ -266,6 +266,41 @@ fn save_note(
 }
 
 #[tauri::command]
+fn inspect_note_properties(contents: String) -> knowledge_vault::PropertyInspection {
+    knowledge_vault::inspect_properties(&contents)
+}
+
+#[tauri::command]
+fn patch_properties_source(
+    contents: String,
+    patch: knowledge_vault::PropertyPatch,
+) -> Result<String, String> {
+    knowledge_vault::patch_property(&contents, &patch)
+}
+
+#[tauri::command]
+fn parse_structured_yaml(contents: String) -> Result<serde_json::Value, String> {
+    knowledge_vault::parse_yaml_mapping(&contents)
+}
+
+#[tauri::command]
+fn patch_note_property(
+    root: String,
+    relative_path: String,
+    expected_fingerprint: String,
+    patch: knowledge_vault::PropertyPatch,
+    state: State<'_, VaultState>,
+) -> Result<SaveOutcome, String> {
+    let vault = current_vault(&state)?;
+    if vault.root() != std::path::Path::new(&root) {
+        return Err("Хранилище сменилось; правка свойства отменена".into());
+    }
+    vault
+        .patch_note_property(&relative_path, &expected_fingerprint, &patch)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn save_resource(
     relative_path: String,
     contents: String,
@@ -455,6 +490,10 @@ fn main() {
             read_resource,
             save_note,
             save_resource,
+            inspect_note_properties,
+            patch_properties_source,
+            parse_structured_yaml,
+            patch_note_property,
             create_note,
             create_resource,
             create_folder,

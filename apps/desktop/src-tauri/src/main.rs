@@ -1,6 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod attachment_commands;
+mod canvas_export;
+use canvas_export::{
+    CanvasExportState, canvas_export_cancel, canvas_export_prepare, canvas_export_preview,
+    canvas_export_write,
+};
+mod canvas_export_render;
+mod canvas_render_scene;
 mod capture_commands;
 use capture_commands::{
     apply_capture, import_capture, inspect_capture_import, load_captures, preview_capture,
@@ -203,6 +210,9 @@ fn activate_vault(
     *current = Some(vault);
     generation.store(epoch, Ordering::SeqCst);
     *watcher_slot = Some(watcher);
+    drop(watcher_slot);
+    drop(current);
+    app.state::<CanvasExportState>().scope_changed();
     Ok(snapshot)
 }
 
@@ -486,12 +496,17 @@ fn main() {
         .manage(SearchState::default())
         .manage(WorkspaceState::default())
         .manage(MetadataState::default())
+        .manage(CanvasExportState::default())
         .setup(|app| {
             search_commands::start_worker(app.handle().clone());
             metadata_commands::start_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            canvas_export_prepare,
+            canvas_export_preview,
+            canvas_export_cancel,
+            canvas_export_write,
             canvas_gpu_supported,
             canvas_gpu_image,
             attachment_info,

@@ -1,7 +1,7 @@
 import {CANVAS_PRIMITIVES} from './canvas-primitives.ts'
 export const CANVAS_CREATE_COMMANDS=[...CANVAS_PRIMITIVES.map(primitive=>({id:`canvas-add-${primitive.id}`,label:`Добавить: ${primitive.label}`})),{id:'canvas-add-stack',label:'Стикеры списком'},{id:'canvas-add-task',label:'Добавить задачу'}]
 export const CANVAS_INK_COMMANDS=[{id:'canvas-tool-pen',label:'Перо',defaultShortcut:'Alt+KeyP'},{id:'canvas-tool-highlighter',label:'Маркер',defaultShortcut:'Alt+KeyH'},{id:'canvas-tool-eraser',label:'Ластик штрихов',defaultShortcut:'Alt+KeyE'}]as const
-export const CANVAS_FRAME_COMMANDS=[{id:'canvas-frames',label:'Фреймы доски'},{id:'canvas-add-frame',label:'Создать фрейм'},{id:'canvas-frame-details',label:'Название и заметки фрейма'},{id:'canvas-frame-remove',label:'Снять только рамку'},{id:'canvas-present',label:'Показать фреймы',defaultShortcut:'Mod+Alt+KeyP'},{id:'canvas-present-end',label:'Завершить показ'},{id:'canvas-present-prev',label:'Предыдущий фрейм'},{id:'canvas-present-next',label:'Следующий фрейм'}]as const
+export const CANVAS_FRAME_COMMANDS=[{id:'canvas-frames',label:'Фреймы доски'},{id:'canvas-add-frame',label:'Создать фрейм'},{id:'canvas-frame-details',label:'Название и заметки фрейма'},{id:'canvas-frame-remove',label:'Снять только рамку'},{id:'canvas-export-png',label:'Экспорт фрейма в PNG'},{id:'canvas-present',label:'Показать фреймы',defaultShortcut:'Mod+Alt+KeyP'},{id:'canvas-present-end',label:'Завершить показ'},{id:'canvas-present-prev',label:'Предыдущий фрейм'},{id:'canvas-present-next',label:'Следующий фрейм'}]as const
 // Descriptors are shared by the app palette, board toolbar/context and keyboard.
 export const CANVAS_COMMANDS=[
   {id:'canvas-group',label:'Сгруппировать',defaultShortcut:'Mod+Shift+KeyG'},

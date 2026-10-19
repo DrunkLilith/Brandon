@@ -46,6 +46,12 @@ pub struct AttachmentRaster {
     pub height: u32,
     pub rgba: Vec<u8>,
 }
+pub struct AttachmentExportRaster {
+    pub fingerprint: String,
+    pub raster: Option<AttachmentRaster>,
+    pub source_width: u32,
+    pub source_height: u32,
+}
 
 fn io_error(context: &'static str) -> impl FnOnce(io::Error) -> VaultError {
     move |source| VaultError::Io { context, source }
@@ -367,6 +373,45 @@ impl Vault {
     }
 
     fn raster_image(&self, relative: &str, width: u32, height: u32) -> Result<image::DynamicImage> {
+        self.decode_raster(self.raster_source(relative)?, width, height)
+            .map(|(image, _)| image)
+    }
+    pub fn attachment_export_fingerprint(&self, relative: &str) -> Result<String> {
+        Ok(super::fingerprint(&self.raster_source(relative)?))
+    }
+    pub fn attachment_export_raster(
+        &self,
+        relative: &str,
+        edge: u32,
+    ) -> Result<AttachmentExportRaster> {
+        if !(1..=4096).contains(&edge) {
+            return Err(VaultError::InvalidPath(
+                "Некорректный размер экспортного изображения",
+            ));
+        }
+        let bytes = self.raster_source(relative)?;
+        let fingerprint = super::fingerprint(&bytes);
+        let decoded = self.decode_raster(bytes, edge, edge).ok();
+        let (raster, (source_width, source_height)) =
+            decoded.map_or((None, (0, 0)), |(image, size)| {
+                let image = image.to_rgba8();
+                (
+                    Some(AttachmentRaster {
+                        width: image.width(),
+                        height: image.height(),
+                        rgba: image.into_raw(),
+                    }),
+                    size,
+                )
+            });
+        Ok(AttachmentExportRaster {
+            fingerprint,
+            raster,
+            source_width,
+            source_height,
+        })
+    }
+    fn raster_source(&self, relative: &str) -> Result<Vec<u8>> {
         let path = self.public_attachment_path(relative)?;
         let metadata = fs::metadata(&path).map_err(io_error("Вложение недоступно"))?;
         if metadata.len() > MAX_PREVIEW_BYTES {
@@ -385,6 +430,14 @@ impl Vault {
                 "Изображение выросло и превышает лимит превью",
             ));
         }
+        Ok(bytes)
+    }
+    fn decode_raster(
+        &self,
+        bytes: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) -> Result<(image::DynamicImage, (u32, u32))> {
         if sniff(&bytes) != AttachmentKind::Image {
             return Err(VaultError::InvalidPath(
                 "Это не поддерживаемое растровое изображение",
@@ -401,9 +454,10 @@ impl Vault {
         let image = reader.decode().map_err(|_| {
             VaultError::InvalidPath("Изображение повреждено или превышает лимиты превью")
         })?;
+        let source_size = (image.width(), image.height());
         let width = width.min(image.width());
         let height = height.min(image.height());
-        Ok(image.thumbnail(width, height))
+        Ok((image.thumbnail(width, height), source_size))
     }
 }
 

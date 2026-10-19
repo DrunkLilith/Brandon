@@ -17,6 +17,12 @@ rusqlite.workspace = true
 tauri = { version = "2.12.3", features = [] }
 tauri-plugin-dialog = "2.8.2"
 tokio.workspace = true
+cosmic-text = "=0.19.0"
+tiny-skia = "=0.12.0"
+renamore = "=0.3.2"
+tempfile = "=3.27.0"
+sha2.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 glyphon = "0.12.0"
@@ -24,6 +30,3 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "dx12"
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-tempfile = "3.27.0"

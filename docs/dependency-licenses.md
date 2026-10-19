@@ -56,3 +56,21 @@ Upstream records: [Tauri API](https://www.npmjs.com/package/@tauri-apps/api/v/2.
 
 Regression tests reject unreviewed versions, mixed-version inventories, unrelated
 packages, changed AND/OR expressions, missing identities and unknown licenses.
+
+## PNG exporter candidate audit — 19 October 2026 (not release-approved)
+
+The new CPU exporter candidates are pinned to tiny-skia 0.12.0, cosmic-text
+0.19.0 (already used by native text), renamore 0.3.2, and tempfile 3.27.0.
+New resolved transitive crates: tiny-skia-path 0.12.0 (BSD-3-Clause), strict-num
+0.1.1 (MIT), arrayref 0.3.9 (BSD-2-Clause). Exact downloaded Cargo manifests and
+full license texts were read; MIT alternatives are selected for cosmic-text and
+renamore. Full selected texts are retained in
+`apps/desktop/src-tauri/THIRD_PARTY_CANVAS_EXPORT.txt`; binary packaging and
+user-accessible notices remain a release gate, not satisfied by source links.
+
+**Open approval:** `cargo deny check licenses` rejects arrayref 0.3.9 because
+BSD-2-Clause is not allowed by this project's policy. No exception or global
+allow-list change has been made. The owner was asked whether to allow only that
+exact crate/version, or choose another implementation path. The local source
+checkpoint is not a release, an approval of this license, or a license-clean
+package. See `target/qa/r3b-export-licenses.log` for the observed rejection.

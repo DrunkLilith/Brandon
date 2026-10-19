@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
@@ -406,6 +406,91 @@ fn validate_fields(
 }
 
 impl Vault {
+    /// Snapshot only requested canonical rows. Never creates or migrates a task store.
+    pub fn task_records_snapshot(&self, ids: &[String]) -> Result<HashMap<String, TaskRecord>> {
+        if ids.len() > 2000
+            || ids.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 128
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
+            return Err(invalid("Некорректный список TaskId"));
+        }
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let directory = self.root.join(".brandon");
+        let meta = match fs::symlink_metadata(&directory) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(error) => return Err(io_error(error)),
+        };
+        if !meta.is_dir() || attachments::is_link(&meta) {
+            return Err(invalid("Папка задач недоступна для чтения"));
+        }
+        for file in [
+            "tasks.sqlite3",
+            "tasks.sqlite3-wal",
+            "tasks.sqlite3-shm",
+            "tasks.sqlite3-journal",
+            "task-store.v1.json",
+        ] {
+            checked_file(&directory.join(file))?;
+        }
+        let path = directory.join("tasks.sqlite3");
+        let marker = directory.join("task-store.v1.json");
+        if marker.exists() {
+            let mut bytes = Vec::new();
+            fs::File::open(&marker)
+                .map_err(io_error)?
+                .take(1025)
+                .read_to_end(&mut bytes)
+                .map_err(io_error)?;
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| invalid("Marker task DB повреждён"))?;
+            if bytes.len() > 1024
+                || value.get("format").and_then(Value::as_str) != Some("brandon.task-store")
+                || value.get("version").and_then(Value::as_u64) != Some(1)
+            {
+                return Err(invalid(
+                    "Неизвестный marker task DB; чтение не выполняет миграции",
+                ));
+            }
+        }
+        if !path.exists() {
+            if directory.join("task-store.v1.json").exists() {
+                return Err(invalid("Каноническая task DB потеряна; требуется backup"));
+            }
+            return Ok(HashMap::new());
+        }
+        let mut connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.execute_batch(
+            "PRAGMA trusted_schema=OFF;PRAGMA query_only=ON;PRAGMA busy_timeout=2500;",
+        )?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let version: i64 = transaction.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version != SCHEMA_VERSION || columns(&transaction)? != COLUMNS {
+            return Err(invalid(
+                "Схема task DB требует совместимой версии; экспорт не выполняет миграции",
+            ));
+        }
+        reject_extra_schema(&transaction)?;
+        let mut records = HashMap::new();
+        for id in ids {
+            if let Some(record) = record_by_id(&transaction, id)? {
+                record.validate()?;
+                records.insert(id.clone(), record);
+            }
+        }
+        transaction.commit()?;
+        Ok(records)
+    }
     pub fn patch_managed_task(
         &self,
         task_id: &str,

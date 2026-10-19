@@ -1,11 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { CanvasDocument, CanvasNode } from './canvas-view'
-import {canvasAppearance} from './canvas-primitives'
+import {renderCanvasNode} from './canvas-render-scene'
 import {samePreparedEdge,type PreparedCanvasEdge} from './canvas-edges'
 import {listen} from '@tauri-apps/api/event'
-import {canvasRasterLayout,isCanvasRaster,changedRasterPaths,type RasterDelta} from './canvas-raster'
-import {prepareCanvasInk} from './canvas-ink'
+import {isCanvasRaster,changedRasterPaths,type RasterDelta} from './canvas-raster'
 
 export type NativeCanvasStats = {
   adapter: string; backend: string; totalNodes: number; visibleNodes: number; visibleEdges: number
@@ -20,14 +19,7 @@ type Inputs = { root:string;document: CanvasDocument; labels:ReadonlyMap<string,
 type Session = { id:string;root:string;labels:ReadonlyMap<string,string>|null;imagePending:Set<string>;imageDirty:Set<string>;imageVersions:Map<string,number>;imageFailed:Map<string,number>;disposed: boolean; started: boolean; ready: boolean; dirty: boolean; raf: number; pending: Promise<void> | null; document: CanvasDocument | null; nodes: Map<string, CanvasNode>; order: string[]; edges: PreparedCanvasEdge[] | null; publishedAt: number }
 let lifecycle: Promise<unknown> = Promise.resolve()
 
-function renderNode(node: CanvasNode,label?:string) {
-  const appearance=canvasAppearance(node),raster=isCanvasRaster(node)?canvasRasterLayout(node):null,ink=prepareCanvasInk(node,appearance.border)
-  if(ink)return{id:node.id,x:node.x,y:node.y,width:node.width,height:node.height,kind:node.type,fill:ink.color+Math.round(ink.opacity*255).toString(16).padStart(2,'0'),border:appearance.border,style:null,image:null,ink,text:''}
-  return { id: node.id, x: node.x, y: node.y, width: node.width, height: node.height, kind: node.type, fill:appearance.fill,border:appearance.border,
-    style:raster?{shape:0,centerText:false,radius:8,fontSize:raster.fontSize,align:appearance.textAlign,textColor:appearance.text,strokeWidth:appearance.strokeWidth,bounds:raster.footer}:appearance.styled?{shape:appearance.shape,centerText:appearance.centerText,radius:appearance.radius,fontSize:appearance.fontSize,align:appearance.textAlign,textColor:appearance.text,strokeWidth:appearance.strokeWidth,bounds:appearance.bounds}:null,
-    image:raster?{path:node.file,bounds:raster.image}:null,
-    text: label??(raster?node.file?.split('/').at(-1)??'Изображение':node.type === 'text' ? node.text ?? '' : node.type === 'file' ? `${node.file?.split('/').at(-1)?.replace(/\.md$/i, '') ?? 'Заметка'}\n${node.file ?? ''}` : node.label ?? node.url ?? 'Группа') }
-}
+const renderNode=renderCanvasNode
 
 export function useNativeCanvas(viewport: RefObject<HTMLDivElement | null>, inputs: Inputs, enabled = true) {
   const [failed, setFailed] = useState(false)

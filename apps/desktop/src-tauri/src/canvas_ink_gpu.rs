@@ -1,189 +1,14 @@
 //! One reusable bounded coverage mask: a stroke blends once even at self-crossings.
-use super::{DrawBatch, Node, SceneDelta, bytes, color, depth_state, layer_depth, rgb};
-use serde::Deserialize;
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Range,
-};
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn node(id: &str, count: usize) -> Node {
-        let mut n:Node=serde_json::from_value(serde_json::json!({"id":id,"x":0,"y":0,"width":100,"height":100,"kind":"text","ink":{"segments":[[20,20,80,80,3,3]],"color":"#123456","opacity":0.24}})).unwrap();
-        n.ink
-            .as_mut()
-            .unwrap()
-            .segments
-            .resize(count, [20., 20., 80., 80., 3., 3.]);
-        n
-    }
-    fn delta(nodes: Vec<Node>, removed: Vec<String>, reset: bool) -> SceneDelta {
-        SceneDelta {
-            nodes,
-            removed,
-            reset,
-            order: None,
-            edges: None,
-            edge_updates: Vec::new(),
-        }
-    }
-    #[test]
-    fn prepared_ink_requires_bounded_finite_local_geometry_and_inert_paint() {
-        let n = node("ink", 1);
-        assert!(n.ink.as_ref().unwrap().valid_for(&n));
-        for change in 0..7 {
-            let mut bad = n.clone();
-            let ink = bad.ink.as_mut().unwrap();
-            match change {
-                0 => ink.segments.clear(),
-                1 => ink.segments[0][0] = f32::NAN,
-                2 => ink.segments[0][4] = -1.,
-                3 => ink.segments[0][2] = 500.,
-                4 => ink.opacity = 0.5,
-                5 => ink.color = "url(script)".into(),
-                _ => bad.kind = "file".into(),
-            };
-            assert!(!bad.ink.as_ref().unwrap().valid_for(&bad));
-        }
-        assert!(
-            validate_scene(
-                &HashMap::new(),
-                &delta(vec![node("valid", 1), node("valid", 1)], vec![], false)
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn incremental_ink_budget_counts_replacements_removals_reset_and_stroke_count() {
-        let current: HashMap<_, _> = (0..48)
-            .map(|i| {
-                let n = node(&i.to_string(), 2048);
-                (n.id.clone(), n)
-            })
-            .collect();
-        assert!(
-            validate_scene(&current, &delta(vec![node("extra", 2048)], vec![], false)).is_err()
-        );
-        assert!(validate_scene(&current, &delta(vec![node("0", 2048)], vec![], false)).is_ok());
-        assert!(
-            validate_scene(
-                &current,
-                &delta(vec![node("extra", 2048)], vec!["0".into()], false)
-            )
-            .is_ok()
-        );
-        assert!(validate_scene(&current, &delta(vec![node("extra", 2048)], vec![], true)).is_ok());
-        assert_eq!(current.len(), 48);
-        assert!(
-            validate_scene(
-                &HashMap::new(),
-                &delta(
-                    (0..4097).map(|i| node(&i.to_string(), 1)).collect(),
-                    vec![],
-                    true
-                )
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn coverage_mask_budget_refuses_zero_oversize_and_overflow_dimensions() {
-        assert!(valid_mask_size([8192, 8192]));
-        assert!(!valid_mask_size([8193, 8192]));
-        assert!(!valid_mask_size([0, 100]));
-        assert!(!valid_mask_size([u32::MAX, u32::MAX]));
-    }
-}
+use super::SceneDelta;
+use super::{DrawBatch, Node, bytes, color, depth_state, layer_depth, rgb};
+use std::{collections::HashMap, ops::Range};
+
 pub(super) const MASK_BUDGET: u64 = 64 * 1024 * 1024;
 fn valid_mask_size(size: [u32; 2]) -> bool {
     !size.contains(&0) && u64::from(size[0]) * u64::from(size[1]) <= MASK_BUDGET
 }
-pub(super) fn validate_scene(
-    current: &HashMap<String, Node>,
-    delta: &SceneDelta,
-) -> Result<(), String> {
-    let mut counts: HashMap<&str, usize> = if delta.reset {
-        HashMap::new()
-    } else {
-        current
-            .iter()
-            .map(|(id, node)| {
-                (
-                    id.as_str(),
-                    node.ink.as_ref().map_or(0, |s| s.segments.len()),
-                )
-            })
-            .collect()
-    };
-    for id in &delta.removed {
-        counts.remove(id.as_str());
-    }
-    let mut ids = HashSet::new();
-    for node in &delta.nodes {
-        if !ids.insert(node.id.as_str()) {
-            return Err("Duplicate canvas node delta".into());
-        }
-        if node.ink.as_ref().is_some_and(|s| !s.valid_for(node)) {
-            return Err("Invalid prepared canvas ink".into());
-        }
-        if ![node.x, node.y, node.width, node.height]
-            .iter()
-            .all(|v| v.is_finite() && v.abs() <= 10000000.)
-            || node.width <= 0.
-            || node.height <= 0.
-        {
-            return Err("Invalid canvas object geometry".into());
-        }
-        if node.style.as_ref().is_some_and(|s| !s.valid_for(node)) {
-            return Err("Invalid canvas object style".into());
-        }
-        if node.image.as_ref().is_some_and(|s| !s.valid_for(node)) {
-            return Err("Invalid raster reference".into());
-        }
-        counts.insert(&node.id, node.ink.as_ref().map_or(0, |s| s.segments.len()));
-    }
-    if counts.len() > 100000
-        || counts.values().filter(|&&n| n > 0).count() > 4096
-        || counts.values().sum::<usize>() > 100000
-    {
-        return Err("Canvas ink/object budget exceeded".into());
-    }
-    Ok(())
-}
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-pub(super) struct PreparedInk {
-    pub segments: Vec<[f32; 6]>,
-    pub color: String,
-    pub opacity: f32,
-}
-impl PreparedInk {
-    pub(super) fn valid_for(&self, node: &Node) -> bool {
-        let e = node.width.max(node.height) * 0.000001 + 0.05;
-        node.kind == "text"
-            && node.image.is_none()
-            && !self.segments.is_empty()
-            && self.segments.len() <= 2048
-            && [1., 0.24].contains(&self.opacity)
-            && self
-                .color
-                .strip_prefix('#')
-                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-            && self.segments.iter().all(|s| {
-                s.iter().all(|n| n.is_finite())
-                    && s[4] > 0.
-                    && s[5] > 0.
-                    && [(s[0], s[1], s[4]), (s[2], s[3], s[5])]
-                        .iter()
-                        .all(|&(x, y, r)| {
-                            x - r >= -e
-                                && y - r >= -e
-                                && x + r <= node.width + e
-                                && y + r <= node.height + e
-                        })
-            })
-    }
-}
+pub(super) use crate::canvas_render_scene::validate_scene;
 pub(super) struct InkFrame<'a> {
     pub batches: &'a [DrawBatch],
     pub ids: &'a [&'a String],
@@ -600,4 +425,94 @@ fn pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn node(id: &str, count: usize) -> Node {
+        let mut n:Node=serde_json::from_value(serde_json::json!({"id":id,"x":0,"y":0,"width":100,"height":100,"kind":"text","ink":{"segments":[[20,20,80,80,3,3]],"color":"#123456","opacity":0.24}})).unwrap();
+        n.ink
+            .as_mut()
+            .unwrap()
+            .segments
+            .resize(count, [20., 20., 80., 80., 3., 3.]);
+        n
+    }
+    fn delta(nodes: Vec<Node>, removed: Vec<String>, reset: bool) -> SceneDelta {
+        SceneDelta {
+            nodes,
+            removed,
+            reset,
+            order: None,
+            edges: None,
+            edge_updates: Vec::new(),
+        }
+    }
+    #[test]
+    fn prepared_ink_requires_bounded_finite_local_geometry_and_inert_paint() {
+        let n = node("ink", 1);
+        assert!(n.ink.as_ref().unwrap().valid_for(&n));
+        for change in 0..7 {
+            let mut bad = n.clone();
+            let ink = bad.ink.as_mut().unwrap();
+            match change {
+                0 => ink.segments.clear(),
+                1 => ink.segments[0][0] = f32::NAN,
+                2 => ink.segments[0][4] = -1.,
+                3 => ink.segments[0][2] = 500.,
+                4 => ink.opacity = 0.5,
+                5 => ink.color = "url(script)".into(),
+                _ => bad.kind = "file".into(),
+            };
+            assert!(!bad.ink.as_ref().unwrap().valid_for(&bad));
+        }
+        assert!(
+            validate_scene(
+                &HashMap::new(),
+                &delta(vec![node("valid", 1), node("valid", 1)], vec![], false)
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn incremental_ink_budget_counts_replacements_removals_reset_and_stroke_count() {
+        let current: HashMap<_, _> = (0..48)
+            .map(|i| {
+                let n = node(&i.to_string(), 2048);
+                (n.id.clone(), n)
+            })
+            .collect();
+        assert!(
+            validate_scene(&current, &delta(vec![node("extra", 2048)], vec![], false)).is_err()
+        );
+        assert!(validate_scene(&current, &delta(vec![node("0", 2048)], vec![], false)).is_ok());
+        assert!(
+            validate_scene(
+                &current,
+                &delta(vec![node("extra", 2048)], vec!["0".into()], false)
+            )
+            .is_ok()
+        );
+        assert!(validate_scene(&current, &delta(vec![node("extra", 2048)], vec![], true)).is_ok());
+        assert_eq!(current.len(), 48);
+        assert!(
+            validate_scene(
+                &HashMap::new(),
+                &delta(
+                    (0..4097).map(|i| node(&i.to_string(), 1)).collect(),
+                    vec![],
+                    true
+                )
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn coverage_mask_budget_refuses_zero_oversize_and_overflow_dimensions() {
+        assert!(valid_mask_size([8192, 8192]));
+        assert!(!valid_mask_size([8193, 8192]));
+        assert!(!valid_mask_size([0, 100]));
+        assert!(!valid_mask_size([u32::MAX, u32::MAX]));
+    }
 }

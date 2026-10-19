@@ -26,6 +26,7 @@ import {CanvasInkView} from './canvas-ink-view'
 import {useCanvasInk} from './use-canvas-ink'
 import {canvasFrame,orderedCanvasFrames,createCanvasFrame,editCanvasFrame,reorderCanvasFrames,fitCanvasFrame,assertCanvasFramePresentable} from './canvas-frames'
 import {CanvasFrameDialog,CanvasFramePanel,CanvasPresentationControls} from './canvas-frame-ui'
+import {CanvasExportDialog} from './canvas-export-dialog'
 import {CanvasPrimitiveView} from './canvas-primitive-view'
 import {CanvasStyleDialog} from './canvas-style-dialog'
 import {CanvasStickyStack} from './canvas-sticky-stack'
@@ -90,8 +91,9 @@ function additiveSelection(event: { ctrlKey: boolean; metaKey: boolean; shiftKey
   return event.ctrlKey || event.metaKey || event.shiftKey
 }
 
-export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,busyTaskId=null,initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
+export function CanvasView({ root,sourcePath,value, index, onChange, onOpen, onUpdateTask,busyTaskId=null,initialZoom = 1, initialCamera, onCameraChange, nativeEnabled = true, focusTarget, onMissingSearchTarget, hotkeys = {} }: {
   root:string
+  sourcePath:string
   value: string
   index: VaultIndex | null
   onChange: (value: string) => void
@@ -120,6 +122,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   const presentationRef=useRef(presentation);presentationRef.current=presentation
   const frames=useMemo(()=>orderedCanvasFrames(stored),[stored]),presentedFrame=presentation?frames.find(n=>n.id===presentation.id):undefined
   const [framePanel,setFramePanel]=useState(false),[frameDialog,setFrameDialog]=useState<{source:string;ids:Set<string>;node?:CanvasNode}|null>(null)
+  const [exportDialog,setExportDialog]=useState<{source:string;frameId:string;frames:CanvasNode[]}|null>(null)
   const cameraChanged = useRef(onCameraChange); cameraChanged.current = onCameraChange
   useEffect(() => { if(!presentation)cameraChanged.current?.(camera) }, [camera,presentation])
   const [tool, setTool] = useState<'select' | 'pan'>('select')
@@ -634,7 +637,9 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   const openFrameDialog=(id?:string)=>{ink.cancel();ink.setMode(null);cancelPointer();setEditingId(null);setContext(null);setFrameDialog({source:serializeCanvas(documentRef.current),ids:new Set(selected),node:id?nodes.get(id):undefined})}
   const focusFrame=(id:string)=>{const frame=nodes.get(id);if(!frame)return;ink.cancel();ink.setMode(null);cancelPointer();setEditingId(null);setSelected(new Set([id]));setSelectedEdge(null);setCamera(fitCanvasFrame(frame,viewportSize,80));viewport.current?.focus()}
   const removeFrame=(id:string)=>{const document=documentRef.current,ids=new Set([id]),members=expandCanvasSelection(document,ids),next=ungroupCanvasSelection(document,ids);commit(next);setSelected(new Set([...members].filter(id=>next.nodes.some(n=>n.id===id))))}
+  const openExport=(id?:string)=>{if(presentationRef.current||!frames.length)return;ink.cancel();ink.setMode(null);cancelPointer();setEditingId(null);setContext(null);setExportDialog({source:value,frameId:id??frames.find(n=>selected.has(n.id))?.id??frames[0].id,frames})}
   const frameCommandEnabled=(id:string):boolean|undefined=>{
+    if(id==='canvas-export-png')return frames.length>0&&!presentation&&!exportDialog
     if(id==='canvas-present-end')return Boolean(presentation)
     if(id==='canvas-present-next'||id==='canvas-present-prev'){const i=frames.findIndex(n=>n.id===presentation?.id);return Boolean(presentation)&&i+(id.endsWith('next')?1:-1)>=0&&i+(id.endsWith('next')?1:-1)<frames.length}
     if(id==='canvas-present')return frames.length>0&&!presentation
@@ -644,6 +649,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
   const arrange=(id:string)=>{
     const document=documentRef.current
     if(id==='canvas-frames')setFramePanel(v=>!v)
+    else if(id==='canvas-export-png')openExport()
     else if(id==='canvas-add-frame')openFrameDialog()
     else if(id==='canvas-frame-details')openFrameDialog([...selected][0])
     else if(id==='canvas-frame-remove')removeFrame([...selected][0])
@@ -801,7 +807,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
       <button className="canvas-zoom" title="Увеличить" onClick={() => zoomFromCenter(1.16)}>+</button></div>
       {extended&&<span className="canvas-compatibility" title="Расширение Brandon v1: текст и геометрия читаются другими редакторами, но блокировка и стили могут не учитываться. Штрих покажется текстовой карточкой, задача — ссылкой на Markdown.">Расширенный Canvas</span>}
     </div>}
-    {framePanel&&!presentation&&<CanvasFramePanel frames={frames} selected={selected} editable={id=>{try{return canvasSelectionEditable(parsed,new Set([id]))}catch{return false}}} onFocus={focusFrame} onEdit={openFrameDialog} onMove={(id,direction)=>attempt(()=>commit(reorderCanvasFrames(documentRef.current,id,direction)))()} onRemove={id=>attempt(()=>removeFrame(id))()} onCreate={()=>openFrameDialog()} onPresent={attempt(enterPresentation)} onClose={()=>setFramePanel(false)}/>}
+    {framePanel&&!presentation&&<CanvasFramePanel frames={frames} selected={selected} editable={id=>{try{return canvasSelectionEditable(parsed,new Set([id]))}catch{return false}}} onFocus={focusFrame} onEdit={openFrameDialog} onMove={(id,direction)=>attempt(()=>commit(reorderCanvasFrames(documentRef.current,id,direction)))()} onRemove={id=>attempt(()=>removeFrame(id))()} onCreate={()=>openFrameDialog()} onPresent={attempt(enterPresentation)} onExport={openExport} onClose={()=>setFramePanel(false)}/>}
     {presentation&&<CanvasPresentationControls frames={frames} id={presentation.id} notes={false} onNavigate={id=>attempt(()=>navigatePresentation(id))()} onExit={leavePresentation}/>}
     {ink.mode&&<div className="canvas-ink-options" data-tool={ink.mode}><strong>{ink.mode==='pen'?'Перо':ink.mode==='highlighter'?'Маркер':'Ластик штрихов'}</strong>{ink.mode!=='eraser'&&<label>Цвет<input aria-label="Цвет кисти" type="color" value={ink.color} onChange={event=>ink.setColor(event.target.value)}/></label>}<label>Размер<select aria-label={ink.mode==='eraser'?'Размер ластика':'Размер кисти'} value={ink.mode==='eraser'?ink.eraserSize:ink.size} onChange={event=>ink.mode==='eraser'?ink.setEraserSize(Number(event.target.value)):ink.setSize(Number(event.target.value))}>{(ink.mode==='eraser'?[8,16,24,32,64]:[1,2,4,8,16,32,64]).map(size=><option key={size} value={size}>{size}</option>)}</select></label>{ink.mode==='pen'&&<label><input type="checkbox" aria-label="Учитывать нажатие пера" checked={ink.pressure} onChange={event=>ink.setPressure(event.target.checked)}/>Нажатие пера</label>}<small>{ink.mode==='eraser'?'Удаляются только целые штрихи. Один проход — один Undo.':'Мышь — постоянная толщина; перо — по нажатию. Палец перемещает холст.'} · Esc — выбор</small></div>}
     {notePicker && <div className="canvas-note-picker"><strong>Добавить заметку</strong>{index?.documents.slice(0, 80).map((document) => <button key={document.path} onClick={attempt(() => addFile(document.path))}><FileIcon /><span>{document.title}</span><small>{document.path}</small></button>)}{!index?.documents.length && <p>В vault пока нет заметок.</p>}</div>}
@@ -843,6 +849,7 @@ export function CanvasView({ root,value, index, onChange, onOpen, onUpdateTask,b
     {native.active&&native.imageErrors>0&&<div className="canvas-raster-notice" role="status">Некоторые превью недоступны; оригиналы сохранены.<button onClick={native.retryImages}>Повторить превью</button></div>}
     {native.active&&Boolean(native.stats?.rasterLimited)&&<div className="canvas-raster-notice">Часть превью появится при приближении: одновременно до 64 разных изображений.</div>}
     {attachments.progress && <div className="canvas-import-status" onPointerDown={(event) => event.stopPropagation()}><span>{attachments.progress.name}</span><progress value={attachments.progress.copied} max={Math.max(1, attachments.progress.total)} /><button onClick={attachments.cancel}>Отменить</button></div>}
+    {exportDialog&&<CanvasExportDialog root={root} sourcePath={sourcePath} source={exportDialog.source} currentSource={value} frames={exportDialog.frames} initialFrame={exportDialog.frameId} onClose={()=>setExportDialog(null)}/>}
     {attachments.error && <div className="canvas-import-status" role="alert"><span>{attachments.error}</span><button onClick={attachments.dismissError}>Закрыть</button></div>}
     {attachments.dragOver && <div className="canvas-drop-hint">Добавить файлы на холст<span>Оригиналы будут скопированы в Attachments</span></div>}
     {selectionBox && <div className="canvas-selection-box" style={selectionStyle} />}

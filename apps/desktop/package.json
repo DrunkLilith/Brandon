@@ -23,7 +23,7 @@
     "test:r2b:capture:ui": "node ../../tests/desktop/r2b-capture-smoke.mjs",
     "test:r3a": "node --experimental-strip-types --test ../../tests/desktop/r3a-operations.test.mjs ../../tests/desktop/r3a-primitives.test.mjs ../../tests/desktop/r3a-edges.test.mjs ../../tests/desktop/r3a-raster.test.mjs ../../tests/desktop/r3a-tasks.test.mjs ../../tests/desktop/r3a-ink.test.mjs",
     "test:r3a:ink:ui": "node --experimental-strip-types ../../tests/desktop/r3a-ink-smoke.mjs",
-    "test:r3b": "node --experimental-strip-types --test ../../tests/desktop/r3b-frames.test.mjs",
+    "test:r3b": "node --experimental-strip-types --test ../../tests/desktop/r3b-frames.test.mjs ../../tests/desktop/r3b-export.test.mjs",
     "test:r3b:ui": "node --experimental-strip-types ../../tests/desktop/r3b-frames-smoke.mjs",
     "test:r3a:tasks:ui": "node --experimental-strip-types ../../tests/desktop/r3a-tasks-smoke.mjs",
     "test:r3a:layers:ui": "node --experimental-strip-types ../../tests/desktop/r3a-layers-smoke.mjs",

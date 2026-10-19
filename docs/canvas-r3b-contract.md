@@ -151,3 +151,104 @@ binary, visible native/fallback clipping and narrow-pane review. Remaining R3B:
 local template catalogue, linked working formats and bounded PNG export with
 compatibility report and image inspection. No frame installation, NSIS, push,
 native macOS, physical stylus or server acceptance is claimed.
+
+## PNG export v1 contract (before writer)
+
+The first export is a flattened PNG of one selected frame, not a screenshot of
+the window and not a second authoritative board. It runs in a bounded Rust CPU
+worker. Prepared node appearance/text bounds, edges and ink are shared with the
+native scene adapter; text uses the same cosmic-text layout rather than an
+unrelated HTML screenshot. Export can run without an active GPU surface.
+
+Input names the current vault, saved `.canvas` source path, exact source snapshot,
+frame ID, scale (1 or 2), background (dark or transparent) and versioned prepared
+scene. Rust checks the current root and exact saved source before preparing or
+reading referenced rasters. The frame must be a valid v1 group-backed frame.
+Prepared geometry/node identity and referenced image paths must match that source;
+external URLs, SVG/HTML/script references and hidden/traversing paths are never
+fetched. Unsupported or unavailable media get an explicit labelled placeholder
+and a per-node report, not a silent successful omission. Text/links are inert.
+
+Budgets: one active job, 2000 intersecting nodes, 4000 edges, 100000 ink points,
+2 MiB prepared text, 4096 pixels per output edge and 16 Mi pixels / 64 MiB output
+pixels. Up to 64 distinct raster inputs and 64 MiB of decoded raster cache;
+decode reuses vault image limits. Oversized output refuses; it never silently
+reduces the chosen scale. No thumbnail bytes are routed through the live native
+renderer. Preview is a derived small PNG; the full PNG stays in Rust until save.
+
+The user reviews dimensions/background and compatibility warnings, then chooses
+a destination folder. Save is create-only into a fresh export bundle directory
+containing `frame.png` and versioned `report.json`. No existing destination is
+overwritten. The PNG and report publish together from a bounded staging directory;
+write failure/cancel keeps the vault intact. Source and relevant raster/task
+revisions are revalidated before publish, so an old preview cannot silently
+export newly changed data. Tokens are scoped to the vault/job with a short TTL;
+switching vault or closing/cancelling the dialog releases the derived buffers.
+
+The report states that PNG loses editing, live links/tasks, notes, locks and
+presentation order, records the source fingerprint/frame bounds/scale/font
+family and marks image resampling/missing media/font substitutions. Speaker
+notes and unrelated sources are not exported. No blanket PDF/SVG or lossless
+other-editor claim follows from PNG. Explicit SVG/PDF, selection/whole-board
+exports and the template/linked-format slices remain subsequent work.
+
+## PNG implementation checkpoint — 19 October 2026 (approval/live gates open)
+
+Source checkpoint over `e71f9047efcf531a1fb36c7e3262e3d5c798b1cc`:
+
+- Extracted the native prepared node/edge/ink DTO and node adapter; the CPU PNG
+  worker uses the same prepared geometry and cosmic-text 0.19.0 text layout.
+  Additional bounded work: 64 KiB text per node, 250000 glyphs, 32 MiB / 8192
+  glyph-cache entries, 256 Mi pixel paint-area sum. No window capture or URL
+  fetch. The transparent background does not remove actual object fills.
+- Frame panel PNG buttons and the shared `canvas-export-png` command open a
+  snapshot dialog in either pane. Explicit prepare -> small PNG preview ->
+  warnings -> folder picker -> save. No automatic source save/overwrite.
+  Closing/unmounting sends cancellation even before preparation returns;
+  source replacement invalidates saving. Full PNG is retained only in Rust.
+- Exact source bytes, node membership/order/bounds/text and raster paths are
+  checked. Canonical task labels/revisions are read from the authoritative DB
+  without creation/migration, not trusted from cached frontend rows. Source,
+  referenced asset hashes and task revisions are checked again before save.
+- Save requires a real non-link directory outside the source vault. New
+  `frame.png` + `report.json` are synced in a private stage and published via
+  `renamore::rename_exclusive`, with no fallback/no replacement. Tests on this
+  Windows filesystem refuse existing files, empty directories and nonempty
+  directories. This is not a claim of hostile OS-level race immunity or crash
+  durability on every filesystem. Cancellation never deletes a committed bundle.
+- Report includes source/PNG hashes, dimensions, actual font families, clipped
+  text/missing glyphs, resampling/unavailable rasters, canonical task revisions
+  and inert file-node IDs. Plain prepared text omits rich Markdown/property
+  badges. Speaker notes, unrelated source text and original binaries are absent.
+
+Executed: **193 Rust cases** (desktop/vault/Markdown plus core/crypto), **137
+frontend contracts**, strict Clippy, typecheck, ESLint, fmt and production
+frontend build all PASS. Rust/TS counts are not GUI cases. The frontend build
+retains the existing large-chunk warning; no budget suppression was added.
+Logs: `target/qa/r3b-export-{all-rust,all-frontend,clippy,web-build}.log`.
+The 6 CPU-render pixel tests, 6 prepare/publish protocol cases and 3 vault
+snapshot cases are included in the Rust total; 5 new export contracts are
+included in the frontend total, not counted a second time.
+
+Opt-in raster fixture: `target/qa/canvas-export/{render.png,preview.png,
+render-report.json}`, generated by `BRANDON_EXPORT_FIXTURE=1` plus the render
+test. The actual PNG was visually inspected: 1280x900, 9 objects, 2 strokes,
+348 glyphs, Segoe UI, zero missing glyphs/rasters or clipped text. This inspects
+a generated artifact, **not** the application dialog or a native/GPU parity run.
+
+**Open approval gate:** license checking explicitly FAILS on new transitive
+`arrayref 0.3.9` / BSD-2-Clause. Exact upstream manifests/texts were inspected;
+selected notices are retained in `apps/desktop/src-tauri/THIRD_PARTY_CANVAS_EXPORT.txt`.
+No exception/allow-list change, release packaging or claim of license-clean
+readiness. Owner asked for an exact-version exception or another approach;
+Telegram message 321 delivered. `target/qa/r3b-export-licenses.log` records the
+rejection. Distribution/user-accessible notices must be completed after the
+dependency decision, not silently skipped.
+
+**Open live gates:** no new app launch, CDP or native input was attempted after
+the previously rejected launch/password-screen stop. The current running EXE
+was not overwritten. New export UI, frame clipping and final ink visible-window
+acceptance remain unverified. No new Tauri release-build claim for this source
+checkpoint; no install, push, publication, paid action or user-data deletion.
+R3B is incomplete; templates/linked formats and all later master-plan packages
+remain required. This checkpoint does not complete or pause the overall goal.

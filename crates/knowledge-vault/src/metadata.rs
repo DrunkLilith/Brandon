@@ -574,6 +574,7 @@ impl MetadataCache {
             let raw = Vault {
                 root: vault.root.clone(),
                 metadata: None,
+                identity: vault.identity.clone(),
             }
             .snapshot()?;
             self.reconcile = false;

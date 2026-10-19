@@ -2,7 +2,9 @@
 
 mod attachments;
 mod captures;
-pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind, AttachmentRaster};
+pub use attachments::{
+    AttachmentExportRaster, AttachmentImport, AttachmentInfo, AttachmentKind, AttachmentRaster,
+};
 pub use captures::{
     CaptureApplied, CaptureChoice, CaptureInput, CaptureLibrary, CapturePreview,
     inspect_capture_import, read_capture_import,
@@ -10,6 +12,8 @@ pub use captures::{
 pub use knowledge_markdown::{
     PropertyInspection, PropertyPatch, inspect_properties, parse_yaml_mapping, patch_property,
 };
+#[cfg(test)]
+mod canvas_export_tests;
 mod metadata;
 mod task_backup;
 mod task_storage;
@@ -82,6 +86,7 @@ pub type Result<T> = std::result::Result<T, VaultError>;
 pub struct Vault {
     root: PathBuf,
     metadata: Option<Arc<Mutex<metadata::MetadataCache>>>,
+    identity: Arc<()>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -190,12 +195,55 @@ impl Vault {
         Ok(Self {
             root,
             metadata: None,
+            identity: Arc::new(()),
         })
     }
 
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    /// Scope identity survives clones, not closing/reopening the same directory.
+    #[must_use]
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.identity, &other.identity)
+    }
+    /// A bounded public Canvas snapshot for derived exports; never initializes indexes.
+    pub fn canvas_export_source(&self, relative: &str) -> Result<NoteDocument> {
+        use std::io::Read;
+        if !relative.to_lowercase().ends_with(".canvas") {
+            return Err(VaultError::InvalidPath(
+                "Для экспорта нужен сохранённый Canvas",
+            ));
+        }
+        let path = self.public_attachment_path(relative)?;
+        let mut file = fs::File::open(&path).map_err(|source| VaultError::Io {
+            context: "Canvas недоступен",
+            source,
+        })?;
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|source| VaultError::Io {
+                context: "Canvas недоступен",
+                source,
+            })?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(VaultError::InvalidPath("Canvas для PNG превышает 16 МиБ"));
+        }
+        let content = String::from_utf8(bytes.clone())
+            .map_err(|_| VaultError::InvalidPath("Canvas должен быть UTF-8"))?;
+        let metadata = file.metadata().map_err(|source| VaultError::Io {
+            context: "Canvas недоступен",
+            source,
+        })?;
+        Ok(NoteDocument {
+            path: relative_display(&self.root, &path)?,
+            content,
+            fingerprint: fingerprint(&bytes),
+            modified_unix_ms: modified_unix_ms(&metadata),
+        })
     }
 
     fn task_connection(&self) -> Result<Connection> {

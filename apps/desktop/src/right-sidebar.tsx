@@ -1,4 +1,5 @@
 import type { VaultIndex } from './types'
+import { useMemo } from 'react'
 import { sourceStructure, type NoteLocation } from './note-navigation'
 
 export function RightSidebar({ activePath, source, index, onOpen, onNavigate, onTag }: {
@@ -9,9 +10,9 @@ export function RightSidebar({ activePath, source, index, onOpen, onNavigate, on
   onNavigate: (location: NoteLocation) => void
   onTag: (tag: string) => void
 }) {
-  const document = index?.documents.find((item) => item.path === activePath)
-  const headings = sourceStructure(source).headings
-  const backlinks = activePath && index ? index.documents.filter((item) => item.links.some((link) => link.resolvedPath === activePath)) : []
+  const document = useMemo(()=>index?.documents.find((item) => item.path === activePath),[index,activePath])
+  const headings = useMemo(()=>sourceStructure(source).headings,[source])
+  const backlinks = useMemo(()=>activePath && index ? index.documents.filter((item) => item.links.some((link) => link.resolvedPath === activePath)) : [],[index,activePath])
 
   return <aside className="right-sidebar">
     <section><h3>Свойства</h3>{document && Object.keys(document.properties).length > 0 ? <div className="property-list">{Object.entries(document.properties).map(([key, value]) => <div key={key}><span>{key}</span><code>{formatValue(value)}</code></div>)}</div> : <Empty label="Нет свойств YAML" />}</section>

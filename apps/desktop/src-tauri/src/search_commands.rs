@@ -80,6 +80,13 @@ pub fn private_parent_metadata(event: &Event, root: &Path) -> bool {
 }
 
 impl SearchState {
+    pub fn metadata_invalidated(&self, epoch: u64, paths: Vec<String>, reset: bool) {
+        if reset || paths.len() > 1024 {
+            self.require_full(epoch);
+        } else if !paths.is_empty() {
+            self.dirty(epoch, paths);
+        }
+    }
     pub fn activate(&self, vault: Vault) -> u64 {
         let mut queue = self
             .0
@@ -132,13 +139,22 @@ impl SearchState {
         }
         // A single folder event can represent 50k descendants. Expand it via
         // the background inventory, not an unbounded query-time dirty batch.
+        let known_removed_files = event.paths.iter().all(|path| {
+            path.strip_prefix(&root).ok().is_some_and(|relative| {
+                queue.vault.as_ref().and_then(|vault| {
+                    vault.metadata_kind(&relative.to_string_lossy().replace('\\', "/"))
+                }) == Some(knowledge_vault::VaultEntryKind::File)
+            })
+        });
         if matches!(
             event.kind,
             EventKind::Create(notify::event::CreateKind::Folder)
-                | EventKind::Remove(
-                    notify::event::RemoveKind::Folder | notify::event::RemoveKind::Any
-                )
-        ) || event.paths.iter().any(|path| path.is_dir())
+                | EventKind::Remove(notify::event::RemoveKind::Folder)
+        ) || matches!(
+            event.kind,
+            EventKind::Remove(notify::event::RemoveKind::Any)
+        ) && !known_removed_files
+            || event.paths.iter().any(|path| path.is_dir())
         {
             queue.full = true;
             return;
@@ -588,6 +604,25 @@ pub async fn search_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn known_file_remove_any_does_not_request_a_whole_vault_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("A.md"), "# A\n").unwrap();
+        let vault = Vault::open(root.path()).unwrap().incremental().unwrap();
+        let state = SearchState::default();
+        let epoch = state.activate(vault);
+        state.0.queue.lock().unwrap().full = false;
+        state.observe(
+            epoch,
+            &Ok(
+                Event::new(EventKind::Remove(notify::event::RemoveKind::Any))
+                    .add_path(root.path().canonicalize().unwrap().join("A.md")),
+            ),
+        );
+        let queue = state.0.queue.lock().unwrap();
+        assert!(!queue.full);
+        assert!(queue.dirty.contains("A.md"));
+    }
     fn state() -> (SearchState, u64) {
         let state = SearchState::default();
         let epoch = state.activate(Vault::open(std::env::temp_dir()).unwrap());

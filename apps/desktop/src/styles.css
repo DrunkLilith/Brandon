@@ -199,6 +199,10 @@ kbd { font: 500 9px "Cascadia Mono", Consolas, monospace; color: var(--dim); bor
 .command-glyph { font: 600 11px "Cascadia Mono", Consolas, monospace; }
 .sidebar-content { min-height: 0; overflow-y: auto; padding: 0 7px 12px; scrollbar-width: thin; scrollbar-color: #3d433f transparent; }
 .tree-list { min-height: 0; }
+.metadata-status { flex: 0 0 auto; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 14px 8px; color: #96909f; font-size: 10px; line-height: 1.4; }
+.metadata-status.error { color: #e3ac9b; }
+.metadata-status span { overflow-wrap: anywhere; }
+.metadata-status button { border: 0; background: transparent; color: #c6b2ef; cursor: pointer; }
 .tree-row { width: 100%; height: 30px; border: 0; border-radius: 6px; padding-right: 8px; display: grid; grid-template-columns: 13px 17px minmax(0, 1fr); gap: 3px; align-items: center; color: #a7afa9; background: transparent; text-align: left; cursor: pointer; }
 .tree-row:hover { color: var(--text); background: #202321; }
 .tree-row.active { color: #f0f6f2; background: #293a30; }
@@ -802,6 +806,8 @@ body { color: var(--text); background: #0f0f0f; -webkit-font-smoothing: antialia
 .search-results span { font-size: 11px; }
 .search-results p { font-size: 12px; }
 .tag-browser button { min-height: 38px; }
+.tag-browser { display: block; }
+.tag-browser button { width: 100%; height: 38px; margin-bottom: 3px; }
 .tag-browser span { font: 12px var(--font-mono); }
 .tag-browser b { font-size: 11px; }
 .entry-menu { width: 230px; padding: 7px; border-color: #454545; border-radius: 9px; }

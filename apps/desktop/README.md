@@ -105,6 +105,51 @@ of at most 200 nodes, visible text cards use formatted Markdown overlays; larger
 boards keep the GPU-oriented representation. This is not a full rich-text Canvas
 format or a PDF/video viewer.
 
+## Incremental metadata (R2A)
+
+The desktop keeps one generation-scoped, disposable metadata cache per active
+vault. Tree entries, parsed Markdown, tags, links, task projections, Bases and
+graph share revisions. Save outcomes carry a marked partial snapshot; the UI
+applies metadata deltas instead of asking for another complete vault index.
+Renderer reloads bootstrap already-warm metadata without restarting the watcher.
+
+For a normal file change, the metadata worker validates and hashes only the
+affected source. A reverse index
+tracks link candidates, including unresolved targets: rename, title/alias changes
+and ambiguity update affected incoming links without reparsing their sources.
+Body-only edits do not revisit every document linking to the unchanged target.
+Clean open documents update independently in both panes; dirty buffers are kept
+and conflicts remain explicit. Removing a card still never deletes its source.
+
+Initial inventory, lost-event/overflow recovery, explicit Refresh and a periodic
+60-second reconciliation are the wide operations. Reconciliation hashes sources
+even when size/mtime were restored, but unchanged Markdown is not reparsed or
+sent to the renderer. Source parsing is batched (up to 128 files, 32 MiB reads per
+batch, 16 MiB per source); unavailable/oversized sources are visibly reported.
+An in-memory cache is not a new permission grant. Private names, symlinks and
+Windows junction replacements cannot become metadata sources. The broader agent
+resource-grants system remains R4, not an implemented R2A permission UI.
+
+Search reuses the common public catalogue as inventory hints. Queued paths and
+returned hits still go through its existing canonical-boundary, revision/hash
+and read-time validation. Metadata-discovered changes are forwarded to the
+search queue; unchanged FTS sources are hashed without repeated Markdown parsing.
+The existing bounded FTS policy remains: at most 50,000 resources (not 50,000
+notes plus arbitrary attachments), 16 MiB per source and a 128 MiB inventory read
+budget. Explicit search-cache rebuilding remains a separate recovery operation.
+
+File tree, tag browser and Bases rows are virtualized, with keyboard access to
+off-screen tree rows. The graph still displays up to 500 nodes, now explicitly
+showing the filtered total; it consumes metadata for the full vault. `.base`
+definition/query editing remains R2B, not implied by this incremental table.
+
+`test:metadata:bench` generates 10k/50k total-resource fixtures, fully warms both
+metadata and search before timed edits, verifies complete UI bootstrap and row
+geometry, and measures reads/parses, delta size, input/paint, update latency and
+bounded DOM counts. Reports and retained synthetic fixtures live in ignored
+`target/qa`; generated files have a warm OS cache. These are local measurements,
+not universal startup/FPS promises or native OS-DPI acceptance.
+
 ## Verify
 
 ```powershell
@@ -114,6 +159,7 @@ pnpm --dir apps/desktop test:canvas
 pnpm --dir apps/desktop test:search
 pnpm --dir apps/desktop test:r1a
 pnpm --dir apps/desktop test:r1b
+pnpm --dir apps/desktop test:r2a
 cargo fmt --all -- --check
 cargo test -p knowledge-vault -p knowledge-markdown -p knowledge-desktop
 cargo clippy -p knowledge-vault -p knowledge-desktop --all-targets -- -D warnings
@@ -138,6 +184,8 @@ pnpm --dir apps/desktop test:render
 pnpm --dir apps/desktop test:smoke
 pnpm --dir apps/desktop test:r1a:ui
 pnpm --dir apps/desktop test:cards:ui
+pnpm --dir apps/desktop test:r2a:ui
+pnpm --dir apps/desktop test:metadata:bench
 ```
 
 `pnpm --dir apps/desktop test:r1b:ui` owns and restarts its own child process,

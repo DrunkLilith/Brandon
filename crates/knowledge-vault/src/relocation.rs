@@ -254,7 +254,9 @@ impl Vault {
                     return Err(LinkUpdateReason::Changed);
                 }
                 write_atomic(&path, update.content.as_bytes())
-                    .map_err(|_| LinkUpdateReason::Unavailable)
+                    .map_err(|_| LinkUpdateReason::Unavailable)?;
+                self.metadata_touch(&[&update.path]);
+                Ok(())
             })();
             if let Err(reason) = attempt {
                 plan.warnings.push(LinkUpdateWarning {

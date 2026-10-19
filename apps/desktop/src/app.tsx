@@ -20,6 +20,8 @@ import { SecondaryPane, type SecondaryHandle } from './secondary-pane'
 import { emptyPane, parseSession, remapPane, useCrashDraft, workspaceWrite, flushWorkspaceWrites, validTab, isDocumentBookmark, type Bookmark, type CrashDraft, type PaneState, type TabView, type WorkspaceData } from './workspace-state'
 import { RecoveryCenter, VersionHistory, TextComparison } from './workspace-dialogs'
 import { FileTree } from './file-tree'
+import { applyMetadata, initialMetadata, type MetadataStore } from './metadata-state'
+import { useVirtualRows } from './virtual-rows'
 import { GraphView } from './graph-view'
 import {
   BrandIcon, CalendarIcon, CanvasIcon, CloseIcon, ColumnsIcon, DatabaseIcon,
@@ -33,7 +35,7 @@ import { QuickInsertPalette, type QuickInsert } from './quick-insert-palette'
 import { RightSidebar } from './right-sidebar'
 import type {
   NoteDocument, SaveOutcome, SearchHit, TaskIndexMutation, TaskMetadata, VaultEntry,
-  VaultIndex, VaultMutation, VaultSnapshot, ViewMode,
+  VaultIndex, VaultMutation, VaultSnapshot, ViewMode, MetadataDelta, MetadataStats,
 } from './types'
 
 type Notice = { kind: 'error' | 'success' | 'warning'; message: string; details?: string[] }
@@ -130,6 +132,10 @@ export function App() {
   const registryRef = useRef<CommandRegistry | null>(null)
   const [vault, setVault] = useState<VaultSnapshot | null>(null)
   const [index, setIndex] = useState<VaultIndex | null>(null)
+  const metadataStore=useRef<MetadataStore|null>(null)
+  const metadataRequest=useRef<{generation:number;promise:Promise<void>}|null>(null)
+  const metadataSources=useRef<(delta:MetadataDelta)=>void>(()=>{})
+  const [metadataStatus,setMetadataStatus]=useState<{revision:number;stats:MetadataStats;error:string|null}|null>(null)
   const [note, setNote] = useState<NoteDocument | null>(null)
   const [content, setContent] = useState('')
   const [persistedContent, setPersistedContent] = useState('')
@@ -255,11 +261,17 @@ export function App() {
   }, [settings, showNotice])
 
   const loadIndex = useCallback(async () => {
-    try {
-      setIndex(await invoke<VaultIndex>('get_vault_index'))
-    } catch (error) {
-      showNotice({ kind: 'error', message: errorMessage(error) })
-    }
+    const before=metadataStore.current;if(!before)return
+    if(metadataRequest.current?.generation===before.generation)return metadataRequest.current.promise
+    const work=(async()=>{try{
+      const delta=await invoke<MetadataDelta>('metadata_delta',{root:before.snapshot.root,generation:before.generation,after:before.revision})
+      if(metadataStore.current?.generation!==before.generation)return
+      const next=applyMetadata(metadataStore.current,delta);metadataStore.current=next
+      setVault(next.snapshot);setIndex(next.index);setMetadataStatus({revision:delta.revision,stats:delta.stats,error:delta.error})
+      metadataSources.current(delta)
+    }catch(error){if(metadataStore.current?.generation===before.generation)showNotice({kind:'error',message:errorMessage(error)})}
+    finally{if(metadataRequest.current?.generation===before.generation)metadataRequest.current=null}})()
+    metadataRequest.current={generation:before.generation,promise:work};return work
   }, [showNotice])
 
   const saveNote = useCallback(async (quiet = false, expectedFingerprint?: string): Promise<boolean> => {
@@ -283,7 +295,7 @@ export function App() {
           setConflict(outcome.disk)
           return false
         }
-        setVault(outcome.snapshot)
+        if(!outcome.snapshot.partial)setVault(outcome.snapshot)
         acknowledgeDraft(current.path,contents)
         // A completed save only acknowledges the submitted text, never later typing.
         if (noteRef.current?.path === current.path) {
@@ -531,32 +543,28 @@ export function App() {
     setPinned(items=>items.filter(exists))
   }, [])
 
-  const refreshVault = useCallback(async (external = false) => {
-    try {
-      const currentAtRequest = noteRef.current
-      const snapshot = await invoke<VaultSnapshot>('refresh_vault')
-      if (noteRef.current !== currentAtRequest) return // stale refresh must not prune a newly opened/recovered document
-      setVault(snapshot)
-      const current = noteRef.current
-      if (current && !snapshot.entries.some((entry) => entry.path === current.path)) {
-        if (contentRef.current !== persistedRef.current || savePromise.current || conflictRef.current || missingSourceRef.current) {
-          markMissingSource(current.path)
-        } else {
-          setOpenTabs((tabs) => tabs.filter((path) => path !== current.path))
-          clearDocument()
-        }
-      } else if (external && current && !missingSourceRef.current && !['graph', 'planner'].includes(workspaceViewRef.current) && contentRef.current === persistedRef.current) {
-        const view = viewForPath(current.path)
-        const disk = await invoke<NoteDocument>(view === 'note' ? 'read_note' : 'read_resource', { relativePath: current.path })
-        if (disk.fingerprint !== current.fingerprint && noteRef.current?.path === current.path && workspaceViewRef.current === view && contentRef.current === persistedRef.current) applyDocument(disk, view, false)
-      }
-      pruneWorkspacePaths(snapshot.entries)
-      await loadIndex()
-    } catch (error) {
-      showNotice({ kind: 'error', message: errorMessage(error) })
+  metadataSources.current=delta=>{
+    if(!delta.entries.length&&!delta.removedEntries.length&&!delta.documents.length&&!delta.removedDocuments.length)return
+    const current=noteRef.current
+    const removed=new Set(delta.removedEntries)
+    const paths=[...delta.entries.map(entry=>entry.path),...delta.documents.map(document=>document.path)]
+    if(current&&removed.has(current.path)){
+      if(contentRef.current!==persistedRef.current||savePromise.current||conflictRef.current||missingSourceRef.current)markMissingSource(current.path)
+      else {setOpenTabs(tabs=>tabs.filter(path=>path!==current.path));clearDocument()}
+    }else if(current&&paths.includes(current.path)&&!missingSourceRef.current&&!savePromise.current&&contentRef.current===persistedRef.current){
+      const view=viewForPath(current.path)
+      void invoke<NoteDocument>(view==='note'?'read_note':'read_resource',{relativePath:current.path}).then(disk=>{
+        if(disk.fingerprint!==current.fingerprint&&noteRef.current===current&&contentRef.current===persistedRef.current)applyDocument(disk,view,false)
+      }).catch(()=>{if(noteRef.current===current)markMissingSource(current.path)})
     }
-  }, [applyDocument, clearDocument, loadIndex, markMissingSource, pruneWorkspacePaths, showNotice])
-
+    void secondary.current?.refresh(paths,delta.removedEntries)
+    if(delta.removedEntries.length)pruneWorkspacePaths(metadataStore.current?.snapshot.entries??[])
+  }
+  const refreshVault = useCallback(async () => {
+    const root=metadataStore.current?.snapshot.root;if(!root)return
+    try{await invoke('reconcile_metadata',{root});await loadIndex()}
+    catch(error){showNotice({kind:'error',message:errorMessage(error)})}
+  },[loadIndex,showNotice])
   const checkRecoverySource = useCallback(async () => {
     const current = noteRef.current
     if (!current || !missingSourceRef.current) return
@@ -584,6 +592,7 @@ export function App() {
   }, [clearDocument, pruneWorkspacePaths, recordVisit, vault,acknowledgeDraft])
 
   const restoreWorkspace=useCallback(async(snapshot:VaultSnapshot)=>{
+    metadataStore.current=initialMetadata(snapshot);setMetadataStatus(null)
     loadedRoot.current=null;setReadyRoot(null);sessionFailure.current=false
     focusedPane.current='main';setVault(snapshot);setOpenTabs([]);clearDocument();setIndex(null)
     historyRef.current={entries:[],cursor:-1};setHistory(historyRef.current);closedTabs.current=[]
@@ -650,16 +659,19 @@ export function App() {
     let timeout = 0
     let disposed = false
     let unlisten: (() => void) | undefined
-    void listen<string[]>('vault-changed', () => {
-      window.clearTimeout(timeout)
-      timeout = window.setTimeout(() => { if (!disposed) void refreshVault(true) }, 300)
+    const update=()=>{if(timeout)return;timeout=window.setTimeout(()=>{timeout=0;if(!disposed)void loadIndex()},50)}
+    const poll=window.setInterval(update,1000)
+    void listen<{root:string;generation:number}>('metadata-updated', ({payload}) => {
+      if(payload.root!==metadataStore.current?.snapshot.root||payload.generation!==metadataStore.current.generation)return
+      update()
     }).then((stop) => { unlisten = stop })
     return () => {
       disposed = true
       window.clearTimeout(timeout)
+      window.clearInterval(poll)
       unlisten?.()
     }
-  }, [refreshVault, vault?.root])
+  }, [loadIndex, vault?.root])
 
   useEffect(() => {
     if (!searchTarget || searchTarget.nodeId || searchTarget.path !== note?.path || workspaceView !== 'note') return
@@ -1146,6 +1158,7 @@ export function App() {
       <aside className="sidebar">
         {vault && <>
           <SidebarHeading mode={sidebarMode} onRefresh={() => void refreshVault()} onNewNote={() => setDialog({ kind: 'note', value: '', parent: selectedFolder })} onNewFolder={() => setDialog({ kind: 'folder', value: '', parent: selectedFolder })} />
+          {metadataStatus&&<div className={`metadata-status ${metadataStatus.error?'error':''}`} role="status" data-revision={metadataStatus.revision} data-pending={metadataStatus.stats.pendingSources} data-parsed={metadataStatus.stats.parsedSources} data-scanned={metadataStatus.stats.scannedEntries} data-full-scans={metadataStatus.stats.fullScans} title={`Разобрано: ${metadataStatus.stats.parsedSources}; прочитано: ${metadataStatus.stats.readSources}; полных сверок: ${metadataStatus.stats.fullScans}`}><span>{metadataStatus.error?'Метаданные требуют сверки':metadataStatus.stats.pendingSources?`Обновляю метаданные · осталось ${metadataStatus.stats.pendingSources}`:`Метаданные · ${metadataStatus.stats.documents} заметок`}{metadataStatus.stats.failedSources?` · недоступно ${metadataStatus.stats.failedSources}`:''}{metadataStatus.stats.skippedSources?` · пропущено ${metadataStatus.stats.skippedSources}`:''}</span>{metadataStatus.error&&<button onClick={()=>void refreshVault()}>Повторить</button>}</div>}
           {sidebarMode === 'search' && <LocalSearch root={vault.root} revision={index} query={sidebarQuery} onQueryChange={setSidebarQuery} inputRef={searchRef} onOpen={(hit) => void openSearchHit(hit)} />}
           {sidebarMode === 'tags' && <div className="sidebar-search"><SearchIcon /><input ref={searchRef} value={sidebarQuery} onChange={(event) => setSidebarQuery(event.target.value)} placeholder="Фильтр тегов…" /><kbd>Ctrl K</kbd></div>}
           {sidebarMode !== 'search' && <>
@@ -1219,7 +1232,8 @@ function SidebarHeading({ mode, onRefresh, onNewNote, onNewFolder }: { mode: Sid
 function TagBrowser({ index, query, onChoose }: { index: VaultIndex | null; query: string; onChoose: (tag: string) => void }) {
   const normalized = query.trim().toLocaleLowerCase('ru')
   const tags = Object.entries(index?.tags ?? {}).filter(([tag]) => tag.toLocaleLowerCase('ru').includes(normalized)).sort((left, right) => right[1] - left[1])
-  return <div className="tag-browser">{tags.map(([tag, count]) => <button key={tag} onClick={() => onChoose(tag)}><span>#{tag}</span><b>{count}</b></button>)}{!tags.length && <div className="empty-filter">Тегов пока нет</div>}</div>
+  const window=useVirtualRows(tags.length,41,true)
+  return <div ref={window.ref} className="tag-browser" data-total-rows={tags.length}><div aria-hidden="true" style={{height:window.top}}/>{tags.slice(window.start,window.end).map(([tag, count]) => <button key={tag} onClick={() => onChoose(tag)}><span>#{tag}</span><b>{count}</b></button>)}<div aria-hidden="true" style={{height:window.bottom}}/>{!tags.length && <div className="empty-filter">Тегов пока нет</div>}</div>
 }
 
 function EntryDialogView({ dialog, folders, inputRef, onChange, onClose, onSubmit }: { dialog: EntryDialog; folders: VaultEntry[]; inputRef: React.RefObject<HTMLInputElement | null>; onChange: (dialog: EntryDialog) => void; onClose: () => void; onSubmit: () => void }) {

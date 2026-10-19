@@ -2,7 +2,9 @@
 
 mod attachments;
 pub use attachments::{AttachmentImport, AttachmentInfo, AttachmentKind};
+mod metadata;
 mod search;
+pub use metadata::{MetadataDelta, MetadataStats};
 pub use search::{
     SearchHit, SearchInventory, SearchMode, SearchRebuild, SearchResponse, SearchUpdate,
 };
@@ -21,6 +23,7 @@ use std::{
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -60,6 +63,7 @@ pub type Result<T> = std::result::Result<T, VaultError>;
 #[derive(Clone, Debug)]
 pub struct Vault {
     root: PathBuf,
+    metadata: Option<Arc<Mutex<metadata::MetadataCache>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -98,6 +102,14 @@ pub struct VaultSnapshot {
     pub name: String,
     pub files: Vec<VaultFile>,
     pub entries: Vec<VaultEntry>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "metadataRevision")]
+    pub metadata_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "metadataGeneration")]
+    pub metadata_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,7 +169,10 @@ impl Vault {
         if !root.is_dir() {
             return Err(VaultError::InvalidPath("Выбранный путь не является папкой"));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            metadata: None,
+        })
     }
 
     #[must_use]
@@ -250,8 +265,14 @@ impl Vault {
     }
 
     fn managed_tasks(&self, documents: &[DocumentMetadata]) -> Result<Vec<TaskMetadata>> {
+        self.managed_tasks_refs(documents.iter())
+    }
+
+    fn managed_tasks_refs<'a>(
+        &self,
+        documents: impl Iterator<Item = &'a DocumentMetadata>,
+    ) -> Result<Vec<TaskMetadata>> {
         let documents = documents
-            .iter()
             .map(|document| (document.path.as_str(), document))
             .collect::<HashMap<_, _>>();
         let connection = self.task_connection()?;
@@ -396,6 +417,12 @@ impl Vault {
     }
 
     pub fn snapshot(&self) -> Result<VaultSnapshot> {
+        if let Some(cache) = &self.metadata {
+            return Ok(cache
+                .lock()
+                .map_err(|_| VaultError::InvalidPath("Metadata cache недоступен"))?
+                .snapshot(self, false));
+        }
         let mut files = Vec::new();
         let mut entries = Vec::new();
         scan_directory(&self.root, &self.root, &mut files, &mut entries)?;
@@ -418,6 +445,9 @@ impl Vault {
             name,
             files,
             entries,
+            partial: false,
+            metadata_revision: None,
+            metadata_generation: None,
         })
     }
 
@@ -446,8 +476,9 @@ impl Vault {
             return Ok(SaveOutcome::Conflict { disk });
         }
         write_atomic(&path, contents.as_bytes())?;
+        self.metadata_touch(&[relative_path]);
         Ok(SaveOutcome::Saved {
-            snapshot: self.snapshot()?,
+            snapshot: self.save_snapshot()?,
             document: read_document(&self.root, &path)?,
         })
     }
@@ -464,8 +495,9 @@ impl Vault {
             return Ok(SaveOutcome::Conflict { disk });
         }
         write_atomic(&path, contents.as_bytes())?;
+        self.metadata_touch(&[relative_path]);
         Ok(SaveOutcome::Saved {
-            snapshot: self.snapshot()?,
+            snapshot: self.save_snapshot()?,
             document: read_document(&self.root, &path)?,
         })
     }
@@ -486,6 +518,7 @@ impl Vault {
                 context: "Не удалось записать заметку",
                 source,
             })?;
+        self.metadata_touch(&[&relative_display(&self.root, &path)?]);
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
@@ -529,6 +562,7 @@ impl Vault {
                 context: "Не удалось записать файл",
                 source,
             })?;
+        self.metadata_touch(&[&relative_display(&self.root, &path)?]);
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
@@ -541,6 +575,7 @@ impl Vault {
         let name = safe_entry_name(name)?;
         let path = parent.join(name);
         fs::create_dir(&path).map_err(map_create_error("Не удалось создать папку"))?;
+        self.metadata_touch(&[&relative_display(&self.root, &path)?]);
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: relative_display(&self.root, &path)?,
@@ -596,6 +631,7 @@ impl Vault {
             return Err(error);
         }
         let link_warnings = link_plan.map_or_else(Vec::new, |plan| self.apply_link_updates(plan));
+        self.metadata_touch(&[&old_relative, &new_relative]);
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: new_relative,
@@ -640,6 +676,7 @@ impl Vault {
             return Err(error);
         }
         let link_warnings = link_plan.map_or_else(Vec::new, |plan| self.apply_link_updates(plan));
+        self.metadata_touch(&[&old_relative, &new_relative]);
         Ok(VaultMutation {
             snapshot: self.snapshot()?,
             path: new_relative,
@@ -672,10 +709,17 @@ impl Vault {
             let _ = fs::rename(&target, &source);
             return Err(error);
         }
+        self.metadata_touch(&[&old_relative]);
         self.snapshot()
     }
 
     pub fn index(&self) -> Result<VaultIndex> {
+        if let Some(cache) = &self.metadata {
+            return Ok(cache
+                .lock()
+                .map_err(|_| VaultError::InvalidPath("Metadata cache недоступен"))?
+                .index());
+        }
         let snapshot = self.snapshot()?;
         self.sync_managed_task_files(&snapshot)?;
         let snapshot = self.snapshot()?;
@@ -783,6 +827,8 @@ impl Vault {
             let _ = fs::remove_file(&path);
             return Err(error.into());
         }
+        self.metadata_touch(&[&relative_path, ".brandon/tasks.sqlite3"]);
+        self.metadata_step(128)?;
         Ok(TaskIndexMutation {
             snapshot: self.snapshot()?,
             index: self.index()?,
@@ -811,6 +857,8 @@ impl Vault {
         let due = normalize_task_datetime(due)?;
         let due_patch = if clear_due { Some(None) } else { due.map(Some) };
         if self.update_managed_task(task_id, completed, schedule_patch, due_patch)? {
+            self.metadata_touch(&[".brandon/tasks.sqlite3"]);
+            self.metadata_step(1)?;
             return Ok(TaskIndexMutation {
                 snapshot: self.snapshot()?,
                 index: self.index()?,
@@ -835,6 +883,8 @@ impl Vault {
             "Задача изменилась на диске. Обновите календарь и повторите",
         ))?;
         write_atomic(&path, rewritten.as_bytes())?;
+        self.metadata_touch(&[relative_path]);
+        self.metadata_step(128)?;
         Ok(TaskIndexMutation {
             snapshot: self.snapshot()?,
             index: self.index()?,
@@ -1058,6 +1108,9 @@ fn scan_directory(
             context: "Не удалось прочитать свойства объекта",
             source,
         })?;
+        if attachments::is_link(&metadata) {
+            continue;
+        }
         let modified_unix_ms = modified_unix_ms(&metadata);
         if file_type.is_dir() {
             entries.push(VaultEntry {

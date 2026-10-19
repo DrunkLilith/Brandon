@@ -130,7 +130,7 @@ function buildGraph(index: VaultIndex, mode: 'global' | 'local', activePath: str
       })
     }
   }
-  return { nodes, edges }
+  return { nodes, edges, total:allowed.size }
 }
 
 export function GraphView({ index, activePath, onOpen }: {
@@ -142,7 +142,7 @@ export function GraphView({ index, activePath, onOpen }: {
   const [query, setQuery] = useState('')
   const [showOrphans, setShowOrphans] = useState(true)
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 })
-  const graph = useMemo(() => index ? buildGraph(index, mode, activePath, query, showOrphans) : { nodes: [], edges: [] }, [activePath, index, mode, query, showOrphans])
+  const graph = useMemo(() => index ? buildGraph(index, mode, activePath, query, showOrphans) : { nodes: [], edges: [], total:0 }, [activePath, index, mode, query, showOrphans])
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({})
   const drag = useRef<{ type: 'node' | 'pan'; path?: string; x: number; y: number; moved: boolean } | null>(null)
   const suppressClick = useRef(false)
@@ -184,7 +184,7 @@ export function GraphView({ index, activePath, onOpen }: {
       <div className="graph-segmented"><button className={mode === 'global' ? 'active' : ''} onClick={() => setMode('global')}>Весь граф</button><button className={mode === 'local' ? 'active' : ''} disabled={!activePath} onClick={() => setMode('local')}>Локальный</button></div>
       <label className="graph-search"><SearchIcon /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Фильтр узлов…" /></label>
       <label className="graph-check"><input type="checkbox" checked={showOrphans} onChange={(event) => setShowOrphans(event.target.checked)} />Без связей</label>
-      <span className="graph-count">{graph.nodes.length} узлов · {graph.edges.length} связей</span>
+      <span className="graph-count" title="Граф использует общие метаданные всего vault. Для читаемости показаны до 500 наиболее связанных узлов; сузьте фильтр или откройте локальный граф.">{graph.nodes.length}{graph.total>graph.nodes.length?` из ${graph.total}`:''} узлов · {graph.edges.length} связей</span>
       <button className="graph-tool" title="Вписать граф" onClick={() => setCamera({ x: 0, y: 0, zoom: 1 })}><FitIcon /></button>
       <button className="graph-tool" title="Уменьшить" onClick={() => setCamera((value) => ({ ...value, zoom: Math.max(.35, value.zoom / 1.18) }))}>−</button>
       <button className="graph-tool" title="Увеличить" onClick={() => setCamera((value) => ({ ...value, zoom: Math.min(2.4, value.zoom * 1.18) }))}>+</button>

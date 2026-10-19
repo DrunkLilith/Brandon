@@ -22,7 +22,13 @@ export type VaultSnapshot = {
   name: string
   files: VaultFile[]
   entries: VaultEntry[]
+  partial?: boolean
+  metadataRevision?: number
+  metadataGeneration?: number
 }
+
+export type MetadataStats = { parsedSources:number;readSources:number;bytesRead:number;scannedEntries:number;resolvedSources:number;fullScans:number;pendingSources:number;failedSources:number;skippedSources:number;documents:number;lastBatchMs:number;lastReconciledUnixMs:number|null }
+export type MetadataDelta = { root:string;generation:number;revision:number;reset:boolean;entries:VaultEntry[];removedEntries:string[];documents:DocumentMetadata[];removedDocuments:string[];tags:Record<string,number>;tasks:TaskMetadata[];taskPaths:string[];stats:MetadataStats;error:string|null }
 
 export type NoteDocument = {
   path: string

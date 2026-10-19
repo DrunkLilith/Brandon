@@ -310,6 +310,7 @@ impl Vault {
             }
             match staging.persist_noclobber(&target) {
                 Ok(_) => {
+                    self.metadata_touch(&[&relative_display(&self.root, &target)?]);
                     return Ok(AttachmentImport {
                         attachment: self
                             .attachment_info(&relative_display(&self.root, &target)?)?,

@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod attachment_commands;
+mod metadata_commands;
 mod search_commands;
 mod workspace_commands;
+use metadata_commands::{MetadataState, metadata_delta, metadata_status, reconcile_metadata};
 use search_commands::{SearchState, rebuild_search_index, reconcile_search_index, search_vault};
 use workspace_commands::{
     WorkspaceState, document_versions, load_workspace, put_draft, remove_draft, save_workspace,
@@ -103,6 +105,7 @@ fn start_watcher(
 ) -> Result<RecommendedWatcher, String> {
     let app_handle = app.clone();
     let search = app.state::<SearchState>().inner().clone();
+    let metadata = app.state::<MetadataState>().inner().clone();
     let watcher_root = root.to_path_buf();
     let mut watcher = RecommendedWatcher::new(
         move |result: notify::Result<notify::Event>| {
@@ -111,6 +114,7 @@ fn start_watcher(
                 return;
             }
             search.observe(epoch, &result);
+            metadata.observe(epoch, &result);
             if let Ok(event) = result {
                 if matches!(event.kind, notify::EventKind::Access(_))
                     || search_commands::private_parent_metadata(&event, &watcher_root)
@@ -164,6 +168,7 @@ fn activate_vault(
     state: &State<'_, VaultState>,
     vault: Vault,
 ) -> Result<VaultSnapshot, String> {
+    let vault = vault.incremental().map_err(|error| error.to_string())?;
     let snapshot = vault.snapshot().map_err(|error| error.to_string())?;
     let mut current = state
         .vault
@@ -179,6 +184,7 @@ fn activate_vault(
     let watcher = start_watcher(app, vault.root(), Arc::clone(&generation))?;
     remember_vault(app, vault.root())?;
     let epoch = app.state::<SearchState>().activate(vault.clone());
+    app.state::<MetadataState>().activate(vault.clone(), epoch);
     *current = Some(vault);
     generation.store(epoch, Ordering::SeqCst);
     *watcher_slot = Some(watcher);
@@ -200,6 +206,14 @@ fn restore_vault(
     app: AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<Option<VaultSnapshot>, String> {
+    // A renderer reload is not a new vault lifetime. Keep its watcher, revision
+    // and background plans instead of cancelling and inventorying it again.
+    if let Some(vault) = state.vault.read().map_err(|_| "Vault недоступен")?.clone() {
+        return vault
+            .snapshot()
+            .map(Some)
+            .map_err(|error| error.to_string());
+    }
     let target = recent_vault_path(&app)?;
     let payload = match fs::read(&target) {
         Ok(payload) => payload,
@@ -413,8 +427,10 @@ fn main() {
         .manage(AttachmentState::default())
         .manage(SearchState::default())
         .manage(WorkspaceState::default())
+        .manage(MetadataState::default())
         .setup(|app| {
             search_commands::start_worker(app.handle().clone());
+            metadata_commands::start_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -432,6 +448,9 @@ fn main() {
             remove_draft,
             document_versions,
             refresh_vault,
+            metadata_delta,
+            metadata_status,
+            reconcile_metadata,
             read_note,
             read_resource,
             save_note,

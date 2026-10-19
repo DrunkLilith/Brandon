@@ -1,6 +1,6 @@
 # Brandon — единый план заметок, доски и агентного рабочего пространства
 
-Дата: 18 октября 2026 года. Статус: мастер-план дальнейшей разработки; R1A реализован и проверен ниже. Это не заявление полного паритета.
+Дата плана: 18 октября 2026 года; checkpoints обновлены 19 октября. R1A, R1B и R2A реализованы в указанном ниже объёме. Это не заявление полного паритета.
 
 Brandon объединяет локальное хранилище знаний уровня Obsidian, визуальную доску с рабочими сценариями Miro и планировщик задач. Пользователь пишет, собирает материалы, связывает их на доске, планирует работу и подключает агента к выбранному контексту. Всё это работает с одними данными; аккаунт и облако не нужны для обычной локальной работы.
 
@@ -35,7 +35,7 @@ Brandon объединяет локальное хранилище знаний 
 
 ## 2. Исходное состояние
 
-Отправная точка — исходники на `61c39eba1c0a254a82f1cc2c8daa9d023102d26b`; последняя реализация incremental search — `d3de6492f73491d25c4a6264ca5364aaa13caa1e`. Таблица фиксирует исходный baseline до R1A, чтобы не планировать его повторно; результат нового пакета записан в разделе R1A.
+Отправная точка — исходники на `61c39eba1c0a254a82f1cc2c8daa9d023102d26b`; последняя реализация incremental search — `d3de6492f73491d25c4a6264ca5364aaa13caa1e`. Таблица фиксирует исходный baseline до R1A, чтобы не планировать его повторно; результаты новых пакетов записаны в checkpoints R1A/R1B/R2A ниже.
 
 | Область | Уже есть | Следующий реальный разрыв |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ Brandon объединяет локальное хранилище знаний 
 
 В журнале последней реализации зафиксированы 82 desktop UI-проверки, 54 Windows и 57 Linux vault-тестов, а также полный локальный release gate с 115 web-тестами и 18 production browser E2E. Это история проверок конкретного кода, не доказательство готовности будущих функций. Windows EXE/NSIS были собраны; установка и native macOS-проверка не следуют из этой сборки. [Подробные checkpoints](canvas-planner-product.md).
 
-Исходный аудит выявил три ложных впечатления от UI: `BaseView` не читает определение открытого `.base`; outline отображал кнопки без перехода; граф ограничивает данные первыми 500 документами. В R1A переходы outline исправлены. Остальные ограничения сохраняются. Кроме того, incremental search уже существует, но общий `loadIndex`/обновление остальных панелей всё ещё выполняет широкий проход. Эти проблемы входят в ближайшую очередь, а не прячутся за статусом «базово поддерживается».
+Исходный аудит выявил три ложных впечатления от UI: `BaseView` не читает определение открытого `.base`; outline отображал кнопки без перехода; граф ограничивает показ 500 документами. В R1A переходы outline исправлены. В R2A широкий `loadIndex` на обычном изменении заменён общими metadata deltas, а ограничение графа стало явным в счётчике. Чтение определения `.base` остаётся R2B; полный граф сверх 500 отображаемых узлов не заявляется.
 
 ## 3. Единая модель данных
 
@@ -465,6 +465,45 @@ E7BEA37D8D8553630DBABCFDE7DCC59043AE96A1CF3100B51C73F08CB894C86A
 Убрать полный `loadIndex` на одиночное изменение; дать общие ревизии tree/backlinks/outline/Bases/graph. Виртуализировать большие списки и уменьшить ожидание search inventory без ослабления read-time validation. Сохранить reconciliation и наблюдаемые состояния прогрева.
 
 **Выход:** один файл обновляет затронутые данные, а не повторно парсит весь vault; move/delete/revoke/overflow и switch vault проходят тесты. Бенчмарки 10k/50k измеряют объём работы и UI latency, не только backend query median.
+
+**Checkpoint — 19 октября 2026, реализован поверх R1B commit `d62b1313f2542432a61c71d45c3d6ec2deb3571c`.**
+
+- Один машинно-локальный in-memory metadata cache на lifetime vault; клоны Rust `Vault` используют общий кэш. Дерево, Markdown metadata, tags, links, task projections, Bases и graph получают generation/revision и адресные deltas. Обычное сохранение возвращает помеченный partial snapshot, а не повторно пересылает всё дерево. UI не вызывает `get_vault_index`/`refresh_vault` в обычном watcher/save-пути. Stateless Rust API сохранён для callers без watcher lifetime.
+- Файл валидируется и хешируется; Markdown parser запускается только при изменённых байтах. Reverse index хранит **кандидаты** ссылок, в том числе отсутствующие и неоднозначные targets. Изменение path/title/alias обновляет только затронутые разрешения; body-only edit не обходит все входящие ссылки. Timestamp-only изменения обновляют metadata без parse. Outline рабочего буфера мемоизирован по его тексту, а не пересчитывается на каждом status event.
+- Initial inventory, overflow/lost-event recovery, явная сверка и периодическая сверка раз в 60 секунд — широкие операции. Сверка проверяет хеши даже у same-size источников с восстановленным mtime, но неизменённые документы не парсятся заново и не отправляются целиком в UI. Батч — до 128 источников / 32 MiB прочитанных байтов, один source до 16 MiB. Недоступные и превышающие лимит источники отражаются в status. Canonical Markdown/Canvas/attachments/task DB не объявлены кэшем; workspace journal R1B не сбрасывается.
+- FTS использует общий публичный каталог как **подсказки inventory**, без повторного рекурсивного обхода на штатном плане. Metadata-discovered changes поступают в поисковую очередь; known-file `Remove(Any)` больше не требует full inventory. Чтение каждого источника и выдаваемого hit сохраняет canonical boundary и hash/revision validation. Неизменённый FTS source хешируется без повторного Markdown parsing. Прежние ограничения поиска сохранены: 50,000 ресурсов **всего**, 16 MiB/source и 128 MiB read budget; полный search rebuild остаётся отдельным явным восстановлением.
+- Tree, Bases и tags виртуализированы. Дерево сохраняет переходы к off-screen строкам клавиатурой. Визуальная проверка обнаружила рассогласование 29/36 px; расчёт приведён к фактическим 36 px, benchmark проверяет общую высоту списка. Graph использует metadata всего vault, но по-прежнему показывает максимум 500 отфильтрованных узлов и явно сообщает полный отфильтрованный count. Это не реализация `.base` query/editor subset R2B и не произвольный unlimited graph renderer.
+- Открытые чистые документы обеих панелей обновляются адресно; dirty buffers сохраняются и сравниваются с внешней версией. Rename/delete очищают старые descendants. Смена vault отбрасывает stale requests/events; reload renderer не сбрасывает native lifetime. Исправлен найденный регрессией bootstrap: tree snapshot уже мог быть тёплым, но parsed documents ещё не передавались клиенту. Теперь UI получает все уже разобранные документы, а не только текущий счётчик.
+- Проверены revoked-source случаи через замену файла типом/директории Windows junction, private-path rejection, явные directory permission events и повторную проверку descendants без изменения mtime. Это filesystem/read-boundary проверки, **не** утверждение о готовности resource-grants/MCP revoke R4 или полном OS ACL acceptance.
+- Проверки: **149 UI-сценариев** (11 R2A + 19 R1B + 25 R1A + 6 cards/images + 88 прежних regressions), **34 frontend tests**, **91 Rust tests** (17 desktop, 5 Markdown, 69 vault). Typecheck, lint, production build, fmt и strict clippy прошли. Существующий release-check дополнен R2A contracts; полный серверный release gate здесь не запускался. Отдельный benchmark проверяет реальное поступление всех документов в Bases, а не только native count. Дополнительный real-app сценарий проверяет 50,000 уникальных тегов: DOM остаётся ограниченным, общая высота соответствует 41 px/строку, последняя строка достижима.
+
+Последний репрезентативный совместный прогон: freshly generated fixtures с тёплым OS cache, обычные native metadata + FTS workers, оба полностью прогреты до timed edits. В каждом размере один `.base`, остальные ресурсы — Markdown. Время до UI включает CDP polling и paint overhead; три правки на размер — это не статистически устойчивый p95 и не универсальная гарантия.
+
+| Измерение | 10,000 ресурсов (9,999 MD) | 50,000 ресурсов (49,999 MD) |
+| --- | ---: | ---: |
+| Открытие/catalog IPC | 257 ms | 1,165 ms |
+| Metadata ready | 3.28 s | 15.13 s |
+| Первичный FTS ready | 6.29 s | 43.75 s |
+| Ввод → paint | 24.0 ms | 22.5 ms |
+| Внешняя правка → paint, 3 samples | 104–201 ms | 193–216 ms |
+| Metadata read / parse / scanned entry на одну правку | 1 / 1 / 1 | 1 / 1 / 1 |
+| Full metadata scans на одну правку | 0 | 0 |
+| Metadata delta | 1.04–1.06 kB | 1.05–1.06 kB |
+| DOM tree / Bases rows | 35 / 31 | 35 / 31 |
+| Фильтр Bases | 24.7 ms | 52.1 ms |
+
+Metadata ready не означает, что FTS уже полностью заполнен: пользователь может работать до конца фонового заполнения. Более ранний стресс-прогон с постоянным broad query во время прогрева дал около 106.6 s для FTS на 50k; итоговый readiness probe использует отсутствующий термин, чтобы не измерять спам широкими запросами вместо прогрева. Более ранние 50,000 MD + `.base` fixtures выходили за старый FTS cap, поэтому не выдаются за совместный metadata+FTS результат. Холодный OS-cache/startup budget, системный/mixed DPI, native macOS, OS clipboard end-to-end и установка NSIS не заявляются. Vite chunk >500 kB остаётся предупреждением.
+
+Логи и synthetic artifacts — в игнорируемой `target/qa/`: `r2a-build.log`, `r2a-rust-tests.log`, `r2a-clippy.log`, `r2a-unit-*.log`, `r2a-r1b-regression.log`, `r2a-regression-*-smoke.log`, `metadata-benchmark.log`, `metadata-benchmark.json`. Последняя сборка отдельно проверена через Windows Computer Use: таблица на 49,999 заметок, сворачивание большого дерева, native wheel scroll и sticky header. Screenshot `r2a-50k-table.png` содержит только synthetic fixture. Retained benchmark fixtures не включаются в Git; пользовательский vault после QA восстанавливается.
+
+Собраны Windows standalone и новый NSIS (6.53 MiB, не установлен): `target/release/knowledge-desktop.exe`, `target/release/bundle/nsis/Brandon_0.1.0_x64-setup.exe`. SHA-256 соответственно:
+
+```text
+2115643BC01DD62D1F14144061F2117B61E27C79505205075AFE40A0BD1EE688
+4E53D90D2EF623C10645E5B7916DCAF97B5088B8F6FB16D74D3F90A134AB1CD7
+```
+
+Упаковка: `r2a-bundle.log`; после упаковки повторены 19 R1B lifecycle/recovery checks (`r2a-ui-packaged.log`) и 11 R2A checks, включая 50k tags (`r2a-ui-packaged-metadata.log`). Приложение возвращается к исходному пользовательскому vault, без оставленного CDP-порта для обычной работы.
 
 ### R2B. Свойства, Bases и представления задач
 

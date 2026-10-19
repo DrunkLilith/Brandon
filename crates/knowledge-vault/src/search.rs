@@ -825,8 +825,20 @@ impl Vault {
     /// exceed the index's source cap while inserting its new names.
     pub fn search_inventory(&self, cancel: &dyn Fn() -> bool) -> Result<SearchInventory> {
         let mut report = SearchResponse::default();
-        let sources = scan(self.root(), self.root(), &mut report, cancel)?;
-        let mut paths: Vec<_> = sources.into_iter().map(|source| source.path).collect();
+        if cancel() {
+            return Err(VaultError::SearchCancelled);
+        }
+        let mut paths = if let Some(inventory) = self.metadata_inventory(MAX_SOURCES) {
+            let inventory = inventory?;
+            report.skipped_sources = inventory.skipped_sources;
+            report.failed_sources = inventory.failed_sources;
+            inventory.paths
+        } else {
+            scan(self.root(), self.root(), &mut report, cancel)?
+                .into_iter()
+                .map(|source| source.path)
+                .collect::<Vec<_>>()
+        };
         let actual: HashSet<_> = paths.iter().cloned().collect();
         let connection = Connection::open_with_flags(
             cache_directory(self)?.join(CACHE),
@@ -1105,6 +1117,16 @@ impl Vault {
                 bytes_read += bytes.len() as u64;
                 if read.is_ok() && bytes.len() as u64 <= MAX_SOURCE_BYTES {
                     revision = fingerprint(&bytes);
+                    // Reconciliation still reads and hashes the bounded source.
+                    // Identical bytes/task stamp need no repeated Markdown parse.
+                    if existing
+                        .get(&file.path)
+                        .is_some_and(|(old_stamp, _, old_revision)| {
+                            old_stamp == &stamp && old_revision == &revision
+                        })
+                    {
+                        continue;
+                    }
                     if let Ok(source) = String::from_utf8(bytes) {
                         if extension == "canvas" {
                             if let Some(cards) = canvas_chunks(&source) {

@@ -3,7 +3,7 @@
 Status: detailed parity reference and historical implementation checkpoints, started 2026-10-13.
 
 Current cross-product priorities and delivery order are in the
-[Brandon master plan](brandon-master-plan.md), updated 2026-10-18. It unifies this
+[Brandon master plan](brandon-master-plan.md), updated 2026-10-19. It unifies this
 matrix with Canvas/Planner, MCP and the selected-plugin strategy. Earlier "next"
 sections below are historical, not the current implementation queue. Operational
 task state is canonical in `.brandon/tasks.sqlite3`; only derived task/search
@@ -24,6 +24,14 @@ and small-board Markdown card styling are included. See the
 [R1B checkpoint](brandon-master-plan.md#r1b-рабочее-пространство-и-восстановление)
 for tested scope and remaining platform/performance limits; this is not a claim
 of full Obsidian or Miro parity.
+
+R2A provides a common revisioned incremental metadata cache for tree, tags,
+links, task projections, Bases and graph. Normal edits send deltas; unresolved
+link candidates update without reparsing incoming sources. Large tree/table/tag
+lists are virtualized. FTS consumes shared catalogue hints while retaining its
+read-time boundary/hash checks. Startup and recovery still have explicit wide
+inventory/hash work. See the [R2A checkpoint](brandon-master-plan.md#r2a-общий-incremental-metadata-pipeline)
+for 10k/50k resource measurements and the remaining FTS warm-up and graph limits.
 
 Brandon Desktop is a local-first, open-source knowledge workspace. The target is practical feature and file-format compatibility with Obsidian while keeping Brandon's own name, visual identity, implementation, and AGPL license.
 

@@ -3,9 +3,14 @@
 mod attachment_commands;
 mod metadata_commands;
 mod search_commands;
+mod task_commands;
 mod workspace_commands;
 use metadata_commands::{MetadataState, metadata_delta, metadata_status, reconcile_metadata};
 use search_commands::{SearchState, rebuild_search_index, reconcile_search_index, search_vault};
+use task_commands::{
+    backup_tasks, inspect_task_backup, load_task_views, patch_managed_task, restore_task_backup,
+    save_task_views,
+};
 use workspace_commands::{
     WorkspaceState, document_versions, load_workspace, put_draft, remove_draft, save_workspace,
 };
@@ -392,10 +397,18 @@ fn get_vault_index(state: State<'_, VaultState>) -> Result<VaultIndex, String> {
 fn create_task(
     title: String,
     scheduled: Option<String>,
+    root: Option<String>,
     state: State<'_, VaultState>,
-) -> Result<TaskIndexMutation, String> {
-    current_vault(&state)?
-        .create_task(&title, scheduled.as_deref())
+) -> Result<knowledge_vault::TaskChange, String> {
+    let vault = current_vault(&state)?;
+    if root
+        .as_deref()
+        .is_some_and(|root| vault.root() != std::path::Path::new(root))
+    {
+        return Err("Хранилище сменилось; создание задачи отменено".into());
+    }
+    vault
+        .create_task_record(&title, scheduled.as_deref())
         .map_err(|error| error.to_string())
 }
 
@@ -502,6 +515,12 @@ fn main() {
             trash_entry,
             get_vault_index,
             create_task,
+            patch_managed_task,
+            load_task_views,
+            save_task_views,
+            backup_tasks,
+            inspect_task_backup,
+            restore_task_backup,
             update_task,
             search_vault,
             reconcile_search_index,

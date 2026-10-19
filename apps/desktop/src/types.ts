@@ -81,6 +81,10 @@ export type TaskMetadata = {
   line: number
   title: string
   completed: boolean
+  status: 'todo' | 'doing' | 'done'
+  project: string | null
+  revision: string | null
+  taskTags: string[]
   scheduled: string | null
   due: string | null
   durationMinutes: number | null
@@ -98,6 +102,8 @@ export type TaskIndexMutation = {
   snapshot: VaultSnapshot
   index: VaultIndex
 }
+export type TaskPatch={completed?:boolean;status?:'todo'|'doing'|'done';scheduled?:string|null;due?:string|null;project?:string|null;priority?:TaskMetadata['priority'];tags?:string[];durationMinutes?:number|null}
+export type TaskChange={record:{id:string;notePath:string;title:string;status:TaskMetadata['status'];completed:boolean;scheduled:string|null;due:string|null;project:string|null;priority:TaskMetadata['priority'];tags:string[];durationMinutes:number|null};revision:string;metadataWarning:string|null}
 
 export type SearchHit = {
   path: string

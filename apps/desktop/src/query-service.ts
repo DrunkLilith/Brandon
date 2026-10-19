@@ -38,7 +38,7 @@ function tokens(source:string):Token[] {
   }
   return result
 }
-export function compileExpression(source:string):Expression {
+export function compileExpression(source:string,validateField:(field:string)=>unknown=propertyKey,validateFunction:(name:string)=>unknown=()=>{}):Expression {
   const list=tokens(source);let i=0,depth=0
   const accept=(value:string)=>{if(list[i]?.kind==='symbol'&&list[i].value===value){i++;return true}return false}
   const required=(value:string)=>{if(!accept(value))throw new Error(`Ожидается «${value}»`)}
@@ -54,16 +54,17 @@ export function compileExpression(source:string):Expression {
       let field=token.value
       if((field==='note'||field==='file')&&accept('[')){const key=list[i++];if(key?.kind!=='string')throw new Error('Ключ в [] должен быть строкой');required(']');field=field==='note'?`note.${key.value}`:`file.${key.value}`}
       if(accept('(')){
+        validateFunction(field)
         if(['file.hasTag','file.inFolder','file.hasLink'].includes(field)){
           const arg=list[i++];if(arg?.kind!=='string')throw new Error('Функция file принимает строковый литерал');required(')');return row=>field==='file.hasTag'?row.hasTag(arg.value):field==='file.inFolder'?row.inFolder(arg.value):row.hasLink(arg.value)
         }
         const method=/^(.*)\.(contains|isEmpty)$/.exec(field)
         if(!method)throw new Error(`Функция не поддерживается: ${field}`)
-        propertyKey(method[1]);let value:Expression=()=>null
+        propertyKey(method[1]);validateField(method[1]);let value:Expression=()=>null
         if(method[2]==='contains')value=or();required(')')
         return row=>{const target=row.field(method[1]);if(method[2]==='isEmpty')return target==null||target===''||Array.isArray(target)&&target.length===0;const arg=value(row);return typeof target==='string'&&typeof arg==='string'?target.includes(arg):Array.isArray(target)&&target.some(item=>item===arg)}
       }
-      propertyKey(field);return row=>row.field(field)
+      propertyKey(field);validateField(field);return row=>row.field(field)
     }finally{depth--}
   }
   const unary=():Expression=>{if(accept('!')){if(++depth>32)throw new Error('Слишком глубокое выражение');const expr=unary();depth--;return row=>!expr(row)}return primary()}

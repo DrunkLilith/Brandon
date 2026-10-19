@@ -35,7 +35,7 @@ import { PlannerView } from './planner-view'
 import { QuickInsertPalette, type QuickInsert } from './quick-insert-palette'
 import { RightSidebar } from './right-sidebar'
 import type {
-  NoteDocument, SaveOutcome, SearchHit, TaskIndexMutation, TaskMetadata, VaultEntry,
+  NoteDocument, SaveOutcome, SearchHit, TaskChange, TaskPatch, TaskMetadata, VaultEntry,
   VaultIndex, VaultMutation, VaultSnapshot, ViewMode, MetadataDelta, MetadataStats,
 } from './types'
 
@@ -165,6 +165,7 @@ export function App() {
   const [templatePicker, setTemplatePicker] = useState(false)
   const [uiZoom, setUiZoom] = useState(rememberedUiZoom)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
+  const taskPending=useRef(false)
   const visualEditing = settings.editorMode === 'visual'
   const setVisualEditing = useCallback((visual: boolean) => setSettings((current) => ({ ...current, editorMode: visual ? 'visual' : 'source' })), [])
   const [quickInsertOpen, setQuickInsertOpen] = useState(false)
@@ -953,41 +954,27 @@ export function App() {
   }, [applyDocument, flushDocument, loadIndex, loadNote, showNotice, templateFiles, vault,settings.dailyFolder,settings.dailyFormat,settings.dailyTemplate])
 
   const createTask = useCallback(async (title: string, scheduled: string | null) => {
+    const root=metadataStore.current?.snapshot.root;if(!root||taskPending.current)throw new Error('Дождитесь текущей операции с задачами')
+    taskPending.current=true;setBusyTaskId('__create__')
     try {
-      const result = await invoke<TaskIndexMutation>('create_task', { title, scheduled })
-      setVault(result.snapshot)
-      setIndex(result.index)
-      showNotice({ kind: 'success', message: scheduled ? 'Задача добавлена в календарь' : 'Задача добавлена во входящие' })
-    } catch (error) {
-      showNotice({ kind: 'error', message: errorMessage(error) })
-      throw error
-    }
-  }, [showNotice])
+      const result=await invoke<TaskChange>('create_task',{root,title,scheduled});await loadIndex();await loadIndex()
+      if(metadataStore.current?.snapshot.root===root)showNotice({kind:result.metadataWarning?'warning':'success',message:result.metadataWarning?'Задача создана; обновление метаданных требует проверки: '+result.metadataWarning:scheduled?'Задача добавлена в календарь':'Задача добавлена во входящие'})
+    } catch(error) {showNotice({kind:'error',message:errorMessage(error)});throw error}
+    finally {taskPending.current=false;setBusyTaskId(null)}
+  },[loadIndex,showNotice])
 
-  const updateTask = useCallback(async (task: TaskMetadata, patch: { completed?: boolean; scheduled?: string | null; due?: string | null }) => {
-    if (busyTaskId === task.id) return
-    setBusyTaskId(task.id)
+  const updateTask = useCallback(async (task:TaskMetadata,patch:TaskPatch):Promise<boolean> => {
+    const root=metadataStore.current?.snapshot.root;if(!root||taskPending.current)return false
+    if(!task.managed||!task.revision){showNotice({kind:'error',message:'Это обычный Markdown-чекбокс. Измените его в исходной заметке; task DB не создаёт скрытую копию.'});return false}
+    taskPending.current=true;setBusyTaskId(task.id)
     try {
-      const result = await invoke<TaskIndexMutation>('update_task', {
-        taskId: task.id,
-        relativePath: task.path,
-        line: task.line,
-        blockId: task.blockId,
-        completed: patch.completed ?? null,
-        scheduled: patch.scheduled ?? null,
-        clearScheduled: patch.scheduled === null,
-        due: patch.due ?? null,
-        clearDue: patch.due === null,
-      })
-      setVault(result.snapshot)
-      setIndex(result.index)
-      showNotice({ kind: 'success', message: patch.completed === true ? 'Задача завершена' : patch.due ? 'Дедлайн задан, задача перенесена' : patch.due === null ? 'Отдельный дедлайн снят' : patch.scheduled === null ? 'Дата снята' : patch.scheduled ? 'Задача перепланирована' : 'Задача обновлена' })
-    } catch (error) {
-      showNotice({ kind: 'error', message: errorMessage(error) })
-    } finally {
-      setBusyTaskId(null)
-    }
-  }, [busyTaskId, showNotice])
+      const result=await invoke<TaskChange>('patch_managed_task',{root,taskId:task.id,expectedRevision:task.revision,patch:{...patch,clearScheduled:patch.scheduled===null,clearDue:patch.due===null,clearProject:patch.project===null,clearPriority:patch.priority===null,clearDuration:patch.durationMinutes===null}})
+      await loadIndex();await loadIndex()
+      if(metadataStore.current?.snapshot.root===root)showNotice({kind:result.metadataWarning?'warning':'success',message:result.metadataWarning?'Задача сохранена; обновление метаданных требует проверки: '+result.metadataWarning:patch.completed===true||patch.status==='done'?'Задача завершена':patch.due?'Дедлайн изменён. Плановая дата оставлена как была':patch.due===null?'Отдельный дедлайн снят':patch.scheduled===null?'Плановая дата снята':patch.scheduled?'Задача перепланирована':'Задача обновлена'})
+      return true
+    }catch(error){showNotice({kind:'error',message:errorMessage(error)});return false}
+    finally{taskPending.current=false;setBusyTaskId(null)}
+  },[loadIndex,showNotice])
 
   const openTask = useCallback(async (task: TaskMetadata) => {
     setVisualEditing(true)
@@ -1192,7 +1179,7 @@ export function App() {
             <button className="source-recovery-check" disabled={saving} onClick={() => void checkRecoverySource()}>Проверить источник</button>
             <button className="source-recovery-discard" disabled={saving} onClick={() => setDiscardDraftOpen(true)}>Отбросить черновик…</button>
           </div>}
-          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} initialCamera={viewsRef.current[note.path]?.camera} onCameraChange={camera=>{viewsRef.current[note.path]={...viewsRef.current[note.path],camera};setViewRevision(v=>v+1)}} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView key={note.path} root={vault.root} index={index} source={content} onChange={setContent} onSaved={loadIndex} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
+          {!vault ? <Welcome onOpen={() => runCommand('open-vault')} /> : workspaceView === 'graph' ? <GraphView index={index} activePath={note?.path ?? null} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'planner' ? <PlannerView key={vault.root} root={vault.root} tasks={index?.tasks ?? []} busyId={busyTaskId} onOpen={(task) => void openTask(task)} onCreate={createTask} onUpdate={updateTask} /> : !note ? <EmptyVault onCreate={() => runCommand('new-note')} onCreateBase={() => runCommand('new-base')} onCreateCanvas={() => runCommand('new-canvas')} onOpen={() => runCommand('open-note')} /> : workspaceView === 'canvas' ? <CanvasView key={note.path} initialCamera={viewsRef.current[note.path]?.camera} onCameraChange={camera=>{viewsRef.current[note.path]={...viewsRef.current[note.path],camera};setViewRevision(v=>v+1)}} focusTarget={searchTarget?.path === note.path ? searchTarget : null} onMissingSearchTarget={() => showNotice({ kind: 'error', message: 'Карточка больше не существует. Обновите поиск.' })} value={content} index={index} onChange={setContent} onOpen={(path) => void loadNote(path)} /> : workspaceView === 'base' ? <BaseView key={note.path} root={vault.root} index={index} source={content} onChange={setContent} onSaved={loadIndex} onOpen={(path) => void loadNote(path)} /> : <article className={`document ${settings.readableLineWidth ? '' : 'wide-lines'}`}>
             <div className="writing-toolbar">
               <div className="writing-mode"><span>Редактор</span><div><button className={visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-visual')}>Визуально</button><button className={!visualEditing && viewMode !== 'preview' ? 'active' : ''} onClick={() => runCommand('mode-source')}>Markdown</button></div></div>
               <button className="quick-insert-button" onClick={() => runCommand('quick-insert')}><PlusIcon /><span>Быстрая вставка</span><kbd>{registry.shortcut('quick-insert')}</kbd></button>

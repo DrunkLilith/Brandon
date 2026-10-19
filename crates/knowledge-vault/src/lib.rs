@@ -6,6 +6,12 @@ pub use knowledge_markdown::{
     PropertyInspection, PropertyPatch, inspect_properties, parse_yaml_mapping, patch_property,
 };
 mod metadata;
+mod task_backup;
+mod task_storage;
+#[cfg(test)]
+mod task_storage_tests;
+pub use task_backup::TaskBackupSummary;
+pub use task_storage::{ManagedTaskPatch, TaskChange, TaskRecord, TaskViewsDocument};
 mod search;
 pub use metadata::{MetadataDelta, MetadataStats};
 pub use search::{
@@ -22,7 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
@@ -33,6 +39,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VaultError {
+    #[error("{0}")]
+    TaskStorage(String),
     #[error("{0}")]
     UnsupportedProperty(String),
     #[error("Индексация отменена")]
@@ -81,7 +89,7 @@ pub struct VaultFile {
     pub size_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum VaultEntryKind {
     File,
@@ -186,87 +194,106 @@ impl Vault {
     }
 
     fn task_connection(&self) -> Result<Connection> {
-        let directory = self.root.join(".brandon");
-        fs::create_dir_all(&directory).map_err(|source| VaultError::Io {
-            context: "Не удалось подготовить локальную базу Brandon",
-            source,
-        })?;
-        let connection = Connection::open(directory.join("tasks.sqlite3"))?;
-        connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 3000;
-             CREATE TABLE IF NOT EXISTS tasks (
-               id TEXT PRIMARY KEY,
-               note_path TEXT NOT NULL UNIQUE,
-               title TEXT NOT NULL,
-               completed INTEGER NOT NULL DEFAULT 0,
-               scheduled TEXT,
-               due TEXT,
-               duration_minutes INTEGER,
-               priority TEXT,
-               created_unix_ms INTEGER NOT NULL,
-               updated_unix_ms INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS tasks_scheduled_idx ON tasks(scheduled);
-             CREATE INDEX IF NOT EXISTS tasks_due_idx ON tasks(due);",
-        )?;
-        Ok(connection)
+        task_storage::connection(self)
     }
 
     fn sync_managed_task_files(&self, snapshot: &VaultSnapshot) -> Result<()> {
-        let connection = self.task_connection()?;
-        let known_paths = {
-            let mut statement = connection.prepare("SELECT note_path FROM tasks")?;
-            statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<HashSet<_>, _>>()?
-        };
         for file in snapshot.files.iter().filter(|file| {
-            file.path.starts_with("Tasks/") && !file.path.eq_ignore_ascii_case("Tasks/Inbox.md")
+            file.path.starts_with("Tasks/")
+                && !file.path.eq_ignore_ascii_case("Tasks/Inbox.md")
+                && file.size_bytes <= 16 * 1024 * 1024
         }) {
-            if known_paths.contains(&file.path) {
-                continue;
-            }
-            let path = self.secure_existing_note(&file.path)?;
-            let source = fs::read_to_string(&path).map_err(|source| VaultError::Io {
-                context: "Не удалось прочитать файл задачи",
-                source,
-            })?;
-            let document = parse_document(&file.path, &source, file.modified_unix_ms);
-            let legacy = (document.tasks.len() == 1
-                && document.tasks[0]
-                    .block_id
-                    .as_deref()
-                    .is_some_and(|id| id.starts_with("task-")))
-            .then(|| document.tasks[0].clone());
-            let id = legacy
-                .as_ref()
-                .map_or_else(new_task_id, |task| task.id.clone());
-            let now = current_unix_ms();
-            connection.execute(
-                "INSERT INTO tasks (id, note_path, title, completed, scheduled, due, duration_minutes, priority, created_unix_ms, updated_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-                params![
-                    id,
-                    file.path,
-                    document.title,
-                    legacy.as_ref().is_some_and(|task| task.completed),
-                    legacy.as_ref().and_then(|task| task.scheduled.as_deref()),
-                    legacy.as_ref().and_then(|task| task.due.as_deref()),
-                    legacy.as_ref().and_then(|task| task.duration_minutes),
-                    legacy.as_ref().and_then(|task| task.priority.as_deref()),
-                    now,
-                ],
-            )?;
-            if let Some(task) = legacy {
-                let cleaned = without_line(&source, task.line);
-                if let Err(error) = write_atomic(&path, cleaned.as_bytes()) {
-                    let _ = connection.execute("DELETE FROM tasks WHERE id = ?1", [&id]);
-                    return Err(error);
-                }
-            }
+            let source = self.read_note(&file.path)?;
+            self.migrate_legacy_task_source(&file.path, &source.content, file.modified_unix_ms)?;
         }
         Ok(())
+    }
+
+    /// Only an existing Brandon legacy marker is adopted. Called after the
+    /// metadata pipeline's bounded read, so ordinary Task-folder notes are not
+    /// read/parsed twice or silently registered as canonical tasks.
+    fn migrate_legacy_task_source(
+        &self,
+        path: &str,
+        source: &str,
+        modified: u128,
+    ) -> Result<Option<String>> {
+        if !source.contains("^task-") {
+            return Ok(None);
+        }
+        let connection = self.task_connection()?;
+        let known: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE note_path=?1)",
+            [path],
+            |row| row.get(0),
+        )?;
+        if known {
+            return Ok(None);
+        }
+        let document = parse_document(path, source, modified);
+        let Some(task) = document.tasks.first().filter(|task| {
+            document.tasks.len() == 1
+                && task
+                    .block_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("task-"))
+        }) else {
+            return Ok(None);
+        };
+        let id = task.block_id.clone().expect("validated legacy task marker");
+        let now = current_unix_ms();
+        let record = task_storage::TaskRecord {
+            id: id.clone(),
+            note_path: path.into(),
+            title: document.title,
+            completed: task.completed,
+            status: if task.completed { "done" } else { "todo" }.into(),
+            scheduled: task.scheduled.clone(),
+            due: task.due.clone(),
+            duration_minutes: task.duration_minutes,
+            priority: task.priority.clone(),
+            created_unix_ms: now,
+            updated_unix_ms: now,
+            project: None,
+            tags: task.tags.clone(),
+        };
+        record.validate()?;
+        let absolute = self.secure_existing_note(path)?;
+        if fs::read(&absolute).map_err(|source| VaultError::Io {
+            context: "Не удалось проверить legacy-задачу",
+            source,
+        })? != source.as_bytes()
+        {
+            return Err(VaultError::InvalidPath(
+                "Legacy-задача изменилась перед миграцией",
+            ));
+        }
+        let directory = task_storage::task_directory(self)?.join("task-migrations");
+        task_storage::checked_directory(&directory)?;
+        let backup=serde_json::to_vec_pretty(&serde_json::json!({"format":"brandon.legacy-task-source","version":1,"path":path,"source":source,"record":record})).map_err(|error|VaultError::TaskStorage(error.to_string()))?;
+        write_atomic(
+            &directory.join(format!("source-{id}-{}.json", new_task_id())),
+            &backup,
+        )?;
+        task_storage::insert_record(&connection, &record)?;
+        let cleaned = without_line(source, task.line);
+        let write = (|| {
+            if fs::read(&absolute).map_err(|source| VaultError::Io {
+                context: "Legacy-задача недоступна",
+                source,
+            })? != source.as_bytes()
+            {
+                return Err(VaultError::InvalidPath(
+                    "Legacy-задача изменилась; миграция отложена",
+                ));
+            }
+            write_atomic(&absolute, cleaned.as_bytes())
+        })();
+        if let Err(error) = write {
+            let _ = connection.execute("DELETE FROM tasks WHERE id=?1", [&id]);
+            return Err(error);
+        }
+        Ok(Some(cleaned))
     }
 
     fn managed_tasks(&self, documents: &[DocumentMetadata]) -> Result<Vec<TaskMetadata>> {
@@ -280,47 +307,37 @@ impl Vault {
         let documents = documents
             .map(|document| (document.path.as_str(), document))
             .collect::<HashMap<_, _>>();
-        let connection = self.task_connection()?;
-        let mut statement = connection.prepare(
-            "SELECT id, note_path, title, completed, scheduled, due, duration_minutes, priority
-             FROM tasks ORDER BY completed, COALESCE(scheduled, due, '9999-12-31'), title",
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<u32>>(6)?,
-                row.get::<_, Option<String>>(7)?,
-            ))
-        })?;
+        let records = task_storage::records(&self.task_connection()?)?;
         let mut tasks = Vec::new();
-        for row in rows {
-            let (id, path, stored_title, completed, scheduled, due, duration_minutes, priority) =
-                row?;
-            let Some(document) = documents.get(path.as_str()) else {
+        for record in records {
+            let Some(document) = documents.get(record.note_path.as_str()) else {
                 continue;
             };
+            let mut tags = record.tags.clone();
+            tags.extend(document.tags.iter().cloned());
+            tags.sort();
+            tags.dedup();
             tasks.push(TaskMetadata {
-                id,
+                task_tags: record.tags.clone(),
+                revision: Some(record.revision()),
+                id: record.id,
                 managed: true,
                 block_id: None,
-                path,
+                path: record.note_path,
                 line: 1,
                 title: if document.title.trim().is_empty() {
-                    stored_title
+                    record.title
                 } else {
                     document.title.clone()
                 },
-                completed,
-                scheduled,
-                due,
-                duration_minutes,
-                priority,
-                tags: document.tags.clone(),
+                completed: record.completed,
+                status: record.status,
+                project: record.project,
+                scheduled: record.scheduled,
+                due: record.due,
+                duration_minutes: record.duration_minutes,
+                priority: record.priority,
+                tags,
             });
         }
         Ok(tasks)
@@ -358,7 +375,7 @@ impl Vault {
             .map(|value| value.map(str::to_owned))
             .unwrap_or(stored_due);
         connection.execute(
-            "UPDATE tasks SET completed = ?2, scheduled = ?3, due = ?4, updated_unix_ms = ?5 WHERE id = ?1",
+            "UPDATE tasks SET completed = ?2, scheduled = ?3, due = ?4, updated_unix_ms = ?5, status=CASE WHEN ?2 THEN 'done' WHEN status='done' THEN 'todo' ELSE status END WHERE id = ?1",
             params![task_id, next_completed, next_scheduled, next_due, current_unix_ms()],
         )?;
         Ok(true)
@@ -787,6 +804,16 @@ impl Vault {
     }
 
     pub fn create_task(&self, title: &str, scheduled: Option<&str>) -> Result<TaskIndexMutation> {
+        self.create_task_record(title, scheduled)?;
+        Ok(TaskIndexMutation {
+            snapshot: self.snapshot()?,
+            index: self.index()?,
+        })
+    }
+
+    pub fn create_task_record(&self, title: &str, scheduled: Option<&str>) -> Result<TaskChange> {
+        // Refuse a broken/future authoritative DB before creating a note.
+        let connection = self.task_connection()?;
         let title = title
             .chars()
             .map(|character| {
@@ -805,10 +832,7 @@ impl Vault {
         }
         let scheduled = normalize_task_datetime(scheduled)?;
         let tasks_directory = self.root.join("Tasks");
-        fs::create_dir_all(&tasks_directory).map_err(|source| VaultError::Io {
-            context: "Не удалось подготовить папку задач",
-            source,
-        })?;
+        task_storage::checked_directory(&tasks_directory)?;
         let safe_title = safe_entry_name(&title)?;
         let mut suffix = 1_u32;
         let (path, mut file) = loop {
@@ -852,7 +876,7 @@ impl Vault {
         debug_assert!(path.starts_with(&tasks_directory));
         let relative_path = relative_display(&self.root, &path)?;
         let now = current_unix_ms();
-        if let Err(error) = self.task_connection()?.execute(
+        if let Err(error) = connection.execute(
             "INSERT INTO tasks (id, note_path, title, completed, scheduled, due, duration_minutes, priority, created_unix_ms, updated_unix_ms)
              VALUES (?1, ?2, ?3, 0, ?4, NULL, NULL, NULL, ?5, ?5)",
             params![stable_id, relative_path, title, scheduled, now],
@@ -861,11 +885,10 @@ impl Vault {
             return Err(error.into());
         }
         self.metadata_touch(&[&relative_path, ".brandon/tasks.sqlite3"]);
-        self.metadata_step(128)?;
-        Ok(TaskIndexMutation {
-            snapshot: self.snapshot()?,
-            index: self.index()?,
-        })
+        Ok(task_storage::task_change(
+            self,
+            task_storage::current_record(self, &stable_id)?,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]

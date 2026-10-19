@@ -642,7 +642,8 @@ impl MetadataCache {
             self.pending.remove(&path);
             self.urgent.remove(&path);
             // Remove stale metadata on revocation, symlink replacement or read failure.
-            let Some(entry) = self.safe_entry(vault, &path).filter(|entry| entry.is_note) else {
+            let Some(mut entry) = self.safe_entry(vault, &path).filter(|entry| entry.is_note)
+            else {
                 self.remove_prefix(&path, &mut changes, &mut keys);
                 continue;
             };
@@ -650,18 +651,6 @@ impl MetadataCache {
                 self.skipped.insert(path.clone());
                 self.unlink_document(&path, &mut keys, &mut changes);
                 continue;
-            }
-            if path.starts_with("Tasks/") && !path.eq_ignore_ascii_case("Tasks/Inbox.md") {
-                let mut subset = self.snapshot(vault, true);
-                subset.files.push(VaultFile {
-                    path: path.clone(),
-                    name: entry.name.clone(),
-                    folder: entry.parent.clone(),
-                    modified_unix_ms: entry.modified_unix_ms,
-                    size_bytes: entry.size_bytes,
-                });
-                vault.sync_managed_task_files(&subset)?;
-                self.task_refresh = true;
             }
             let read = (|| -> Result<Vec<u8>> {
                 let absolute = vault.public_attachment_path(&path)?;
@@ -682,10 +671,27 @@ impl MetadataCache {
                 Ok(data)
             })();
             match read {
-                Ok(data) => {
+                Ok(mut data) => {
                     bytes += data.len() as u64;
                     self.stats.read_sources += 1;
                     self.stats.bytes_read += data.len() as u64;
+                    if path.starts_with("Tasks/")
+                        && !path.eq_ignore_ascii_case("Tasks/Inbox.md")
+                        && let Ok(source) = std::str::from_utf8(&data)
+                        && let Some(cleaned) = vault.migrate_legacy_task_source(
+                            &path,
+                            source,
+                            entry.modified_unix_ms,
+                        )?
+                    {
+                        data = cleaned.into_bytes();
+                        self.task_refresh = true;
+                        if let Some(updated) = self.safe_entry(vault, &path) {
+                            entry = updated;
+                            self.entries.insert(path.clone(), entry.clone());
+                            changes.entries.insert(path.clone());
+                        }
+                    }
                     let hash = fingerprint(&data);
                     self.failures.remove(&path);
                     self.skipped.remove(&path);

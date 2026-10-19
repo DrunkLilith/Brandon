@@ -43,6 +43,10 @@ pub struct TaskMetadata {
     pub line: usize,
     pub title: String,
     pub completed: bool,
+    pub status: String,
+    pub project: Option<String>,
+    pub revision: Option<String>,
+    pub task_tags: Vec<String>,
     pub scheduled: Option<String>,
     pub due: Option<String>,
     pub duration_minutes: Option<u32>,
@@ -372,6 +376,7 @@ fn parse_tasks(path: &str, source: &str) -> Vec<TaskMetadata> {
             Some(TaskMetadata {
                 id: block_id
                     .clone()
+                    .map(|id| format!("{path}::^{id}"))
                     .unwrap_or_else(|| format!("{path}::L{line}")),
                 managed: false,
                 block_id,
@@ -379,6 +384,15 @@ fn parse_tasks(path: &str, source: &str) -> Vec<TaskMetadata> {
                 line,
                 title,
                 completed: captures.name("checked")?.as_str() != " ",
+                status: if captures.name("checked")?.as_str() != " " {
+                    "done"
+                } else {
+                    "todo"
+                }
+                .to_owned(),
+                project: None,
+                revision: None,
+                task_tags: Vec::new(),
                 scheduled,
                 due,
                 duration_minutes,
@@ -714,7 +728,7 @@ mod tests {
         let document = parse_document("Plan.md", source, 0);
 
         assert_eq!(document.tasks.len(), 2);
-        assert_eq!(document.tasks[0].id, "task-demo");
+        assert_eq!(document.tasks[0].id, "Plan.md::^task-demo");
         assert_eq!(
             document.tasks[0].scheduled.as_deref(),
             Some("2026-10-20 09:30")
